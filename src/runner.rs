@@ -1,11 +1,40 @@
+use crate::platform;
+
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, ExitStatus};
+use std::process::{Child, Command};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
 
 const SINGBOX_VERSION: &str = "1.13.4";
+const MAX_RETRIES: u32 = 10;
 
-fn mole_dir() -> PathBuf {
+/// Global stop signal — set by Ctrl+C or shutdown paths.
+pub static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// PID of the current sudo+sing-box process (0 = not running).
+pub static SINGBOX_PID: AtomicU32 = AtomicU32::new(0);
+
+/// Set by keepalive watchdog before killing sing-box for health reasons.
+/// Checked by run_singbox to distinguish health-kill from user-kill.
+static HEALTH_KILL: AtomicBool = AtomicBool::new(false);
+
+/// Why `run_singbox` returned.
+pub enum ExitReason {
+    /// User-initiated stop (Ctrl+C, SIGTERM, clean exit).
+    Clean,
+    /// Crashed more times than MAX_RETRIES allows.
+    MaxRetries,
+}
+
+// ── Paths ───────────────────────────────────────────────────────────
+
+pub fn mole_dir() -> PathBuf {
     let dir = dirs::home_dir()
         .expect("cannot find home directory")
         .join(".mole");
@@ -31,14 +60,93 @@ pub fn singbox_installed() -> bool {
     singbox_bin_path().exists()
 }
 
-pub fn install_singbox() -> Result<(), String> {
-    let arch = if cfg!(target_arch = "aarch64") {
-        "arm64"
-    } else {
-        "amd64"
-    };
+pub fn log_path() -> PathBuf {
+    mole_dir().join("sing-box.log")
+}
 
-    let tarball = format!("sing-box-{SINGBOX_VERSION}-darwin-{arch}.tar.gz");
+pub fn pid_path() -> PathBuf {
+    mole_dir().join("mole.pid")
+}
+
+pub fn prev_log_path() -> PathBuf {
+    mole_dir().join("sing-box.prev.log")
+}
+
+// ── Structured logging ──────────────────────────────────────────────
+
+/// Append a timestamped line to ~/.mole/mole.log.
+pub fn mole_log(level: &str, msg: &str) {
+    let timestamp = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S");
+    let path = mole_dir().join("mole.log");
+    if let Ok(mut f) = fs::File::options().create(true).append(true).open(&path) {
+        writeln!(f, "{timestamp} [{level}] {msg}").ok();
+    }
+}
+
+// ── Config validation ───────────────────────────────────────────────
+
+/// Check that geo rule set files exist, with actionable error messages.
+pub fn check_geo_files(rules: &[crate::store::Rule], bypass_cn: bool) -> Result<(), String> {
+    let dir = mole_dir();
+    let mut missing = Vec::new();
+
+    if bypass_cn {
+        for name in &["geoip-cn.srs", "geosite-cn.srs"] {
+            if !dir.join(name).exists() {
+                missing.push(name.to_string());
+            }
+        }
+    }
+
+    for rule in rules {
+        let file = match rule.match_type.as_str() {
+            "geoip" => format!("geoip-{}.srs", rule.pattern),
+            "geosite" => format!("geosite-{}.srs", rule.pattern),
+            _ => continue,
+        };
+        if !dir.join(&file).exists() && !missing.contains(&file) {
+            missing.push(file);
+        }
+    }
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let dir_str = dir.display();
+    let mut msg = format!("missing geo rule files in {dir_str}/:\n");
+    for f in &missing {
+        msg.push_str(&format!("  - {f}\n"));
+    }
+    msg.push_str("download from: https://github.com/SagerNet/sing-geoip/releases (geoip-*.srs)\n");
+    msg.push_str("           or: https://github.com/SagerNet/sing-geosite/releases (geosite-*.srs)");
+    Err(msg)
+}
+
+/// Run `sing-box check -c <path>` to validate config before starting.
+pub fn check_config(config_path: &std::path::Path) -> Result<(), String> {
+    let bin = singbox_bin_path();
+    if !bin.exists() {
+        return Err("sing-box binary not found".into());
+    }
+    let output = Command::new(bin.to_str().unwrap())
+        .args(["check", "-c", config_path.to_str().unwrap()])
+        .output()
+        .map_err(|e| format!("config check: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("invalid config: {}", stderr.trim()));
+    }
+    Ok(())
+}
+
+// ── Install ─────────────────────────────────────────────────────────
+
+pub fn install_singbox() -> Result<(), String> {
+    let arch = platform::arch_name();
+    let os = platform::os_name();
+
+    let tarball = format!("sing-box-{SINGBOX_VERSION}-{os}-{arch}.tar.gz");
     let url = format!(
         "https://github.com/SagerNet/sing-box/releases/download/v{SINGBOX_VERSION}/{tarball}"
     );
@@ -47,7 +155,7 @@ pub fn install_singbox() -> Result<(), String> {
     println!("  {url}");
 
     let resp = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
+        .timeout(Duration::from_secs(300))
         .build()
         .map_err(|e| format!("http client: {e}"))?
         .get(&url)
@@ -67,10 +175,15 @@ pub fn install_singbox() -> Result<(), String> {
     drop(file);
 
     // Extract sing-box binary
-    let extract_dir = format!("sing-box-{SINGBOX_VERSION}-darwin-{arch}");
+    let extract_dir = format!("sing-box-{SINGBOX_VERSION}-{os}-{arch}");
     let status = Command::new("tar")
-        .args(["xzf", tmp_tar.to_str().unwrap(), "-C", mole_dir().to_str().unwrap(),
-               &format!("{extract_dir}/sing-box")])
+        .args([
+            "xzf",
+            tmp_tar.to_str().unwrap(),
+            "-C",
+            mole_dir().to_str().unwrap(),
+            &format!("{extract_dir}/sing-box"),
+        ])
         .status()
         .map_err(|e| format!("tar: {e}"))?;
 
@@ -98,35 +211,267 @@ pub fn install_singbox() -> Result<(), String> {
     Ok(())
 }
 
+// ── Config I/O ──────────────────────────────────────────────────────
+
 pub fn write_config(json: &str) -> Result<PathBuf, String> {
     let path = config_path();
     fs::write(&path, json).map_err(|e| format!("write config: {e}"))?;
     Ok(path)
 }
 
+// ── Process management ──────────────────────────────────────────────
+
+/// Stop sing-box: SIGTERM → wait → SIGKILL.
+/// When SHUTTING_DOWN is set (Ctrl+C), skip graceful wait and use SIGKILL directly.
 pub fn stop_singbox() -> Result<bool, String> {
-    let output = Command::new("sudo")
-        .args(["pkill", "-f", "sing-box run"])
+    if SHUTTING_DOWN.load(Ordering::Relaxed) {
+        // Fast path for user-initiated exit
+        let output = Command::new("sudo")
+            .args(["pkill", "-9", "sing-box"])
+            .output()
+            .map_err(|e| format!("pkill: {e}"))?;
+        std::thread::sleep(Duration::from_millis(500));
+        SINGBOX_PID.store(0, Ordering::Relaxed);
+        return Ok(output.status.success());
+    }
+
+    // Graceful: SIGTERM first
+    let term = Command::new("sudo")
+        .args(["pkill", "-TERM", "sing-box"])
         .output()
         .map_err(|e| format!("pkill: {e}"))?;
-    Ok(output.status.success())
+
+    if !term.status.success() {
+        SINGBOX_PID.store(0, Ordering::Relaxed);
+        return Ok(false); // No process found
+    }
+
+    std::thread::sleep(Duration::from_millis(1500));
+
+    // Check if still alive
+    let alive = Command::new("pgrep")
+        .args(["-f", "sing-box run"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if alive {
+        let _ = Command::new("sudo")
+            .args(["pkill", "-9", "sing-box"])
+            .output();
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
+    SINGBOX_PID.store(0, Ordering::Relaxed);
+    Ok(true)
 }
 
-pub fn run_singbox(config_path: &PathBuf) -> Result<ExitStatus, String> {
+// ── Keepalive + health watchdog ─────────────────────────────────────
+
+/// Background keepalive: sends DNS query every 30s, verifies response.
+/// After 3 consecutive failures, triggers sing-box restart via HEALTH_KILL.
+pub fn start_keepalive(stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        use std::net::UdpSocket;
+        // Minimal DNS query for "." (root)
+        let dns_query: [u8; 17] = [
+            0x00, 0x01, // ID
+            0x01, 0x00, // Flags: standard query
+            0x00, 0x01, // Questions: 1
+            0x00, 0x00, // Answers: 0
+            0x00, 0x00, // Authority: 0
+            0x00, 0x00, // Additional: 0
+            0x00,       // Root name
+            0x00, 0x01, // Type: A
+            0x00, 0x01, // Class: IN
+        ];
+        let mut consecutive_failures: u32 = 0;
+
+        loop {
+            std::thread::sleep(Duration::from_secs(30));
+
+            if stop.load(Ordering::Relaxed) || SHUTTING_DOWN.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let ok = (|| -> Option<()> {
+                let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
+                sock.set_write_timeout(Some(Duration::from_secs(2))).ok();
+                sock.set_read_timeout(Some(Duration::from_secs(3))).ok();
+                sock.send_to(&dns_query, "8.8.8.8:53").ok()?;
+                let mut buf = [0u8; 512];
+                sock.recv_from(&mut buf).ok()?;
+                Some(())
+            })()
+            .is_some();
+
+            if ok {
+                if consecutive_failures > 0 {
+                    mole_log(
+                        "INFO",
+                        &format!("keepalive: recovered after {consecutive_failures} failures"),
+                    );
+                }
+                consecutive_failures = 0;
+            } else {
+                consecutive_failures += 1;
+                mole_log(
+                    "WARN",
+                    &format!("keepalive: no response ({consecutive_failures}/3)"),
+                );
+
+                if consecutive_failures >= 3 {
+                    mole_log("WARN", "keepalive: tunnel appears dead, triggering restart");
+                    HEALTH_KILL.store(true, Ordering::SeqCst);
+                    stop_singbox().ok();
+                    consecutive_failures = 0;
+                    // Wait for restart to complete before resuming checks
+                    std::thread::sleep(Duration::from_secs(30));
+                }
+            }
+        }
+    })
+}
+
+// ── Log rotation ────────────────────────────────────────────────────
+
+fn rotate_log() {
+    let current = log_path();
+    if current.exists() {
+        let prev = prev_log_path();
+        fs::rename(&current, &prev).ok();
+    }
+}
+
+// ── Spawn & run ─────────────────────────────────────────────────────
+
+fn spawn_singbox(config_path: &std::path::Path, retry_num: u32) -> Result<Child, String> {
+    let bin = singbox_bin_path();
+    let log_file = log_path();
+
+    let log = if retry_num == 0 {
+        rotate_log();
+        fs::File::create(&log_file).map_err(|e| format!("create log: {e}"))?
+    } else {
+        let mut f = fs::File::options()
+            .create(true)
+            .append(true)
+            .open(&log_file)
+            .map_err(|e| format!("open log: {e}"))?;
+        writeln!(
+            f,
+            "\n--- sing-box restart #{retry_num} at {} ---",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+        )
+        .ok();
+        f
+    };
+    let log_err = log.try_clone().map_err(|e| format!("clone log: {e}"))?;
+
+    let child = Command::new("sudo")
+        .arg(bin.to_str().unwrap())
+        .arg("run")
+        .arg("-c")
+        .arg(config_path.to_str().unwrap())
+        .stdout(log)
+        .stderr(log_err)
+        .spawn()
+        .map_err(|e| format!("failed to spawn sing-box: {e}"))?;
+
+    Ok(child)
+}
+
+/// Run sing-box with auto-restart, exponential backoff, and health-kill awareness.
+pub fn run_singbox(config_path: &std::path::Path) -> Result<ExitReason, String> {
     let bin = singbox_bin_path();
     if !bin.exists() {
         return Err("sing-box binary not found, run `mole install` first".into());
     }
 
-    println!("starting sing-box TUN mode (requires sudo)...");
-    println!("config: {}", config_path.display());
-    println!("press Ctrl+C to disconnect\n");
+    let mut retries: u32 = 0;
 
-    Command::new("sudo")
-        .arg(bin.to_str().unwrap())
-        .arg("run")
-        .arg("-c")
-        .arg(config_path.to_str().unwrap())
-        .status()
-        .map_err(|e| format!("failed to run sing-box: {e}"))
+    loop {
+        let mut child = spawn_singbox(config_path, retries)?;
+        let pid = child.id();
+        SINGBOX_PID.store(pid, Ordering::SeqCst);
+        mole_log("INFO", &format!("sing-box spawned pid={pid}"));
+
+        let started_at = Instant::now();
+        let status = child.wait().map_err(|e| format!("wait: {e}"))?;
+        let uptime = started_at.elapsed();
+        SINGBOX_PID.store(0, Ordering::Relaxed);
+
+        // User-initiated shutdown
+        if SHUTTING_DOWN.load(Ordering::Relaxed) {
+            return Ok(ExitReason::Clean);
+        }
+
+        // Clean exit code
+        if status.success() {
+            return Ok(ExitReason::Clean);
+        }
+
+        // Check if this was a health-triggered kill (not user-initiated)
+        let was_health_kill = HEALTH_KILL.swap(false, Ordering::SeqCst);
+
+        #[cfg(unix)]
+        if let Some(sig) = status.signal() {
+            if !was_health_kill && (sig == 2 || sig == 15) {
+                // SIGINT/SIGTERM from user — clean exit
+                return Ok(ExitReason::Clean);
+            }
+            mole_log(
+                "WARN",
+                &format!(
+                    "sing-box killed by signal {sig} (health_kill={was_health_kill}, uptime={}s)",
+                    uptime.as_secs()
+                ),
+            );
+            eprintln!("\nsing-box killed by signal {sig}");
+        }
+
+        // Reset retry counter if the process ran for >5 minutes (was stable)
+        if uptime > Duration::from_secs(300) {
+            mole_log(
+                "INFO",
+                &format!(
+                    "resetting retry counter (ran {}s before crash)",
+                    uptime.as_secs()
+                ),
+            );
+            retries = 0;
+        }
+
+        retries += 1;
+        if retries > MAX_RETRIES {
+            mole_log(
+                "ERROR",
+                &format!("sing-box crashed {MAX_RETRIES} times, giving up"),
+            );
+            eprintln!("\nsing-box crashed {MAX_RETRIES} times, giving up");
+            eprintln!("check log: {}", log_path().display());
+            return Ok(ExitReason::MaxRetries);
+        }
+
+        // Exponential backoff: 2, 4, 8, 16, 32, 60, 60…
+        let wait = std::cmp::min(2u64.pow(retries), 60);
+        mole_log(
+            "INFO",
+            &format!(
+                "sing-box exited (code={}), restarting in {wait}s ({retries}/{MAX_RETRIES})",
+                status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "signal".into())
+            ),
+        );
+        eprintln!(
+            "\nsing-box exited (code={}), restarting in {wait}s... ({retries}/{MAX_RETRIES})",
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".into())
+        );
+        std::thread::sleep(Duration::from_secs(wait));
+    }
 }
