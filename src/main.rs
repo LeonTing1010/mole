@@ -36,6 +36,9 @@ enum Commands {
         daemon: bool,
         #[arg(long)]
         strategy: Option<String>,
+        /// Share proxy to LAN devices (HTTP/SOCKS on port 7890)
+        #[arg(long)]
+        share: bool,
     },
     /// Disconnect (stop sing-box)
     Down,
@@ -195,7 +198,7 @@ fn main() {
                 Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
             };
             println!("// {}", node.name);
-            let cfg = config::generate(&[("proxy", &parsed)], &s.rules, s.bypass_cn, None);
+            let cfg = config::generate(&[("proxy", &parsed)], &s.rules, s.bypass_cn, None, false);
             println!("{}", config::to_json_pretty(&cfg));
         }
 
@@ -336,7 +339,7 @@ fn main() {
 
         // ── Connect ─────────────────────────────────────────────
 
-        Commands::Up { bypass_cn, daemon, strategy } => {
+        Commands::Up { bypass_cn, daemon, strategy, share } => {
             let is_daemon = std::env::var("MOLE_DAEMON").is_ok();
             let s = Store::load();
 
@@ -359,6 +362,7 @@ fn main() {
                 if let Some(ref strat) = strategy {
                     args.extend(["--strategy".to_string(), strat.clone()]);
                 }
+                if share { args.push("--share".to_string()); }
                 let log = std::fs::File::create(runner::mole_dir().join("daemon.log")).expect("create log");
                 let log_err = log.try_clone().expect("clone");
                 let mut child = std::process::Command::new(&exe)
@@ -389,9 +393,9 @@ fn main() {
             }
 
             if let Some(ref strat) = strategy {
-                connect::run_strategy(&s, strat, bypass_cn, is_daemon);
+                connect::run_strategy(&s, strat, bypass_cn, is_daemon, share);
             } else {
-                connect::run_single(&s, bypass_cn, is_daemon);
+                connect::run_single(&s, bypass_cn, is_daemon, share);
             }
 
             std::fs::remove_file(runner::pid_path()).ok();
