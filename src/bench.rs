@@ -66,7 +66,7 @@ pub fn run_bench() {
 
         eprint!("  \x1b[33m…\x1b[0m [{}/{}] {} ", i + 1, total, node.name);
 
-        let cfg = config::generate(&[("proxy", &parsed)], &s.rules, false, None);
+        let cfg = config::generate(&[("proxy", &parsed)], &s.rules, false, None, false);
         let json = config::to_json_pretty(&cfg);
         let config_path = match runner::write_config(&json) {
             Ok(p) => p,

@@ -2,17 +2,22 @@ use crate::store::Rule;
 use crate::uri::ProxyNode;
 use serde_json::{json, Value};
 
+/// Default LAN proxy port for --share mode.
+pub const SHARE_PORT: u16 = 7890;
+
 /// Generate a complete sing-box configuration.
 ///
 /// - `nodes`: `(tag, node)` pairs. Single-node mode: one entry tagged `"proxy"`.
 ///   Strategy mode: multiple entries with unique tags.
 /// - `custom_rules`: user-defined routing rules from the Store.
 /// - `strategy`: `None` = single node, `Some("urltest"|"fallback"|"select")` = wrap all nodes.
+/// - `share`: if true, add a mixed HTTP/SOCKS inbound on LAN.
 pub fn generate(
     nodes: &[(&str, &ProxyNode)],
     custom_rules: &[Rule],
     bypass_cn: bool,
     strategy: Option<&str>,
+    share: bool,
 ) -> Value {
     let mole_dir = dirs::home_dir().expect("home dir").join(".mole");
 
@@ -33,11 +38,22 @@ pub fn generate(
     });
 
     // --- Inbounds ---
-    let inbounds = json!([{
+    let mut inbound_list = vec![json!({
         "type": "tun", "tag": "tun-in",
         "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
         "mtu": 1500, "auto_route": true, "strict_route": true, "stack": "mixed"
-    }]);
+    })];
+
+    if share {
+        inbound_list.push(json!({
+            "type": "mixed",
+            "tag": "lan-in",
+            "listen": "::",
+            "listen_port": SHARE_PORT
+        }));
+    }
+
+    let inbounds = serde_json::Value::Array(inbound_list);
 
     // --- Outbounds ---
     let mut outbounds = Vec::new();
@@ -181,7 +197,7 @@ mod tests {
     #[test]
     fn single_node_has_proxy_tag() {
         let node = dummy_trojan();
-        let cfg = generate(&[("proxy", &node)], &[], false, None);
+        let cfg = generate(&[("proxy", &node)], &[], false, None, false);
         let outbounds = cfg["outbounds"].as_array().unwrap();
         assert_eq!(outbounds[0]["tag"], "proxy");
         assert_eq!(outbounds[1]["tag"], "direct");
@@ -191,7 +207,7 @@ mod tests {
     fn strategy_wraps_nodes() {
         let n1 = dummy_trojan();
         let n2 = dummy_ss();
-        let cfg = generate(&[("node-1", &n1), ("node-2", &n2)], &[], false, Some("urltest"));
+        let cfg = generate(&[("node-1", &n1), ("node-2", &n2)], &[], false, Some("urltest"), false);
         let outbounds = cfg["outbounds"].as_array().unwrap();
         // First outbound is the strategy wrapper
         assert_eq!(outbounds[0]["type"], "urltest");
@@ -210,7 +226,7 @@ mod tests {
             Rule { match_type: "domain".into(), pattern: "example.com".into(), outbound: "direct".into() },
             Rule { match_type: "domain_suffix".into(), pattern: ".cn".into(), outbound: "direct".into() },
         ];
-        let cfg = generate(&[("proxy", &node)], &rules, false, None);
+        let cfg = generate(&[("proxy", &node)], &rules, false, None, false);
         let route_rules = cfg["route"]["rules"].as_array().unwrap();
         // Should have: sniff, dns-hijack, ip_is_private, domain, domain_suffix
         assert!(route_rules.iter().any(|r| r.get("domain").is_some()));
@@ -223,7 +239,7 @@ mod tests {
         let rules = vec![
             Rule { match_type: "domain".into(), pattern: "ads.example.com".into(), outbound: "block".into() },
         ];
-        let cfg = generate(&[("proxy", &node)], &rules, false, None);
+        let cfg = generate(&[("proxy", &node)], &rules, false, None, false);
         let outbounds = cfg["outbounds"].as_array().unwrap();
         assert!(outbounds.iter().any(|o| o["tag"] == "block"));
     }
@@ -231,7 +247,7 @@ mod tests {
     #[test]
     fn no_block_outbound_when_not_needed() {
         let node = dummy_trojan();
-        let cfg = generate(&[("proxy", &node)], &[], false, None);
+        let cfg = generate(&[("proxy", &node)], &[], false, None, false);
         let outbounds = cfg["outbounds"].as_array().unwrap();
         assert!(!outbounds.iter().any(|o| o["tag"] == "block"));
     }

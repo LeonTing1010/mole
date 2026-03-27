@@ -48,6 +48,16 @@ pub fn default_interface() -> String {
     "eth0".to_string()
 }
 
+/// Detect the local LAN IP address.
+pub fn local_ip() -> Option<String> {
+    // Connect a UDP socket to a public address to determine local IP
+    // (no actual traffic is sent)
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("8.8.8.8:80").ok()?;
+    let addr = sock.local_addr().ok()?;
+    Some(addr.ip().to_string())
+}
+
 // ── Cross-platform network speed monitor ────────────────────────────
 
 #[cfg(target_os = "macos")]

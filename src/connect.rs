@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::{config, runner, status, store, uri};
+use crate::{config, platform, runner, status, store, uri};
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -51,6 +51,37 @@ fn find_next_node(s: &store::Store, current: &str, tried: &[String]) -> Option<s
     None
 }
 
+/// Print share info (proxy address + QR code) after connection is established.
+fn print_share_info() {
+    let ip = platform::local_ip().unwrap_or_else(|| "?.?.?.?".to_string());
+    let port = config::SHARE_PORT;
+    let proxy_url = format!("http://{ip}:{port}");
+
+    eprintln!();
+    eprintln!("  \x1b[1;32m  LAN proxy active\x1b[0m");
+    eprintln!();
+    eprintln!("  \x1b[2mhttp\x1b[0m    {ip}:{port}");
+    eprintln!("  \x1b[2msocks5\x1b[0m  {ip}:{port}");
+    eprintln!();
+
+    // QR code for easy phone setup
+    if let Ok(code) = qrcode::QrCode::new(proxy_url.as_bytes()) {
+        let string = code
+            .render::<char>()
+            .quiet_zone(true)
+            .module_dimensions(2, 1)
+            .build();
+        for line in string.lines() {
+            eprintln!("  {line}");
+        }
+        eprintln!();
+        eprintln!("  \x1b[2mscan QR or set Wi-Fi proxy to {ip}:{port}\x1b[0m");
+    } else {
+        eprintln!("  \x1b[2mset Wi-Fi HTTP proxy to {ip}:{port}\x1b[0m");
+    }
+    eprintln!();
+}
+
 fn print_banner() {
     println!();
     println!("  \x1b[1;36m  .--.\x1b[0m");
@@ -69,8 +100,9 @@ fn prepare_config(
     rules: &[store::Rule],
     bypass_cn: bool,
     strategy: Option<&str>,
+    share: bool,
 ) -> Result<PathBuf, String> {
-    let cfg = config::generate(nodes, rules, bypass_cn, strategy);
+    let cfg = config::generate(nodes, rules, bypass_cn, strategy, share);
     let json = config::to_json_pretty(&cfg);
     let path = runner::write_config(&json)?;
     runner::check_geo_files(rules, bypass_cn)?;
@@ -82,7 +114,7 @@ fn prepare_config(
 
 /// Run in strategy mode: all nodes as outbounds wrapped in a strategy.
 /// Retries indefinitely since all nodes are in the config.
-pub fn run_strategy(s: &store::Store, strat: &str, bypass_cn: bool, is_daemon: bool) {
+pub fn run_strategy(s: &store::Store, strat: &str, bypass_cn: bool, is_daemon: bool, share: bool) {
     let mut names: Vec<String> = Vec::new();
     let mut nodes_parsed: Vec<uri::ProxyNode> = Vec::new();
     for node in &s.nodes {
@@ -120,7 +152,7 @@ pub fn run_strategy(s: &store::Store, strat: &str, bypass_cn: bool, is_daemon: b
         eprint!("  \x1b[2mstatus\x1b[0m   \x1b[33mconnecting...\x1b[0m");
     }
 
-    let config_path = match prepare_config(&node_refs, &s.rules, bypass_cn, Some(strat)) {
+    let config_path = match prepare_config(&node_refs, &s.rules, bypass_cn, Some(strat), share) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("\r\x1b[K  \x1b[31merror:\x1b[0m {e}");
@@ -141,6 +173,9 @@ pub fn run_strategy(s: &store::Store, strat: &str, bypass_cn: bool, is_daemon: b
     let _keepalive = runner::start_keepalive(thread_stop.clone());
     if !is_daemon {
         status::start_live_monitor(thread_stop.clone());
+    }
+    if share && !is_daemon {
+        print_share_info();
     }
 
     // All nodes are in config — sing-box handles internal failover.
@@ -168,7 +203,7 @@ pub fn run_strategy(s: &store::Store, strat: &str, bypass_cn: bool, is_daemon: b
 }
 
 /// Run in single-node mode with failover to next node on MaxRetries.
-pub fn run_single(s: &store::Store, bypass_cn: bool, is_daemon: bool) {
+pub fn run_single(s: &store::Store, bypass_cn: bool, is_daemon: bool, share: bool) {
     let node = match s.active_node() {
         Some(n) => n.clone(),
         None => {
@@ -215,7 +250,7 @@ pub fn run_single(s: &store::Store, bypass_cn: bool, is_daemon: bool) {
             }
         }
 
-        let config_path = match prepare_config(&[("proxy", &parsed)], &s.rules, bypass_cn, None) {
+        let config_path = match prepare_config(&[("proxy", &parsed)], &s.rules, bypass_cn, None, share) {
             Ok(p) => p,
             Err(e) => {
                 runner::mole_log(
@@ -247,6 +282,9 @@ pub fn run_single(s: &store::Store, bypass_cn: bool, is_daemon: bool) {
         let _keepalive = runner::start_keepalive(thread_stop.clone());
         if !is_daemon {
             status::start_live_monitor(thread_stop.clone());
+        }
+        if share && !is_daemon && tried_nodes.is_empty() {
+            print_share_info();
         }
 
         match runner::run_singbox(&config_path) {
