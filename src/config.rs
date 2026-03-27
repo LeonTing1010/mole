@@ -40,13 +40,20 @@ pub fn generate(
         dns_rules.push(json!({ "rule_set": "geosite-cn", "server": "local" }));
     }
 
+    // Smart routing: resolve ALL domains via local DNS (fast, ~20ms).
+    // Chinese domains get Chinese IPs → geoip-cn matches → direct.
+    // Foreign domains get some IP → no geoip match → proxy.
+    // Proxy outbound re-resolves using sniffed domain, so local DNS
+    // result doesn't affect proxy connection quality.
+    let dns_final = if bypass_cn { "local" } else { "remote" };
+
     let dns = json!({
         "servers": [
             { "tag": "remote", "type": "tls", "server": "8.8.8.8", "detour": "proxy" },
             { "tag": "local", "type": "udp", "server": "223.5.5.5" }
         ],
         "rules": dns_rules,
-        "final": "remote",
+        "final": dns_final,
         "strategy": "prefer_ipv4"
     });
 
