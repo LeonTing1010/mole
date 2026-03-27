@@ -144,6 +144,11 @@ pub fn generate(
             "rule_set": ["geoip-cn", "geosite-cn"],
             "outbound": "direct"
         }));
+        // Force all IPv6 through proxy to prevent IPv6 leak
+        route_rules.push(json!({
+            "ip_cidr": ["::/0"],
+            "outbound": "proxy"
+        }));
     }
 
     let mut route = json!({
