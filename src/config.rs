@@ -22,7 +22,20 @@ pub fn generate(
     let mole_dir = dirs::home_dir().expect("home dir").join(".mole");
 
     // --- DNS ---
+    // Domains routed to "direct" must also resolve via local DNS (223.5.5.5),
+    // otherwise DNS goes through remote/proxy causing 5-10s delays.
     let mut dns_rules = vec![json!({ "clash_mode": "Direct", "server": "local" })];
+    for rule in custom_rules {
+        if rule.outbound == "direct" {
+            let dns_rule = match rule.match_type.as_str() {
+                "domain" => json!({ "domain": [&rule.pattern], "server": "local" }),
+                "domain_suffix" => json!({ "domain_suffix": [&rule.pattern], "server": "local" }),
+                "domain_keyword" => json!({ "domain_keyword": [&rule.pattern], "server": "local" }),
+                _ => continue,
+            };
+            dns_rules.push(dns_rule);
+        }
+    }
     if bypass_cn {
         dns_rules.push(json!({ "rule_set": "geosite-cn", "server": "local" }));
     }
