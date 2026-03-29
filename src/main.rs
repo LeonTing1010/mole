@@ -22,11 +22,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Add a node (hysteria2://, vmess://, vless://, trojan://, ss://)
+    /// Add a node (hysteria2://, hysteria://, vmess://, vless://, trojan://, ss://, tuic://, wg://)
     Add {
         uri: String,
         #[arg(short, long)]
         name: Option<String>,
+        /// Test connectivity before adding
+        #[arg(short, long)]
+        test: bool,
     },
     /// Connect to the active node
     Up {
@@ -50,8 +53,18 @@ enum Commands {
     /// Remove a saved node
     #[command(name = "rm")]
     Remove { name: String },
+    /// Test node connectivity (no sudo required)
+    Test {
+        /// Test all nodes instead of just the active one
+        #[arg(long)]
+        all: bool,
+    },
     /// Benchmark all nodes and activate the fastest
-    Bench,
+    Bench {
+        /// Remove failed nodes after benchmark
+        #[arg(long)]
+        clean: bool,
+    },
     /// Show connection status, IP, and latency
     Status,
     /// Download the sing-box binary
@@ -132,7 +145,7 @@ fn main() {
             }
         }
 
-        Commands::Add { uri: raw, name } => {
+        Commands::Add { uri: raw, name, test } => {
             let node = match uri::ProxyNode::parse(&raw) {
                 Ok(n) => n,
                 Err(e) => {
@@ -143,6 +156,22 @@ fn main() {
             let node_name = name
                 .or_else(|| node.name().map(|s| s.to_string()))
                 .unwrap_or_else(|| node.server_addr());
+
+            if test {
+                if !runner::singbox_installed() {
+                    eprintln!("sing-box not found, run `mole install` first.");
+                    std::process::exit(1);
+                }
+                runner::stop_singbox().ok();
+                eprint!("  testing {node_name}... ");
+                let r = bench::test_node(&node, &Store::load().rules);
+                if !r.ok {
+                    eprintln!("\x1b[31mfailed\x1b[0m");
+                    std::process::exit(1);
+                }
+                println!("\x1b[32mok\x1b[0m ({}ms, {})", r.latency_ms, r.ip);
+            }
+
             let mut s = Store::load();
             s.add(node_name.clone(), raw);
             if let Err(e) = s.save() {
@@ -202,22 +231,88 @@ fn main() {
             println!("{}", config::to_json_pretty(&cfg));
         }
 
-        Commands::Bench => bench::run_bench(),
+        Commands::Test { all } => {
+            let s = Store::load();
+            if s.nodes.is_empty() {
+                eprintln!("no nodes. use `mole add <uri>` or `mole sub add <url>` first.");
+                std::process::exit(1);
+            }
+            if !runner::singbox_installed() {
+                eprintln!("sing-box not found, run `mole install` first.");
+                std::process::exit(1);
+            }
+
+            if all {
+                let total = s.nodes.len();
+                println!();
+                println!("  \x1b[1mtest\x1b[0m  testing {} nodes (no sudo)...", total);
+                println!("  \x1b[2m─────────────────────────────────────────────────\x1b[0m");
+
+                let mut ok_count = 0;
+                for (i, node) in s.nodes.iter().enumerate() {
+                    let parsed = match uri::ProxyNode::parse(&node.uri) {
+                        Ok(n) => n,
+                        Err(e) => {
+                            println!("  \x1b[31m✗\x1b[0m [{}/{}] {} — parse error: {e}", i + 1, total, node.name);
+                            continue;
+                        }
+                    };
+                    eprint!("  \x1b[33m…\x1b[0m [{}/{}] {} ", i + 1, total, node.name);
+                    let r = bench::test_node_nosudo(&parsed);
+                    eprint!("\r\x1b[K");
+                    if r.ok {
+                        ok_count += 1;
+                        println!("  \x1b[32m✓\x1b[0m [{}/{}] {:<20} {:>5}ms  {}", i + 1, total, node.name, r.latency_ms, r.ip);
+                    } else {
+                        println!("  \x1b[31m✗\x1b[0m [{}/{}] {} — failed", i + 1, total, node.name);
+                    }
+                }
+
+                println!("  \x1b[2m─────────────────────────────────────────────────\x1b[0m");
+                println!("\n  {ok_count}/{total} nodes passed\n");
+            } else {
+                let node = match s.active_node() {
+                    Some(n) => n,
+                    None => { eprintln!("no active node. use `mole use <name>`."); std::process::exit(1); }
+                };
+                let parsed = match uri::ProxyNode::parse(&node.uri) {
+                    Ok(n) => n,
+                    Err(e) => { eprintln!("parse error: {e}"); std::process::exit(1); }
+                };
+                eprint!("  testing {}... ", node.name);
+                let r = bench::test_node_nosudo(&parsed);
+                if r.ok {
+                    println!("\x1b[32mok\x1b[0m ({}ms, {})", r.latency_ms, r.ip);
+                } else {
+                    eprintln!("\x1b[31mfailed\x1b[0m");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::Bench { clean } => bench::run_bench(clean),
         Commands::Status => status::print_status(),
 
         Commands::Down => {
-            let mut was_daemon = false;
-            let pid_file = runner::pid_path();
-            if pid_file.exists() {
-                if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-                    std::process::Command::new("kill").arg(pid_str.trim()).output().ok();
-                    was_daemon = true;
+            // Kill orphaned mole processes (daemon, stuck bench, etc.)
+            let my_pid = std::process::id().to_string();
+            let mut killed_mole = false;
+            if let Ok(output) = std::process::Command::new("pgrep").args(["-f", "mole (up|bench)"]).output() {
+                if output.status.success() {
+                    let pids = String::from_utf8_lossy(&output.stdout);
+                    for pid in pids.lines() {
+                        let pid = pid.trim();
+                        if pid != my_pid {
+                            std::process::Command::new("kill").arg(pid).output().ok();
+                            killed_mole = true;
+                        }
+                    }
                 }
-                std::fs::remove_file(&pid_file).ok();
             }
+            std::fs::remove_file(runner::pid_path()).ok();
             match runner::stop_singbox() {
                 Ok(true) => println!("disconnected"),
-                Ok(false) if was_daemon => println!("disconnected"),
+                Ok(false) if killed_mole => println!("disconnected"),
                 Ok(false) => println!("not running"),
                 Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
             }
