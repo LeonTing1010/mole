@@ -104,7 +104,7 @@ pub fn print_status() {
     }
 }
 
-/// Wait for sing-box to report "started" in its log file.
+/// Wait for sing-box to be ready by probing the clash API and checking logs for fatal errors.
 fn wait_for_singbox_ready(stop: &AtomicBool) -> bool {
     let log_path = crate::runner::log_path();
     for _ in 0..30 {
@@ -114,10 +114,8 @@ fn wait_for_singbox_ready(stop: &AtomicBool) -> bool {
         {
             return false;
         }
+        // Check for fatal errors in log
         if let Ok(log) = std::fs::read_to_string(&log_path) {
-            if log.contains("sing-box started") {
-                return true;
-            }
             if log.contains("FATAL") {
                 for line in log.lines() {
                     if line.contains("FATAL") {
@@ -129,6 +127,15 @@ fn wait_for_singbox_ready(stop: &AtomicBool) -> bool {
                 }
                 return false;
             }
+        }
+        // Clash API responding means sing-box is up
+        if std::net::TcpStream::connect_timeout(
+            &"127.0.0.1:19090".parse().unwrap(),
+            std::time::Duration::from_millis(200),
+        )
+        .is_ok()
+        {
+            return true;
         }
     }
     false

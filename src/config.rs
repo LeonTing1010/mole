@@ -54,7 +54,8 @@ pub fn generate(
         ],
         "rules": dns_rules,
         "final": dns_final,
-        "strategy": "prefer_ipv4"
+        "strategy": "ipv4_only",
+        "independent_cache": true
     });
 
     // --- Inbounds ---
@@ -75,8 +76,10 @@ pub fn generate(
 
     let inbounds = serde_json::Value::Array(inbound_list);
 
-    // --- Outbounds ---
+    // --- Outbounds & Endpoints ---
+    // sing-box 1.13+: WireGuard uses top-level "endpoints", not "outbounds"
     let mut outbounds = Vec::new();
+    let mut endpoints = Vec::new();
     let needs_block = custom_rules.iter().any(|r| r.outbound == "block");
 
     match strategy {
@@ -98,13 +101,22 @@ pub fn generate(
             for (tag, node) in nodes {
                 let mut ob = node.to_outbound();
                 ob["tag"] = json!(tag);
-                outbounds.push(ob);
+                if node.is_endpoint() {
+                    endpoints.push(ob);
+                } else {
+                    outbounds.push(ob);
+                }
             }
         }
         _ => {
             // Single node mode
             if let Some((_, node)) = nodes.first() {
-                outbounds.push(node.to_outbound());
+                let ob = node.to_outbound();
+                if node.is_endpoint() {
+                    endpoints.push(ob);
+                } else {
+                    outbounds.push(ob);
+                }
             }
         }
     }
@@ -190,8 +202,8 @@ pub fn generate(
         route["rule_set"] = json!(rule_sets);
     }
 
-    json!({
-        "log": { "level": "info" },
+    let mut cfg = json!({
+        "log": { "level": "warn" },
         "dns": dns,
         "inbounds": inbounds,
         "outbounds": outbounds,
@@ -199,7 +211,56 @@ pub fn generate(
         "experimental": {
             "clash_api": { "external_controller": "127.0.0.1:19090" }
         }
-    })
+    });
+    if !endpoints.is_empty() {
+        cfg["endpoints"] = json!(endpoints);
+    }
+    cfg
+}
+
+/// Port for no-sudo test mode (mixed HTTP/SOCKS5 inbound on localhost).
+pub const TEST_PORT: u16 = 18190;
+
+/// Generate a minimal sing-box config for connectivity testing (no TUN, no sudo).
+/// Uses a mixed HTTP/SOCKS5 inbound on 127.0.0.1:TEST_PORT instead of TUN.
+pub fn generate_test(node: &ProxyNode) -> Value {
+    let mut outbounds = Vec::new();
+    let mut endpoints = Vec::new();
+
+    let ob = node.to_outbound();
+    if node.is_endpoint() {
+        endpoints.push(ob);
+    } else {
+        outbounds.push(ob);
+    }
+    outbounds.push(json!({ "type": "direct", "tag": "direct" }));
+
+    let mut cfg = json!({
+        "log": { "level": "warn" },
+        "dns": {
+            "servers": [
+                { "tag": "remote", "type": "udp", "server": "8.8.8.8" }
+            ],
+            "strategy": "prefer_ipv4"
+        },
+        "inbounds": [
+            {
+                "type": "mixed",
+                "tag": "mixed-in",
+                "listen": "127.0.0.1",
+                "listen_port": TEST_PORT
+            }
+        ],
+        "outbounds": outbounds,
+        "route": {
+            "auto_detect_interface": true,
+            "final": "proxy"
+        }
+    });
+    if !endpoints.is_empty() {
+        cfg["endpoints"] = json!(endpoints);
+    }
+    cfg
 }
 
 pub fn to_json_pretty(config: &Value) -> String {

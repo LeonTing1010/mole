@@ -11,6 +11,21 @@ pub enum ProxyNode {
         sni: Option<String>,
         insecure: bool,
         hop_ports: Option<String>,
+        obfs: Option<String>,           // salamander
+        obfs_password: Option<String>,
+        up_mbps: Option<u32>,
+        down_mbps: Option<u32>,
+    },
+    Hysteria {
+        name: Option<String>,
+        host: String,
+        port: u16,
+        auth: Option<String>,
+        sni: Option<String>,
+        insecure: bool,
+        up_mbps: u32,
+        down_mbps: u32,
+        obfs: Option<String>,
     },
     Vmess {
         name: Option<String>,
@@ -24,6 +39,7 @@ pub enum ProxyNode {
         ws_path: Option<String>,
         tls: bool,
         sni: Option<String>,
+        fingerprint: Option<String>,
     },
     Vless {
         name: Option<String>,
@@ -50,6 +66,9 @@ pub enum ProxyNode {
         password: String,
         sni: Option<String>,
         fingerprint: Option<String>,
+        security: String,           // tls, reality
+        pbk: Option<String>,
+        sid: Option<String>,
         transport: String,
         ws_path: Option<String>,
         ws_host: Option<String>,
@@ -60,6 +79,31 @@ pub enum ProxyNode {
         port: u16,
         method: String,
         password: String,
+        plugin: Option<String>,
+        plugin_opts: Option<String>,
+    },
+    Tuic {
+        name: Option<String>,
+        host: String,
+        port: u16,
+        uuid: String,
+        password: String,
+        sni: Option<String>,
+        insecure: bool,
+        congestion_control: String,
+        udp_relay_mode: Option<String>,
+        alpn: Option<Vec<String>>,
+    },
+    WireGuard {
+        name: Option<String>,
+        host: String,
+        port: u16,
+        private_key: String,
+        peer_public_key: Option<String>,
+        pre_shared_key: Option<String>,
+        local_address: Vec<String>,
+        reserved: Option<Vec<u8>>,
+        mtu: u16,
     },
 }
 
@@ -67,6 +111,8 @@ impl ProxyNode {
     pub fn parse(input: &str) -> Result<Self, String> {
         if input.starts_with("hysteria2://") || input.starts_with("hy2://") {
             parse_hy2(input)
+        } else if input.starts_with("hysteria://") {
+            parse_hysteria(input)
         } else if input.starts_with("vmess://") {
             parse_vmess(input)
         } else if input.starts_with("vless://") {
@@ -75,6 +121,10 @@ impl ProxyNode {
             parse_trojan(input)
         } else if input.starts_with("ss://") {
             parse_ss(input)
+        } else if input.starts_with("tuic://") {
+            parse_tuic(input)
+        } else if input.starts_with("wg://") || input.starts_with("wireguard://") {
+            parse_wireguard(input)
         } else {
             Err(format!("unsupported protocol: {}", input.split("://").next().unwrap_or("?")))
         }
@@ -83,20 +133,26 @@ impl ProxyNode {
     pub fn name(&self) -> Option<&str> {
         match self {
             ProxyNode::Hysteria2 { name, .. }
+            | ProxyNode::Hysteria { name, .. }
             | ProxyNode::Vmess { name, .. }
             | ProxyNode::Vless { name, .. }
             | ProxyNode::Trojan { name, .. }
-            | ProxyNode::Shadowsocks { name, .. } => name.as_deref(),
+            | ProxyNode::Shadowsocks { name, .. }
+            | ProxyNode::Tuic { name, .. }
+            | ProxyNode::WireGuard { name, .. } => name.as_deref(),
         }
     }
 
     pub fn protocol(&self) -> &str {
         match self {
             ProxyNode::Hysteria2 { .. } => "hysteria2",
+            ProxyNode::Hysteria { .. } => "hysteria",
             ProxyNode::Vmess { .. } => "vmess",
             ProxyNode::Vless { .. } => "vless",
             ProxyNode::Trojan { .. } => "trojan",
             ProxyNode::Shadowsocks { .. } => "ss",
+            ProxyNode::Tuic { .. } => "tuic",
+            ProxyNode::WireGuard { .. } => "wireguard",
         }
     }
 
@@ -110,17 +166,26 @@ impl ProxyNode {
                 }
             }
             ProxyNode::Vmess { host, port, .. }
+            | ProxyNode::Hysteria { host, port, .. }
             | ProxyNode::Vless { host, port, .. }
             | ProxyNode::Trojan { host, port, .. }
-            | ProxyNode::Shadowsocks { host, port, .. } => format!("{host}:{port}"),
+            | ProxyNode::Shadowsocks { host, port, .. }
+            | ProxyNode::Tuic { host, port, .. }
+            | ProxyNode::WireGuard { host, port, .. } => format!("{host}:{port}"),
         }
     }
 
-    /// Generate sing-box outbound JSON
+    /// Whether this node uses sing-box endpoint (not outbound).
+    pub fn is_endpoint(&self) -> bool {
+        matches!(self, ProxyNode::WireGuard { .. })
+    }
+
+    /// Generate sing-box outbound/endpoint JSON
     pub fn to_outbound(&self) -> Value {
         match self {
             ProxyNode::Hysteria2 {
-                host, port, password, sni, insecure, hop_ports, ..
+                host, port, password, sni, insecure, hop_ports,
+                obfs, obfs_password, up_mbps, down_mbps, ..
             } => {
                 let mut tls = serde_json::json!({ "enabled": true });
                 if let Some(ref s) = sni {
@@ -145,15 +210,59 @@ impl ProxyNode {
                     out["hop_interval"] = serde_json::json!("30s");
                 }
 
-                out["up_mbps"] = serde_json::json!(100);
-                out["down_mbps"] = serde_json::json!(200);
+                if let Some(ref obfs_type) = obfs {
+                    let mut obfs_obj = serde_json::json!({ "type": obfs_type });
+                    if let Some(ref pwd) = obfs_password {
+                        obfs_obj["password"] = serde_json::json!(pwd);
+                    }
+                    out["obfs"] = obfs_obj;
+                }
+
+                if let Some(up) = up_mbps {
+                    out["up_mbps"] = serde_json::json!(up);
+                }
+                if let Some(down) = down_mbps {
+                    out["down_mbps"] = serde_json::json!(down);
+                }
+
+                out
+            }
+
+            ProxyNode::Hysteria {
+                host, port, auth, sni, insecure,
+                up_mbps, down_mbps, obfs, ..
+            } => {
+                let mut tls = serde_json::json!({ "enabled": true });
+                if let Some(ref s) = sni {
+                    tls["server_name"] = serde_json::json!(s);
+                }
+                if *insecure {
+                    tls["insecure"] = serde_json::json!(true);
+                }
+
+                let mut out = serde_json::json!({
+                    "type": "hysteria",
+                    "tag": "proxy",
+                    "server": host,
+                    "server_port": port,
+                    "up_mbps": up_mbps,
+                    "down_mbps": down_mbps,
+                    "tls": tls
+                });
+
+                if let Some(ref a) = auth {
+                    out["auth_str"] = serde_json::json!(a);
+                }
+                if let Some(ref o) = obfs {
+                    out["obfs"] = serde_json::json!(o);
+                }
 
                 out
             }
 
             ProxyNode::Vmess {
                 host, port, uuid, alter_id, security,
-                transport, ws_host, ws_path, tls, sni, ..
+                transport, ws_host, ws_path, tls, sni, fingerprint, ..
             } => {
                 let mut out = serde_json::json!({
                     "type": "vmess",
@@ -171,6 +280,9 @@ impl ProxyNode {
                     let mut tls_obj = serde_json::json!({ "enabled": true });
                     if let Some(ref s) = sni {
                         tls_obj["server_name"] = serde_json::json!(s);
+                    }
+                    if let Some(ref fp) = fingerprint {
+                        tls_obj["utls"] = serde_json::json!({ "enabled": true, "fingerprint": fp });
                     }
                     out["tls"] = tls_obj;
                 }
@@ -232,25 +344,45 @@ impl ProxyNode {
             }
 
             ProxyNode::Trojan {
-                host, port, password, sni, fingerprint,
-                transport, ws_path, ws_host, ..
+                host, port, password, sni, fingerprint, security,
+                pbk, sid, transport, ws_path, ws_host, ..
             } => {
-                let mut tls = serde_json::json!({ "enabled": true });
-                if let Some(ref s) = sni {
-                    tls["server_name"] = serde_json::json!(s);
-                }
-                if let Some(ref fp) = fingerprint {
-                    tls["utls"] = serde_json::json!({ "enabled": true, "fingerprint": fp });
-                }
-
                 let mut out = serde_json::json!({
                     "type": "trojan",
                     "tag": "proxy",
                     "server": host,
                     "server_port": port,
-                    "password": password,
-                    "tls": tls
+                    "password": password
                 });
+
+                if security == "reality" {
+                    let mut tls = serde_json::json!({
+                        "enabled": true,
+                        "reality": { "enabled": true }
+                    });
+                    if let Some(ref s) = sni {
+                        tls["server_name"] = serde_json::json!(s);
+                    }
+                    if let Some(ref fp) = fingerprint {
+                        tls["utls"] = serde_json::json!({ "enabled": true, "fingerprint": fp });
+                    }
+                    if let Some(ref k) = pbk {
+                        tls["reality"]["public_key"] = serde_json::json!(k);
+                    }
+                    if let Some(ref s) = sid {
+                        tls["reality"]["short_id"] = serde_json::json!(s);
+                    }
+                    out["tls"] = tls;
+                } else {
+                    let mut tls = serde_json::json!({ "enabled": true });
+                    if let Some(ref s) = sni {
+                        tls["server_name"] = serde_json::json!(s);
+                    }
+                    if let Some(ref fp) = fingerprint {
+                        tls["utls"] = serde_json::json!({ "enabled": true, "fingerprint": fp });
+                    }
+                    out["tls"] = tls;
+                }
 
                 build_transport(&mut out, transport, ws_path, ws_host, &None);
 
@@ -258,15 +390,88 @@ impl ProxyNode {
             }
 
             ProxyNode::Shadowsocks {
-                host, port, method, password, ..
+                host, port, method, password, plugin, plugin_opts, ..
             } => {
-                serde_json::json!({
+                let mut out = serde_json::json!({
                     "type": "shadowsocks",
                     "tag": "proxy",
                     "server": host,
                     "server_port": port,
                     "method": method,
                     "password": password
+                });
+                if let Some(ref p) = plugin {
+                    out["plugin"] = serde_json::json!(p);
+                    if let Some(ref opts) = plugin_opts {
+                        out["plugin_opts"] = serde_json::json!(opts);
+                    }
+                }
+                out
+            }
+
+            ProxyNode::Tuic {
+                host, port, uuid, password, sni, insecure,
+                congestion_control, udp_relay_mode, alpn, ..
+            } => {
+                let mut tls = serde_json::json!({ "enabled": true });
+                if let Some(ref s) = sni {
+                    tls["server_name"] = serde_json::json!(s);
+                }
+                if *insecure {
+                    tls["insecure"] = serde_json::json!(true);
+                }
+                if let Some(ref a) = alpn {
+                    tls["alpn"] = serde_json::json!(a);
+                } else {
+                    tls["alpn"] = serde_json::json!(["h3"]);
+                }
+
+                let mut out = serde_json::json!({
+                    "type": "tuic",
+                    "tag": "proxy",
+                    "server": host,
+                    "server_port": port,
+                    "uuid": uuid,
+                    "password": password,
+                    "congestion_control": congestion_control,
+                    "tls": tls
+                });
+
+                if let Some(ref mode) = udp_relay_mode {
+                    out["udp_relay_mode"] = serde_json::json!(mode);
+                }
+
+                out
+            }
+
+            ProxyNode::WireGuard {
+                host, port, private_key, peer_public_key,
+                pre_shared_key, local_address, reserved, mtu, ..
+            } => {
+                // sing-box 1.13+: WireGuard is an endpoint, not an outbound.
+                // The tag is still used as outbound target in route rules.
+                let mut peer = serde_json::json!({
+                    "address": host,
+                    "port": port,
+                    "allowed_ips": ["0.0.0.0/0", "::/0"]
+                });
+                if let Some(ref pk) = peer_public_key {
+                    peer["public_key"] = serde_json::json!(pk);
+                }
+                if let Some(ref psk) = pre_shared_key {
+                    peer["pre_shared_key"] = serde_json::json!(psk);
+                }
+                if let Some(ref r) = reserved {
+                    peer["reserved"] = serde_json::json!(r);
+                }
+
+                serde_json::json!({
+                    "type": "wireguard",
+                    "tag": "proxy",
+                    "private_key": private_key,
+                    "address": local_address,
+                    "peers": [peer],
+                    "mtu": mtu
                 })
             }
         }
@@ -335,12 +540,20 @@ fn parse_hy2(input: &str) -> Result<ProxyNode, String> {
     let mut sni = None;
     let mut insecure = false;
     let mut hop_ports = None;
+    let mut obfs = None;
+    let mut obfs_password = None;
+    let mut up_mbps = None;
+    let mut down_mbps = None;
 
     for (k, v) in parsed.query_pairs() {
         match k.as_ref() {
             "sni" => sni = Some(v.to_string()),
             "insecure" => insecure = v == "1" || v == "true",
             "mport" => hop_ports = Some(v.to_string()),
+            "obfs" => obfs = Some(v.to_string()),
+            "obfs-password" => obfs_password = Some(v.to_string()),
+            "up" | "upmbps" => up_mbps = v.parse().ok(),
+            "down" | "downmbps" => down_mbps = v.parse().ok(),
             _ => {}
         }
     }
@@ -349,7 +562,7 @@ fn parse_hy2(input: &str) -> Result<ProxyNode, String> {
         urlencoding::decode(f).unwrap_or_else(|_| f.into()).to_string()
     });
 
-    Ok(ProxyNode::Hysteria2 { name, host, port, password: auth, sni, insecure, hop_ports })
+    Ok(ProxyNode::Hysteria2 { name, host, port, password: auth, sni, insecure, hop_ports, obfs, obfs_password, up_mbps, down_mbps })
 }
 
 fn parse_vmess(input: &str) -> Result<ProxyNode, String> {
@@ -379,8 +592,9 @@ fn parse_vmess(input: &str) -> Result<ProxyNode, String> {
     let ws_path = json["path"].as_str().filter(|s| !s.is_empty()).map(|s| s.to_string());
     let tls = json["tls"].as_str().unwrap_or("") == "tls";
     let sni = json["sni"].as_str().filter(|s| !s.is_empty()).map(|s| s.to_string());
+    let fingerprint = json["fp"].as_str().filter(|s| !s.is_empty()).map(|s| s.to_string());
 
-    Ok(ProxyNode::Vmess { name, host, port, uuid, alter_id, security, transport, ws_host, ws_path, tls, sni })
+    Ok(ProxyNode::Vmess { name, host, port, uuid, alter_id, security, transport, ws_host, ws_path, tls, sni, fingerprint })
 }
 
 fn parse_url_based(input: &str, scheme: &str) -> Result<Url, String> {
@@ -440,6 +654,9 @@ fn parse_trojan(input: &str) -> Result<ProxyNode, String> {
 
     let sni = get_query(&parsed, "sni");
     let fingerprint = get_query(&parsed, "fp");
+    let security = get_query(&parsed, "security").unwrap_or_else(|| "tls".into());
+    let pbk = get_query(&parsed, "pbk");
+    let sid = get_query(&parsed, "sid");
     let transport = get_query(&parsed, "type").unwrap_or_else(|| "tcp".into());
     let ws_path = get_query(&parsed, "path");
     let ws_host = get_query(&parsed, "host");
@@ -448,7 +665,7 @@ fn parse_trojan(input: &str) -> Result<ProxyNode, String> {
         urlencoding::decode(f).unwrap_or_else(|_| f.into()).to_string()
     });
 
-    Ok(ProxyNode::Trojan { name, host, port, password, sni, fingerprint, transport, ws_path, ws_host })
+    Ok(ProxyNode::Trojan { name, host, port, password, sni, fingerprint, security, pbk, sid, transport, ws_path, ws_host })
 }
 
 fn parse_ss(input: &str) -> Result<ProxyNode, String> {
@@ -456,15 +673,15 @@ fn parse_ss(input: &str) -> Result<ProxyNode, String> {
 
     let rest = input.strip_prefix("ss://").ok_or("missing ss:// prefix")?;
 
-    // Format: ss://base64(method:password)@host:port#name
+    // Format: ss://base64(method:password)@host:port?plugin=...&plugin-opts=...#name
     // Or:     ss://base64(method:password@host:port)#name
     let (encoded, fragment) = match rest.split_once('#') {
         Some((e, f)) => (e, Some(urlencoding::decode(f).unwrap_or_else(|_| f.into()).to_string())),
         None => (rest, None),
     };
 
-    // Try format: base64@host:port
-    if let Some((b64, server)) = encoded.split_once('@') {
+    // Try format: base64@host:port?query
+    if let Some((b64, server_and_query)) = encoded.split_once('@') {
         let decoded = base64::engine::general_purpose::STANDARD.decode(b64)
             .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(b64))
             .map_err(|e| format!("base64 decode: {e}"))?;
@@ -472,11 +689,19 @@ fn parse_ss(input: &str) -> Result<ProxyNode, String> {
 
         let (method, password) = cred.split_once(':').ok_or("invalid method:password")?;
 
-        // Parse host:port - handle IPv6 [addr]:port
+        // Split server from query params
+        let (server, query) = match server_and_query.split_once('?') {
+            Some((s, q)) => (s, Some(q)),
+            None => (server_and_query, None),
+        };
+
         let (host, port) = parse_host_port(server)?;
+
+        let (plugin, plugin_opts) = parse_ss_plugin(query);
 
         return Ok(ProxyNode::Shadowsocks {
             name: fragment, host, port, method: method.to_string(), password: password.to_string(),
+            plugin, plugin_opts,
         });
     }
 
@@ -492,6 +717,129 @@ fn parse_ss(input: &str) -> Result<ProxyNode, String> {
 
     Ok(ProxyNode::Shadowsocks {
         name: fragment, host, port, method: method.to_string(), password: password.to_string(),
+        plugin: None, plugin_opts: None,
+    })
+}
+
+fn parse_ss_plugin(query: Option<&str>) -> (Option<String>, Option<String>) {
+    let q = match query {
+        Some(q) => q,
+        None => return (None, None),
+    };
+    let mut plugin = None;
+    let mut plugin_opts = None;
+    for pair in q.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            let v = urlencoding::decode(v).unwrap_or_else(|_| v.into()).to_string();
+            match k {
+                "plugin" => plugin = Some(v),
+                "plugin-opts" | "plugin_opts" => plugin_opts = Some(v),
+                _ => {}
+            }
+        }
+    }
+    (plugin, plugin_opts)
+}
+
+fn parse_hysteria(input: &str) -> Result<ProxyNode, String> {
+    let parsed = parse_url_based(input, "hysteria")?;
+
+    let host = parsed.host_str().ok_or("missing host")?.to_string();
+    let port = parsed.port().unwrap_or(443);
+
+    let sni = get_query(&parsed, "peer")
+        .or_else(|| get_query(&parsed, "sni"));
+    let auth = get_query(&parsed, "auth");
+    let insecure = get_query(&parsed, "insecure").map_or(false, |v| v == "1" || v == "true");
+    let up_mbps = get_query(&parsed, "upmbps")
+        .and_then(|v| v.parse().ok()).unwrap_or(100);
+    let down_mbps = get_query(&parsed, "downmbps")
+        .and_then(|v| v.parse().ok()).unwrap_or(100);
+    let obfs = get_query(&parsed, "obfsParam")
+        .or_else(|| get_query(&parsed, "obfs"));
+
+    let name = parsed.fragment().map(|f| {
+        urlencoding::decode(f).unwrap_or_else(|_| f.into()).to_string()
+    });
+
+    Ok(ProxyNode::Hysteria {
+        name, host, port, auth, sni, insecure, up_mbps, down_mbps, obfs,
+    })
+}
+
+fn parse_tuic(input: &str) -> Result<ProxyNode, String> {
+    let parsed = parse_url_based(input, "tuic")?;
+
+    let uuid = parsed.username().to_string();
+    if uuid.is_empty() {
+        return Err("missing UUID in tuic URI".into());
+    }
+
+    let password = parsed.password().unwrap_or("").to_string();
+    let host = parsed.host_str().ok_or("missing host")?.to_string();
+    let port = parsed.port().unwrap_or(443);
+
+    let sni = get_query(&parsed, "sni");
+    let insecure = get_query(&parsed, "allowinsecure")
+        .or_else(|| get_query(&parsed, "insecure"))
+        .map_or(false, |v| v == "1" || v == "true");
+    let congestion_control = get_query(&parsed, "congestion_control")
+        .or_else(|| get_query(&parsed, "congestioncontrol"))
+        .unwrap_or_else(|| "bbr".into());
+    let udp_relay_mode = get_query(&parsed, "udp_relay_mode")
+        .or_else(|| get_query(&parsed, "udprelaymode"));
+    let alpn = get_query(&parsed, "alpn")
+        .map(|a| a.split(',').map(|s| s.trim().to_string()).collect());
+
+    let name = parsed.fragment().map(|f| {
+        urlencoding::decode(f).unwrap_or_else(|_| f.into()).to_string()
+    });
+
+    Ok(ProxyNode::Tuic {
+        name, host, port, uuid, password, sni, insecure,
+        congestion_control, udp_relay_mode, alpn,
+    })
+}
+
+fn parse_wireguard(input: &str) -> Result<ProxyNode, String> {
+    let scheme = if input.starts_with("wireguard://") { "wireguard" } else { "wg" };
+    let parsed = parse_url_based(input, scheme)?;
+
+    let private_key = urlencoding::decode(parsed.username())
+        .unwrap_or_else(|_| parsed.username().into()).to_string();
+    if private_key.is_empty() {
+        return Err("missing private key in wireguard URI".into());
+    }
+
+    let host = parsed.host_str().ok_or("missing host")?.to_string();
+    let port = parsed.port().unwrap_or(51820);
+
+    let peer_public_key = get_query(&parsed, "publickey")
+        .or_else(|| get_query(&parsed, "pub"))
+        .or_else(|| get_query(&parsed, "peerpublickey"));
+    let pre_shared_key = get_query(&parsed, "presharedkey")
+        .or_else(|| get_query(&parsed, "psk"));
+    let mtu = get_query(&parsed, "mtu")
+        .and_then(|v| v.parse().ok()).unwrap_or(1280);
+
+    let local_address = get_query(&parsed, "address")
+        .or_else(|| get_query(&parsed, "ip"))
+        .or_else(|| get_query(&parsed, "localaddress"))
+        .map(|a| a.split(',').map(|s| s.trim().to_string()).collect())
+        .unwrap_or_default();
+
+    let reserved = get_query(&parsed, "reserved").and_then(|v| {
+        let parts: Result<Vec<u8>, _> = v.split(',').map(|s| s.trim().parse()).collect();
+        parts.ok()
+    });
+
+    let name = parsed.fragment().map(|f| {
+        urlencoding::decode(f).unwrap_or_else(|_| f.into()).to_string()
+    });
+
+    Ok(ProxyNode::WireGuard {
+        name, host, port, private_key, peer_public_key, pre_shared_key,
+        local_address, reserved, mtu,
     })
 }
 
@@ -561,5 +909,126 @@ mod tests {
             assert_eq!(method, "aes-256-gcm");
             assert_eq!(password, "testpass");
         }
+    }
+
+    #[test]
+    fn parse_hy2_obfs() {
+        let uri = "hysteria2://pass@1.2.3.4:443?obfs=salamander&obfs-password=secret#ObfsNode";
+        let node = ProxyNode::parse(uri).unwrap();
+        if let ProxyNode::Hysteria2 { obfs, obfs_password, .. } = &node {
+            assert_eq!(obfs.as_deref(), Some("salamander"));
+            assert_eq!(obfs_password.as_deref(), Some("secret"));
+        } else {
+            panic!("expected Hysteria2");
+        }
+        let out = node.to_outbound();
+        assert_eq!(out["obfs"]["type"], "salamander");
+        assert_eq!(out["obfs"]["password"], "secret");
+    }
+
+    #[test]
+    fn parse_vmess_fingerprint() {
+        let uri = "vmess://ew0KICAidiI6ICIyIiwNCiAgInBzIjogImZwLW5vZGUiLA0KICAiYWRkIjogIjEuMi4zLjQiLA0KICAicG9ydCI6ICI0NDMiLA0KICAiaWQiOiAiYmQ0OGUwYWMtZTkwZS00NDUxLWE0ZjItYWJmMDYxY2ZiODkwIiwNCiAgImFpZCI6ICIwIiwNCiAgInNjeSI6ICJhdXRvIiwNCiAgIm5ldCI6ICJ3cyIsDQogICJ0eXBlIjogIm5vbmUiLA0KICAiaG9zdCI6ICIiLA0KICAicGF0aCI6ICIiLA0KICAidGxzIjogInRscyIsDQogICJzbmkiOiAiZXhhbXBsZS5jb20iLA0KICAiYWxwbiI6ICIiLA0KICAiZnAiOiAiY2hyb21lIg0KfQ==";
+        let node = ProxyNode::parse(uri).unwrap();
+        if let ProxyNode::Vmess { fingerprint, tls, .. } = &node {
+            assert!(tls);
+            assert_eq!(fingerprint.as_deref(), Some("chrome"));
+        } else {
+            panic!("expected Vmess");
+        }
+        let out = node.to_outbound();
+        assert_eq!(out["tls"]["utls"]["fingerprint"], "chrome");
+    }
+
+    #[test]
+    fn parse_trojan_reality() {
+        let uri = "trojan://pass@1.2.3.4:443?security=reality&sni=www.google.com&fp=chrome&pbk=testkey&sid=ab12#TrojanReality";
+        let node = ProxyNode::parse(uri).unwrap();
+        if let ProxyNode::Trojan { security, pbk, sid, .. } = &node {
+            assert_eq!(security, "reality");
+            assert_eq!(pbk.as_deref(), Some("testkey"));
+            assert_eq!(sid.as_deref(), Some("ab12"));
+        } else {
+            panic!("expected Trojan");
+        }
+        let out = node.to_outbound();
+        assert_eq!(out["tls"]["reality"]["enabled"], true);
+        assert_eq!(out["tls"]["reality"]["public_key"], "testkey");
+    }
+
+    #[test]
+    fn parse_ss_plugin() {
+        let uri = "ss://YWVzLTI1Ni1nY206dGVzdHBhc3M@1.2.3.4:8388?plugin=obfs-local&plugin-opts=obfs%3Dhttp%3Bobfs-host%3Dexample.com#SSPlugin";
+        let node = ProxyNode::parse(uri).unwrap();
+        if let ProxyNode::Shadowsocks { plugin, plugin_opts, .. } = &node {
+            assert_eq!(plugin.as_deref(), Some("obfs-local"));
+            assert!(plugin_opts.is_some());
+        } else {
+            panic!("expected Shadowsocks");
+        }
+        let out = node.to_outbound();
+        assert_eq!(out["plugin"], "obfs-local");
+    }
+
+    #[test]
+    fn parse_tuic_uri() {
+        let uri = "tuic://uuid-1234:mypassword@1.2.3.4:443?congestion_control=bbr&udp_relay_mode=native&sni=example.com#MyTUIC";
+        let node = ProxyNode::parse(uri).unwrap();
+        assert_eq!(node.name(), Some("MyTUIC"));
+        assert_eq!(node.protocol(), "tuic");
+        if let ProxyNode::Tuic { uuid, password, congestion_control, udp_relay_mode, sni, .. } = &node {
+            assert_eq!(uuid, "uuid-1234");
+            assert_eq!(password, "mypassword");
+            assert_eq!(congestion_control, "bbr");
+            assert_eq!(udp_relay_mode.as_deref(), Some("native"));
+            assert_eq!(sni.as_deref(), Some("example.com"));
+        } else {
+            panic!("expected Tuic");
+        }
+        let out = node.to_outbound();
+        assert_eq!(out["type"], "tuic");
+        assert_eq!(out["congestion_control"], "bbr");
+    }
+
+    #[test]
+    fn parse_hysteria_v1_uri() {
+        let uri = "hysteria://1.2.3.4:443?peer=example.com&auth=myauth&upmbps=50&downmbps=100&insecure=1&obfsParam=obfspass#HyV1";
+        let node = ProxyNode::parse(uri).unwrap();
+        assert_eq!(node.name(), Some("HyV1"));
+        assert_eq!(node.protocol(), "hysteria");
+        if let ProxyNode::Hysteria { auth, sni, up_mbps, down_mbps, obfs, insecure, .. } = &node {
+            assert_eq!(auth.as_deref(), Some("myauth"));
+            assert_eq!(sni.as_deref(), Some("example.com"));
+            assert_eq!(*up_mbps, 50);
+            assert_eq!(*down_mbps, 100);
+            assert!(insecure);
+            assert_eq!(obfs.as_deref(), Some("obfspass"));
+        } else {
+            panic!("expected Hysteria");
+        }
+        let out = node.to_outbound();
+        assert_eq!(out["type"], "hysteria");
+        assert_eq!(out["auth_str"], "myauth");
+        assert_eq!(out["obfs"], "obfspass");
+    }
+
+    #[test]
+    fn parse_wireguard_uri() {
+        let uri = "wg://cHJpdmF0ZWtleQ%3D%3D@1.2.3.4:51820?publickey=pubkey123&address=10.0.0.1/32&reserved=1,2,3&mtu=1400#MyWG";
+        let node = ProxyNode::parse(uri).unwrap();
+        assert_eq!(node.name(), Some("MyWG"));
+        assert_eq!(node.protocol(), "wireguard");
+        if let ProxyNode::WireGuard { private_key, peer_public_key, local_address, reserved, mtu, .. } = &node {
+            assert_eq!(private_key, "cHJpdmF0ZWtleQ==");
+            assert_eq!(peer_public_key.as_deref(), Some("pubkey123"));
+            assert_eq!(local_address, &vec!["10.0.0.1/32".to_string()]);
+            assert_eq!(reserved.as_ref().unwrap(), &vec![1u8, 2, 3]);
+            assert_eq!(*mtu, 1400);
+        } else {
+            panic!("expected WireGuard");
+        }
+        let out = node.to_outbound();
+        assert_eq!(out["type"], "wireguard");
+        assert_eq!(out["mtu"], 1400);
     }
 }
