@@ -60,12 +60,12 @@ pub fn local_ip() -> Option<String> {
 
 // ── Cross-platform network speed monitor ────────────────────────────
 
-#[cfg(target_os = "macos")]
-pub use self::macos_monitor::NetMonitor;
-#[cfg(target_os = "linux")]
-pub use self::linux_monitor::NetMonitor;
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub use self::fallback_monitor::NetMonitor;
+#[cfg(target_os = "linux")]
+pub use self::linux_monitor::NetMonitor;
+#[cfg(target_os = "macos")]
+pub use self::macos_monitor::NetMonitor;
 
 #[cfg(target_os = "macos")]
 mod macos_monitor {

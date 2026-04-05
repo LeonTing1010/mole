@@ -109,9 +109,7 @@ fn wait_for_singbox_ready(stop: &AtomicBool) -> bool {
     let log_path = crate::runner::log_path();
     for _ in 0..30 {
         std::thread::sleep(std::time::Duration::from_secs(1));
-        if stop.load(Ordering::Relaxed)
-            || crate::runner::SHUTTING_DOWN.load(Ordering::Relaxed)
-        {
+        if stop.load(Ordering::Relaxed) || crate::runner::SHUTTING_DOWN.load(Ordering::Relaxed) {
             return false;
         }
         // Check for fatal errors in log

@@ -23,13 +23,25 @@ pub fn test_node(node: &ProxyNode, rules: &[crate::store::Rule]) -> TestResult {
     let json = config::to_json_pretty(&cfg);
     let config_path = match runner::write_config(&json) {
         Ok(p) => p,
-        Err(_) => return TestResult { ip: String::new(), latency_ms: 9999, ok: false },
+        Err(_) => {
+            return TestResult {
+                ip: String::new(),
+                latency_ms: 9999,
+                ok: false,
+            }
+        }
     };
 
     let log_file = runner::log_path();
     let log = match std::fs::File::create(&log_file) {
         Ok(f) => f,
-        Err(_) => return TestResult { ip: String::new(), latency_ms: 9999, ok: false },
+        Err(_) => {
+            return TestResult {
+                ip: String::new(),
+                latency_ms: 9999,
+                ok: false,
+            }
+        }
     };
     let log_err = log.try_clone().unwrap();
 
@@ -43,7 +55,13 @@ pub fn test_node(node: &ProxyNode, rules: &[crate::store::Rule]) -> TestResult {
         .spawn()
     {
         Ok(c) => c,
-        Err(_) => return TestResult { ip: String::new(), latency_ms: 9999, ok: false },
+        Err(_) => {
+            return TestResult {
+                ip: String::new(),
+                latency_ms: 9999,
+                ok: false,
+            }
+        }
     };
 
     runner::SINGBOX_PID.store(child.id(), Ordering::Relaxed);
@@ -52,11 +70,15 @@ pub fn test_node(node: &ProxyNode, rules: &[crate::store::Rule]) -> TestResult {
     let mut started = false;
     for _ in 0..15 {
         std::thread::sleep(std::time::Duration::from_secs(1));
-        if let Ok(Some(_)) = child.try_wait() { break; }
+        if let Ok(Some(_)) = child.try_wait() {
+            break;
+        }
         if std::net::TcpStream::connect_timeout(
             &"127.0.0.1:19090".parse().unwrap(),
             std::time::Duration::from_millis(500),
-        ).is_ok() {
+        )
+        .is_ok()
+        {
             started = true;
             break;
         }
@@ -64,7 +86,11 @@ pub fn test_node(node: &ProxyNode, rules: &[crate::store::Rule]) -> TestResult {
 
     if !started {
         stop_child(&mut child);
-        return TestResult { ip: String::new(), latency_ms: 9999, ok: false };
+        return TestResult {
+            ip: String::new(),
+            latency_ms: 9999,
+            ok: false,
+        };
     }
 
     let start = Instant::now();
@@ -91,13 +117,25 @@ pub fn test_node_nosudo(node: &ProxyNode) -> TestResult {
     let json = config::to_json_pretty(&cfg);
     let config_path = match runner::write_config(&json) {
         Ok(p) => p,
-        Err(_) => return TestResult { ip: String::new(), latency_ms: 9999, ok: false },
+        Err(_) => {
+            return TestResult {
+                ip: String::new(),
+                latency_ms: 9999,
+                ok: false,
+            }
+        }
     };
 
     let log_file = runner::log_path();
     let log = match std::fs::File::create(&log_file) {
         Ok(f) => f,
-        Err(_) => return TestResult { ip: String::new(), latency_ms: 9999, ok: false },
+        Err(_) => {
+            return TestResult {
+                ip: String::new(),
+                latency_ms: 9999,
+                ok: false,
+            }
+        }
     };
     let log_err = log.try_clone().unwrap();
 
@@ -111,7 +149,13 @@ pub fn test_node_nosudo(node: &ProxyNode) -> TestResult {
         .spawn()
     {
         Ok(c) => c,
-        Err(_) => return TestResult { ip: String::new(), latency_ms: 9999, ok: false },
+        Err(_) => {
+            return TestResult {
+                ip: String::new(),
+                latency_ms: 9999,
+                ok: false,
+            }
+        }
     };
 
     // Wait for the mixed inbound to be ready
@@ -119,11 +163,15 @@ pub fn test_node_nosudo(node: &ProxyNode) -> TestResult {
     let mut started = false;
     for _ in 0..10 {
         std::thread::sleep(std::time::Duration::from_secs(1));
-        if let Ok(Some(_)) = child.try_wait() { break; }
+        if let Ok(Some(_)) = child.try_wait() {
+            break;
+        }
         if std::net::TcpStream::connect_timeout(
             &addr.parse().unwrap(),
             std::time::Duration::from_millis(500),
-        ).is_ok() {
+        )
+        .is_ok()
+        {
             started = true;
             break;
         }
@@ -132,7 +180,11 @@ pub fn test_node_nosudo(node: &ProxyNode) -> TestResult {
     if !started {
         child.kill().ok();
         child.wait().ok();
-        return TestResult { ip: String::new(), latency_ms: 9999, ok: false };
+        return TestResult {
+            ip: String::new(),
+            latency_ms: 9999,
+            ok: false,
+        };
     }
 
     // Test through SOCKS5 proxy
@@ -176,7 +228,8 @@ pub fn run_bench(clean: bool) {
         }
         runner::stop_singbox().ok();
         std::process::exit(130);
-    }).ok();
+    })
+    .ok();
 
     // Kill any running instance
     runner::stop_singbox().ok();
@@ -196,9 +249,18 @@ pub fn run_bench(clean: bool) {
             Err(e) => {
                 println!(
                     "  \x1b[31m✗\x1b[0m [{}/{}] {} — parse error: {e}",
-                    i + 1, total, node.name
+                    i + 1,
+                    total,
+                    node.name
                 );
-                results.push((node.name.clone(), TestResult { ip: String::new(), latency_ms: 9999, ok: false }));
+                results.push((
+                    node.name.clone(),
+                    TestResult {
+                        ip: String::new(),
+                        latency_ms: 9999,
+                        ok: false,
+                    },
+                ));
                 continue;
             }
         };
@@ -211,12 +273,18 @@ pub fn run_bench(clean: bool) {
         if r.ok {
             println!(
                 "  \x1b[32m✓\x1b[0m [{}/{}] {:<20} {:>5}ms  {}",
-                i + 1, total, node.name, r.latency_ms, r.ip
+                i + 1,
+                total,
+                node.name,
+                r.latency_ms,
+                r.ip
             );
         } else {
             println!(
                 "  \x1b[31m✗\x1b[0m [{}/{}] {} — timeout",
-                i + 1, total, node.name
+                i + 1,
+                total,
+                node.name
             );
         }
 
@@ -226,7 +294,10 @@ pub fn run_bench(clean: bool) {
     // Find fastest (lowest latency)
     println!("  \x1b[2m─────────────────────────────────────────────────\x1b[0m");
 
-    let best = results.iter().filter(|r| r.1.ok).min_by_key(|r| r.1.latency_ms);
+    let best = results
+        .iter()
+        .filter(|r| r.1.ok)
+        .min_by_key(|r| r.1.latency_ms);
 
     match best {
         Some((name, r)) => {
@@ -251,7 +322,11 @@ pub fn run_bench(clean: bool) {
 
     // Clean up failed nodes
     if clean {
-        let failed: Vec<&str> = results.iter().filter(|r| !r.1.ok).map(|r| r.0.as_str()).collect();
+        let failed: Vec<&str> = results
+            .iter()
+            .filter(|r| !r.1.ok)
+            .map(|r| r.0.as_str())
+            .collect();
         if !failed.is_empty() {
             let mut s = Store::load();
             for name in &failed {

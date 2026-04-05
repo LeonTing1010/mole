@@ -40,12 +40,11 @@ pub fn generate(
         dns_rules.push(json!({ "rule_set": "geosite-cn", "server": "local" }));
     }
 
-    // Smart routing: resolve ALL domains via local DNS (fast, ~20ms).
-    // Chinese domains get Chinese IPs → geoip-cn matches → direct.
-    // Foreign domains get some IP → no geoip match → proxy.
-    // Proxy outbound re-resolves using sniffed domain, so local DNS
-    // result doesn't affect proxy connection quality.
-    let dns_final = if bypass_cn { "local" } else { "remote" };
+    // bypass-cn: CN domains matched by geosite-cn → local DNS (fast).
+    // All other domains → remote DNS (8.8.8.8 via proxy) for correct IPs.
+    // Using local DNS for foreign domains causes issues: Chinese DNS may
+    // return CDN IPs (e.g. Akamai) that match geoip-cn, misrouting to direct.
+    let dns_final = "remote";
 
     let dns = json!({
         "servers": [
@@ -99,8 +98,7 @@ pub fn generate(
             outbounds.push(strat);
 
             for (tag, node) in nodes {
-                let mut ob = node.to_outbound();
-                ob["tag"] = json!(tag);
+                let ob = node.to_outbound(tag);
                 if node.is_endpoint() {
                     endpoints.push(ob);
                 } else {
@@ -110,8 +108,8 @@ pub fn generate(
         }
         _ => {
             // Single node mode
-            if let Some((_, node)) = nodes.first() {
-                let ob = node.to_outbound();
+            if let Some((tag, node)) = nodes.first() {
+                let ob = node.to_outbound(tag);
                 if node.is_endpoint() {
                     endpoints.push(ob);
                 } else {
@@ -144,8 +142,12 @@ pub fn generate(
                 json!({ "domain_keyword": [&rule.pattern], "outbound": &rule.outbound })
             }
             "ip_cidr" => json!({ "ip_cidr": [&rule.pattern], "outbound": &rule.outbound }),
-            "geoip" => json!({ "rule_set": format!("geoip-{}", rule.pattern), "outbound": &rule.outbound }),
-            "geosite" => json!({ "rule_set": format!("geosite-{}", rule.pattern), "outbound": &rule.outbound }),
+            "geoip" => {
+                json!({ "rule_set": format!("geoip-{}", rule.pattern), "outbound": &rule.outbound })
+            }
+            "geosite" => {
+                json!({ "rule_set": format!("geosite-{}", rule.pattern), "outbound": &rule.outbound })
+            }
             _ => continue,
         };
         route_rules.push(r);
@@ -227,7 +229,7 @@ pub fn generate_test(node: &ProxyNode) -> Value {
     let mut outbounds = Vec::new();
     let mut endpoints = Vec::new();
 
-    let ob = node.to_outbound();
+    let ob = node.to_outbound("proxy");
     if node.is_endpoint() {
         endpoints.push(ob);
     } else {
@@ -293,7 +295,13 @@ mod tests {
     fn strategy_wraps_nodes() {
         let n1 = dummy_trojan();
         let n2 = dummy_ss();
-        let cfg = generate(&[("node-1", &n1), ("node-2", &n2)], &[], false, Some("urltest"), false);
+        let cfg = generate(
+            &[("node-1", &n1), ("node-2", &n2)],
+            &[],
+            false,
+            Some("urltest"),
+            false,
+        );
         let outbounds = cfg["outbounds"].as_array().unwrap();
         // First outbound is the strategy wrapper
         assert_eq!(outbounds[0]["type"], "urltest");
@@ -309,8 +317,16 @@ mod tests {
     fn custom_rules_injected() {
         let node = dummy_trojan();
         let rules = vec![
-            Rule { match_type: "domain".into(), pattern: "example.com".into(), outbound: "direct".into() },
-            Rule { match_type: "domain_suffix".into(), pattern: ".cn".into(), outbound: "direct".into() },
+            Rule {
+                match_type: "domain".into(),
+                pattern: "example.com".into(),
+                outbound: "direct".into(),
+            },
+            Rule {
+                match_type: "domain_suffix".into(),
+                pattern: ".cn".into(),
+                outbound: "direct".into(),
+            },
         ];
         let cfg = generate(&[("proxy", &node)], &rules, false, None, false);
         let route_rules = cfg["route"]["rules"].as_array().unwrap();
@@ -322,9 +338,11 @@ mod tests {
     #[test]
     fn block_rule_adds_block_outbound() {
         let node = dummy_trojan();
-        let rules = vec![
-            Rule { match_type: "domain".into(), pattern: "ads.example.com".into(), outbound: "block".into() },
-        ];
+        let rules = vec![Rule {
+            match_type: "domain".into(),
+            pattern: "ads.example.com".into(),
+            outbound: "block".into(),
+        }];
         let cfg = generate(&[("proxy", &node)], &rules, false, None, false);
         let outbounds = cfg["outbounds"].as_array().unwrap();
         assert!(outbounds.iter().any(|o| o["tag"] == "block"));

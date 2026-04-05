@@ -49,7 +49,22 @@ pub fn parse(body: &str) -> Vec<String> {
         .collect()
 }
 
-/// Parse URIs into (name, uri) pairs, skipping unparseable ones.
+pub fn node_display_name(node: &ProxyNode) -> String {
+    let proto = match node.protocol() {
+        "hysteria2" => "hy2",
+        "hysteria" => "hy1",
+        "vmess" => "vmess",
+        "vless" => "vless",
+        "trojan" => "trojan",
+        "ss" => "ss",
+        "tuic" => "tuic",
+        "wireguard" => "wg",
+        other => other,
+    };
+    let addr = node.server_addr();
+    format!("{proto}-{addr}")
+}
+
 pub fn parse_nodes(body: &str) -> Vec<(String, String)> {
     parse(body)
         .into_iter()
@@ -58,7 +73,7 @@ pub fn parse_nodes(body: &str) -> Vec<(String, String)> {
             let name = node
                 .name()
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| node.server_addr());
+                .unwrap_or_else(|| node_display_name(&node));
             Some((name, uri))
         })
         .collect()

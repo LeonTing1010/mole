@@ -119,7 +119,9 @@ pub fn check_geo_files(rules: &[crate::store::Rule], bypass_cn: bool) -> Result<
         msg.push_str(&format!("  - {f}\n"));
     }
     msg.push_str("download from: https://github.com/SagerNet/sing-geoip/releases (geoip-*.srs)\n");
-    msg.push_str("           or: https://github.com/SagerNet/sing-geosite/releases (geosite-*.srs)");
+    msg.push_str(
+        "           or: https://github.com/SagerNet/sing-geosite/releases (geosite-*.srs)",
+    );
     Err(msg)
 }
 
@@ -171,7 +173,8 @@ pub fn install_singbox() -> Result<(), String> {
     // Write tar.gz to temp file
     let tmp_tar = mole_dir().join(&tarball);
     let mut file = fs::File::create(&tmp_tar).map_err(|e| format!("create temp: {e}"))?;
-    file.write_all(&bytes).map_err(|e| format!("write temp: {e}"))?;
+    file.write_all(&bytes)
+        .map_err(|e| format!("write temp: {e}"))?;
     drop(file);
 
     // Extract sing-box binary
@@ -281,7 +284,7 @@ pub fn start_keepalive(stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
             0x00, 0x00, // Answers: 0
             0x00, 0x00, // Authority: 0
             0x00, 0x00, // Additional: 0
-            0x00,       // Root name
+            0x00, // Root name
             0x00, 0x01, // Type: A
             0x00, 0x01, // Class: IN
         ];
