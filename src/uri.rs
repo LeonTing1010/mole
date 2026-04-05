@@ -954,7 +954,7 @@ fn parse_hysteria(input: &str) -> Result<ProxyNode, String> {
 
     let sni = get_query(&parsed, "peer").or_else(|| get_query(&parsed, "sni"));
     let auth = get_query(&parsed, "auth");
-    let insecure = get_query(&parsed, "insecure").map_or(false, |v| v == "1" || v == "true");
+    let insecure = get_query(&parsed, "insecure").is_some_and(|v| v == "1" || v == "true");
     let up_mbps = get_query(&parsed, "upmbps")
         .and_then(|v| v.parse().ok())
         .unwrap_or(100);
@@ -997,7 +997,7 @@ fn parse_tuic(input: &str) -> Result<ProxyNode, String> {
     let sni = get_query(&parsed, "sni");
     let insecure = get_query(&parsed, "allowinsecure")
         .or_else(|| get_query(&parsed, "insecure"))
-        .map_or(false, |v| v == "1" || v == "true");
+        .is_some_and(|v| v == "1" || v == "true");
     let congestion_control = get_query(&parsed, "congestion_control")
         .or_else(|| get_query(&parsed, "congestioncontrol"))
         .unwrap_or_else(|| "bbr".into());
