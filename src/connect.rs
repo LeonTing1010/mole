@@ -189,7 +189,10 @@ pub fn run_strategy(s: &store::Store, strat: &str, bypass_cn: bool, is_daemon: b
                 break;
             }
             Ok(runner::ExitReason::MaxRetries) => {
-                runner::mole_log("WARN", "strategy mode: max retries reached, restarting cycle");
+                runner::mole_log(
+                    "WARN",
+                    "strategy mode: max retries reached, restarting cycle",
+                );
                 continue;
             }
             Err(e) => {
@@ -235,8 +238,14 @@ pub fn run_single(s: &store::Store, bypass_cn: bool, is_daemon: bool, share: boo
         if !is_daemon {
             if first_node {
                 print_banner();
-                println!("  \x1b[2mnode\x1b[0m    \x1b[1;37m{}\x1b[0m", current_node.name);
-                println!("  \x1b[2mserver\x1b[0m  {protocol}://{}", parsed.server_addr());
+                println!(
+                    "  \x1b[2mnode\x1b[0m    \x1b[1;37m{}\x1b[0m",
+                    current_node.name
+                );
+                println!(
+                    "  \x1b[2mserver\x1b[0m  {protocol}://{}",
+                    parsed.server_addr()
+                );
                 println!("  \x1b[2mmode\x1b[0m    {mode}");
                 eprint!("  \x1b[2mstatus\x1b[0m  \x1b[33mconnecting...\x1b[0m");
                 first_node = false;
@@ -250,32 +259,36 @@ pub fn run_single(s: &store::Store, bypass_cn: bool, is_daemon: bool, share: boo
             }
         }
 
-        let config_path = match prepare_config(&[("proxy", &parsed)], &s.rules, bypass_cn, None, share) {
-            Ok(p) => p,
-            Err(e) => {
-                runner::mole_log(
-                    "ERROR",
-                    &format!("config failed for {}: {e}", current_node.name),
-                );
-                eprintln!("\r\x1b[K  \x1b[31merror:\x1b[0m {e}");
-                tried_nodes.push(current_node.name.clone());
-                let s = store::Store::load();
-                match find_next_node(&s, &current_node.name, &tried_nodes) {
-                    Some(next) => {
-                        current_node = next;
-                        continue;
-                    }
-                    None => {
-                        eprintln!("  \x1b[31mno more nodes to try\x1b[0m");
-                        std::process::exit(1);
+        let config_path =
+            match prepare_config(&[("proxy", &parsed)], &s.rules, bypass_cn, None, share) {
+                Ok(p) => p,
+                Err(e) => {
+                    runner::mole_log(
+                        "ERROR",
+                        &format!("config failed for {}: {e}", current_node.name),
+                    );
+                    eprintln!("\r\x1b[K  \x1b[31merror:\x1b[0m {e}");
+                    tried_nodes.push(current_node.name.clone());
+                    let s = store::Store::load();
+                    match find_next_node(&s, &current_node.name, &tried_nodes) {
+                        Some(next) => {
+                            current_node = next;
+                            continue;
+                        }
+                        None => {
+                            eprintln!("  \x1b[31mno more nodes to try\x1b[0m");
+                            std::process::exit(1);
+                        }
                     }
                 }
-            }
-        };
+            };
 
         runner::mole_log(
             "INFO",
-            &format!("started node={} proto={protocol} mode={mode}", current_node.name),
+            &format!(
+                "started node={} proto={protocol} mode={mode}",
+                current_node.name
+            ),
         );
 
         std::fs::remove_file(runner::log_path()).ok();

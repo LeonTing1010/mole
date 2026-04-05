@@ -1,3 +1,4 @@
+use crate::uri::ProxyNode;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -151,14 +152,21 @@ impl Store {
         let active_name = self.active_node().map(|n| n.name.clone());
 
         // Remove old nodes from this subscription
-        self.nodes
-            .retain(|n| n.source.as_deref() != Some(sub_name));
+        self.nodes.retain(|n| n.source.as_deref() != Some(sub_name));
 
         // Collect existing names (from other sources) for dedup
         let existing_names: std::collections::HashSet<String> =
             self.nodes.iter().map(|n| n.name.clone()).collect();
 
+        // Deduplicate by server address within this subscription batch
+        let mut seen_keys = std::collections::HashSet::new();
         for (name, uri) in uris {
+            let key = ProxyNode::parse(&uri)
+                .map(|n| format!("{}:{}", n.protocol(), n.server_addr()))
+                .unwrap_or_else(|_| uri.clone());
+            if !seen_keys.insert(key) {
+                continue; // skip duplicate server
+            }
             let final_name = if existing_names.contains(&name) {
                 format!("{name} [{sub_name}]")
             } else {
@@ -180,8 +188,7 @@ impl Store {
         }
 
         if let Some(sub) = self.subscriptions.iter_mut().find(|s| s.name == sub_name) {
-            sub.last_update =
-                Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+            sub.last_update = Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
         }
     }
 
@@ -207,6 +214,15 @@ impl Store {
     pub fn clear_rules(&mut self) {
         self.rules.clear();
     }
+
+    pub fn normalize_names(&mut self) {
+        use crate::uri::ProxyNode;
+        for node in &mut self.nodes {
+            if let Ok(parsed) = ProxyNode::parse(&node.uri) {
+                node.name = crate::sub::node_display_name(&parsed);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -216,12 +232,31 @@ mod tests {
     fn test_store() -> Store {
         Store {
             nodes: vec![
-                Node { name: "n1".into(), uri: "trojan://p@a.com:443#n1".into(), active: true, source: Some("sub1".into()) },
-                Node { name: "n2".into(), uri: "trojan://p@b.com:443#n2".into(), active: false, source: Some("sub1".into()) },
-                Node { name: "manual".into(), uri: "trojan://p@c.com:443#manual".into(), active: false, source: None },
+                Node {
+                    name: "n1".into(),
+                    uri: "trojan://p@a.com:443#n1".into(),
+                    active: true,
+                    source: Some("sub1".into()),
+                },
+                Node {
+                    name: "n2".into(),
+                    uri: "trojan://p@b.com:443#n2".into(),
+                    active: false,
+                    source: Some("sub1".into()),
+                },
+                Node {
+                    name: "manual".into(),
+                    uri: "trojan://p@c.com:443#manual".into(),
+                    active: false,
+                    source: None,
+                },
             ],
             bypass_cn: true,
-            subscriptions: vec![Subscription { name: "sub1".into(), url: "https://example.com".into(), last_update: None }],
+            subscriptions: vec![Subscription {
+                name: "sub1".into(),
+                url: "https://example.com".into(),
+                last_update: None,
+            }],
             rules: vec![],
         }
     }
@@ -251,9 +286,7 @@ mod tests {
         let mut s = test_store();
         // Add nodes from sub2 that collide with "manual" from another source
         s.add_subscription("sub2".into(), "https://other.com".into());
-        let new_nodes = vec![
-            ("manual".into(), "trojan://p@x.com:443#manual".into()),
-        ];
+        let new_nodes = vec![("manual".into(), "trojan://p@x.com:443#manual".into())];
         s.update_subscription_nodes("sub2", new_nodes);
 
         // Should have "manual" (original) and "manual [sub2]" (deduped)

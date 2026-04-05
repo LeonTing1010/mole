@@ -14,7 +14,11 @@ use clap::{Parser, Subcommand};
 use store::Store;
 
 #[derive(Parser)]
-#[command(name = "mole", version, about = "Multi-protocol TUN VPN client (powered by sing-box)")]
+#[command(
+    name = "mole",
+    version,
+    about = "Multi-protocol TUN VPN client (powered by sing-box)"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -53,6 +57,8 @@ enum Commands {
     /// Remove a saved node
     #[command(name = "rm")]
     Remove { name: String },
+    /// Normalize node names to use unified format
+    Rename,
     /// Test node connectivity (no sudo required)
     Test {
         /// Test all nodes instead of just the active one
@@ -145,7 +151,11 @@ fn main() {
             }
         }
 
-        Commands::Add { uri: raw, name, test } => {
+        Commands::Add {
+            uri: raw,
+            name,
+            test,
+        } => {
             let node = match uri::ProxyNode::parse(&raw) {
                 Ok(n) => n,
                 Err(e) => {
@@ -155,7 +165,7 @@ fn main() {
             };
             let node_name = name
                 .or_else(|| node.name().map(|s| s.to_string()))
-                .unwrap_or_else(|| node.server_addr());
+                .unwrap_or_else(|| sub::node_display_name(&node));
 
             if test {
                 if !runner::singbox_installed() {
@@ -189,7 +199,11 @@ fn main() {
             }
             for n in &s.nodes {
                 let marker = if n.active { ">" } else { " " };
-                let source = n.source.as_ref().map(|s| format!(" \x1b[2m[{s}]\x1b[0m")).unwrap_or_default();
+                let source = n
+                    .source
+                    .as_ref()
+                    .map(|s| format!(" \x1b[2m[{s}]\x1b[0m"))
+                    .unwrap_or_default();
                 println!("{marker} {}{source}", n.name);
             }
         }
@@ -216,15 +230,31 @@ fn main() {
             }
         }
 
+        Commands::Rename => {
+            let mut s = Store::load();
+            s.normalize_names();
+            if let Err(e) = s.save() {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+            println!("node names normalized");
+        }
+
         Commands::Config => {
             let s = Store::load();
             let node = match s.active_node() {
                 Some(n) => n,
-                None => { eprintln!("no active node."); std::process::exit(1); }
+                None => {
+                    eprintln!("no active node.");
+                    std::process::exit(1);
+                }
             };
             let parsed = match uri::ProxyNode::parse(&node.uri) {
                 Ok(n) => n,
-                Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
             };
             println!("// {}", node.name);
             let cfg = config::generate(&[("proxy", &parsed)], &s.rules, s.bypass_cn, None, false);
@@ -253,7 +283,12 @@ fn main() {
                     let parsed = match uri::ProxyNode::parse(&node.uri) {
                         Ok(n) => n,
                         Err(e) => {
-                            println!("  \x1b[31m✗\x1b[0m [{}/{}] {} — parse error: {e}", i + 1, total, node.name);
+                            println!(
+                                "  \x1b[31m✗\x1b[0m [{}/{}] {} — parse error: {e}",
+                                i + 1,
+                                total,
+                                node.name
+                            );
                             continue;
                         }
                     };
@@ -262,9 +297,21 @@ fn main() {
                     eprint!("\r\x1b[K");
                     if r.ok {
                         ok_count += 1;
-                        println!("  \x1b[32m✓\x1b[0m [{}/{}] {:<20} {:>5}ms  {}", i + 1, total, node.name, r.latency_ms, r.ip);
+                        println!(
+                            "  \x1b[32m✓\x1b[0m [{}/{}] {:<20} {:>5}ms  {}",
+                            i + 1,
+                            total,
+                            node.name,
+                            r.latency_ms,
+                            r.ip
+                        );
                     } else {
-                        println!("  \x1b[31m✗\x1b[0m [{}/{}] {} — failed", i + 1, total, node.name);
+                        println!(
+                            "  \x1b[31m✗\x1b[0m [{}/{}] {} — failed",
+                            i + 1,
+                            total,
+                            node.name
+                        );
                     }
                 }
 
@@ -273,11 +320,17 @@ fn main() {
             } else {
                 let node = match s.active_node() {
                     Some(n) => n,
-                    None => { eprintln!("no active node. use `mole use <name>`."); std::process::exit(1); }
+                    None => {
+                        eprintln!("no active node. use `mole use <name>`.");
+                        std::process::exit(1);
+                    }
                 };
                 let parsed = match uri::ProxyNode::parse(&node.uri) {
                     Ok(n) => n,
-                    Err(e) => { eprintln!("parse error: {e}"); std::process::exit(1); }
+                    Err(e) => {
+                        eprintln!("parse error: {e}");
+                        std::process::exit(1);
+                    }
                 };
                 eprint!("  testing {}... ", node.name);
                 let r = bench::test_node_nosudo(&parsed);
@@ -297,7 +350,10 @@ fn main() {
             // Kill orphaned mole processes (daemon, stuck bench, etc.)
             let my_pid = std::process::id().to_string();
             let mut killed_mole = false;
-            if let Ok(output) = std::process::Command::new("pgrep").args(["-f", "mole (up|bench)"]).output() {
+            if let Ok(output) = std::process::Command::new("pgrep")
+                .args(["-f", "mole (up|bench)"])
+                .output()
+            {
                 if output.status.success() {
                     let pids = String::from_utf8_lossy(&output.stdout);
                     for pid in pids.lines() {
@@ -314,18 +370,23 @@ fn main() {
                 Ok(true) => println!("disconnected"),
                 Ok(false) if killed_mole => println!("disconnected"),
                 Ok(false) => println!("not running"),
-                Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
             }
         }
 
         // ── Subscriptions ───────────────────────────────────────
-
         Commands::Sub { action } => match action {
             SubCommands::Add { url, name } => {
                 println!("fetching subscription...");
                 let body = match sub::fetch(&url) {
                     Ok(b) => b,
-                    Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        std::process::exit(1);
+                    }
                 };
                 let nodes = sub::parse_nodes(&body);
                 if nodes.is_empty() {
@@ -333,8 +394,12 @@ fn main() {
                     std::process::exit(1);
                 }
                 let sub_name = name.unwrap_or_else(|| {
-                    url.split("//").nth(1).and_then(|s| s.split('/').next())
-                        .and_then(|s| s.split(':').next()).unwrap_or("sub").to_string()
+                    url.split("//")
+                        .nth(1)
+                        .and_then(|s| s.split('/').next())
+                        .and_then(|s| s.split(':').next())
+                        .unwrap_or("sub")
+                        .to_string()
                 });
                 let count = nodes.len();
                 let mut s = Store::load();
@@ -372,25 +437,47 @@ fn main() {
             }
             SubCommands::Ls => {
                 let s = Store::load();
-                if s.subscriptions.is_empty() { println!("no subscriptions."); return; }
+                if s.subscriptions.is_empty() {
+                    println!("no subscriptions.");
+                    return;
+                }
                 for item in &s.subscriptions {
-                    let count = s.nodes.iter().filter(|n| n.source.as_deref() == Some(&item.name)).count();
+                    let count = s
+                        .nodes
+                        .iter()
+                        .filter(|n| n.source.as_deref() == Some(&item.name))
+                        .count();
                     let update = item.last_update.as_deref().unwrap_or("never");
                     println!("  {} — {} nodes (updated: {update})", item.name, count);
                 }
             }
             SubCommands::Rm { name } => {
                 let mut s = Store::load();
-                if s.remove_subscription(&name) { s.save().ok(); println!("removed: {name}"); }
-                else { eprintln!("not found: {name}"); std::process::exit(1); }
+                if s.remove_subscription(&name) {
+                    s.save().ok();
+                    println!("removed: {name}");
+                } else {
+                    eprintln!("not found: {name}");
+                    std::process::exit(1);
+                }
             }
         },
 
         // ── Rules ───────────────────────────────────────────────
-
         Commands::Rule { action } => match action {
-            RuleCommands::Add { match_type, pattern, outbound } => {
-                let valid = ["domain", "domain_suffix", "domain_keyword", "ip_cidr", "geoip", "geosite"];
+            RuleCommands::Add {
+                match_type,
+                pattern,
+                outbound,
+            } => {
+                let valid = [
+                    "domain",
+                    "domain_suffix",
+                    "domain_keyword",
+                    "ip_cidr",
+                    "geoip",
+                    "geosite",
+                ];
                 if !valid.contains(&match_type.as_str()) {
                     eprintln!("invalid type: {match_type}. valid: {}", valid.join(", "));
                     std::process::exit(1);
@@ -402,15 +489,23 @@ fn main() {
             }
             RuleCommands::Ls => {
                 let s = Store::load();
-                if s.rules.is_empty() { println!("no custom rules."); return; }
+                if s.rules.is_empty() {
+                    println!("no custom rules.");
+                    return;
+                }
                 for (i, r) in s.rules.iter().enumerate() {
                     println!("  [{i}] {} {} → {}", r.match_type, r.pattern, r.outbound);
                 }
             }
             RuleCommands::Rm { index } => {
                 let mut s = Store::load();
-                if s.remove_rule(index) { s.save().ok(); println!("removed rule #{index}"); }
-                else { eprintln!("invalid index"); std::process::exit(1); }
+                if s.remove_rule(index) {
+                    s.save().ok();
+                    println!("removed rule #{index}");
+                } else {
+                    eprintln!("invalid index");
+                    std::process::exit(1);
+                }
             }
             RuleCommands::Clear => {
                 let mut s = Store::load();
@@ -421,9 +516,12 @@ fn main() {
         },
 
         // ── Service ─────────────────────────────────────────────
-
         Commands::Service { action } => {
-            let exe = std::env::current_exe().expect("current exe").to_str().expect("utf8").to_string();
+            let exe = std::env::current_exe()
+                .expect("current exe")
+                .to_str()
+                .expect("utf8")
+                .to_string();
             let home = dirs::home_dir().expect("home dir");
             let log = home.join(".mole/service.log");
             match action {
@@ -433,8 +531,12 @@ fn main() {
         }
 
         // ── Connect ─────────────────────────────────────────────
-
-        Commands::Up { bypass_cn, daemon, strategy, share } => {
+        Commands::Up {
+            bypass_cn,
+            daemon,
+            strategy,
+            share,
+        } => {
             let is_daemon = std::env::var("MOLE_DAEMON").is_ok();
             let s = Store::load();
 
@@ -445,7 +547,8 @@ fn main() {
             if !runner::singbox_installed() {
                 println!("sing-box not found, installing...");
                 if let Err(e) = runner::install_singbox() {
-                    eprintln!("install error: {e}"); std::process::exit(1);
+                    eprintln!("install error: {e}");
+                    std::process::exit(1);
                 }
             }
             runner::stop_singbox().ok();
@@ -453,20 +556,33 @@ fn main() {
             // Daemon: re-exec in background
             if daemon && !is_daemon {
                 let exe = std::env::current_exe().expect("current exe");
-                let mut args = vec!["up".to_string(), "--bypass-cn".to_string(), bypass_cn.to_string()];
+                let mut args = vec![
+                    "up".to_string(),
+                    "--bypass-cn".to_string(),
+                    bypass_cn.to_string(),
+                ];
                 if let Some(ref strat) = strategy {
                     args.extend(["--strategy".to_string(), strat.clone()]);
                 }
-                if share { args.push("--share".to_string()); }
-                let log = std::fs::File::create(runner::mole_dir().join("daemon.log")).expect("create log");
+                if share {
+                    args.push("--share".to_string());
+                }
+                let log = std::fs::File::create(runner::mole_dir().join("daemon.log"))
+                    .expect("create log");
                 let log_err = log.try_clone().expect("clone");
                 let mut child = std::process::Command::new(&exe)
-                    .args(&args).env("MOLE_DAEMON", "1")
-                    .stdin(std::process::Stdio::null()).stdout(log).stderr(log_err)
-                    .spawn().expect("spawn daemon");
+                    .args(&args)
+                    .env("MOLE_DAEMON", "1")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(log)
+                    .stderr(log_err)
+                    .spawn()
+                    .expect("spawn daemon");
                 let pid = child.id();
                 // Reap child in background so parent doesn't leave a zombie
-                std::thread::spawn(move || { child.wait().ok(); });
+                std::thread::spawn(move || {
+                    child.wait().ok();
+                });
                 std::fs::write(runner::pid_path(), pid.to_string()).ok();
                 println!("mole running in background (pid={pid})");
                 println!("use `mole down` to stop, `mole status` to check");
@@ -475,13 +591,16 @@ fn main() {
 
             // Ctrl+C handler
             ctrlc::set_handler(move || {
-                if runner::SHUTTING_DOWN.swap(true, Ordering::SeqCst) { std::process::exit(130); }
+                if runner::SHUTTING_DOWN.swap(true, Ordering::SeqCst) {
+                    std::process::exit(130);
+                }
                 eprint!("\r\x1b[K  \x1b[2mstatus\x1b[0m  \x1b[33mdisconnecting...\x1b[0m");
                 runner::stop_singbox().ok();
                 eprintln!("\r\x1b[K  \x1b[2mstatus\x1b[0m  disconnected");
                 std::fs::remove_file(runner::pid_path()).ok();
                 std::process::exit(0);
-            }).ok();
+            })
+            .ok();
 
             if is_daemon {
                 std::fs::write(runner::pid_path(), std::process::id().to_string()).ok();
@@ -518,7 +637,10 @@ fn install_service(exe: &str, home: &std::path::Path, log: &std::path::Path) {
     <key>StandardErrorPath</key><string>{log}</string>
 </dict>
 </plist>"#, log = log.display())).expect("write plist");
-        std::process::Command::new("launchctl").args(["load", path.to_str().unwrap()]).output().ok();
+        std::process::Command::new("launchctl")
+            .args(["load", path.to_str().unwrap()])
+            .output()
+            .ok();
         println!("installed: {}", path.display());
     }
     #[cfg(target_os = "linux")]
@@ -526,7 +648,10 @@ fn install_service(exe: &str, home: &std::path::Path, log: &std::path::Path) {
         let dir = home.join(".config/systemd/user");
         std::fs::create_dir_all(&dir).ok();
         let path = dir.join("mole.service");
-        std::fs::write(&path, format!(r#"[Unit]
+        std::fs::write(
+            &path,
+            format!(
+                r#"[Unit]
 Description=Mole VPN
 After=network-online.target
 Wants=network-online.target
@@ -538,12 +663,22 @@ RestartSec=5
 StandardOutput=append:{log}
 StandardError=append:{log}
 [Install]
-WantedBy=default.target"#, log = log.display())).expect("write unit");
-        std::process::Command::new("systemctl").args(["--user", "enable", "--now", "mole"]).output().ok();
+WantedBy=default.target"#,
+                log = log.display()
+            ),
+        )
+        .expect("write unit");
+        std::process::Command::new("systemctl")
+            .args(["--user", "enable", "--now", "mole"])
+            .output()
+            .ok();
         println!("installed: {}", path.display());
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    { let _ = (exe, home, log); eprintln!("unsupported platform"); }
+    {
+        let _ = (exe, home, log);
+        eprintln!("unsupported platform");
+    }
 }
 
 fn uninstall_service(home: &std::path::Path) {
@@ -551,20 +686,33 @@ fn uninstall_service(home: &std::path::Path) {
     {
         let path = home.join("Library/LaunchAgents/com.mole.vpn.plist");
         if path.exists() {
-            std::process::Command::new("launchctl").args(["unload", path.to_str().unwrap()]).output().ok();
+            std::process::Command::new("launchctl")
+                .args(["unload", path.to_str().unwrap()])
+                .output()
+                .ok();
             std::fs::remove_file(&path).ok();
             println!("uninstalled");
-        } else { println!("not installed"); }
+        } else {
+            println!("not installed");
+        }
     }
     #[cfg(target_os = "linux")]
     {
         let path = home.join(".config/systemd/user/mole.service");
         if path.exists() {
-            std::process::Command::new("systemctl").args(["--user", "disable", "--now", "mole"]).output().ok();
+            std::process::Command::new("systemctl")
+                .args(["--user", "disable", "--now", "mole"])
+                .output()
+                .ok();
             std::fs::remove_file(&path).ok();
             println!("uninstalled");
-        } else { println!("not installed"); }
+        } else {
+            println!("not installed");
+        }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    { let _ = home; eprintln!("unsupported platform"); }
+    {
+        let _ = home;
+        eprintln!("unsupported platform");
+    }
 }
