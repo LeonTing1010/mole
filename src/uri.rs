@@ -222,8 +222,11 @@ impl ProxyNode {
                 });
 
                 if let Some(ref hop) = hop_ports {
-                    let port_range = hop.replace('-', ":");
-                    out["server_ports"] = serde_json::json!([port_range]);
+                    let ports: Vec<String> = hop
+                        .split(',')
+                        .map(|s| s.trim().replace('-', ":"))
+                        .collect();
+                    out["server_ports"] = serde_json::json!(ports);
                     out["hop_interval"] = serde_json::json!("30s");
                 }
 
@@ -311,10 +314,18 @@ impl ProxyNode {
                 build_transport(&mut out, transport, ws_path, ws_host, &None);
 
                 if *tls {
-                    let mut tls_obj = serde_json::json!({ "enabled": true });
-                    if let Some(ref s) = sni {
-                        tls_obj["server_name"] = serde_json::json!(s);
-                    }
+                    let sni_val = sni.as_deref().unwrap_or(host);
+                    let mut tls_obj = serde_json::json!({
+                        "enabled": true,
+                        "server_name": sni_val
+                    });
+                    // ALPN: h2 for HTTP/2 transport, http/1.1 for ws/others
+                    let alpn = if transport == "h2" {
+                        vec!["h2"]
+                    } else {
+                        vec!["h2", "http/1.1"]
+                    };
+                    tls_obj["alpn"] = serde_json::json!(alpn);
                     if let Some(ref fp) = fingerprint {
                         tls_obj["utls"] = serde_json::json!({ "enabled": true, "fingerprint": fp });
                     }
@@ -599,7 +610,10 @@ fn build_transport(
             }
             out["transport"] = t;
         }
-        _ => {} // tcp = no transport needed
+        "quic" => {
+            out["transport"] = serde_json::json!({ "type": "quic" });
+        }
+        _ => {} // tcp, kcp = no transport needed
     }
 }
 
@@ -1379,5 +1393,38 @@ mod tests {
         let node = ProxyNode::parse(uri).unwrap();
         let out = node.to_outbound("test");
         assert_eq!(out["tls"]["server_name"], "example.com");
+    }
+
+    #[test]
+    fn vless_quic_transport() {
+        let uri = "vless://uuid-1234@1.2.3.4:443?security=tls&type=quic#QUIC";
+        let node = ProxyNode::parse(uri).unwrap();
+        let out = node.to_outbound("test");
+        assert_eq!(out["transport"]["type"], "quic");
+    }
+
+    #[test]
+    fn hy2_multi_port_range() {
+        let uri = "hysteria2://pass@1.2.3.4:443?mport=41000-42000,43000,44000-45000#MultiPort";
+        let node = ProxyNode::parse(uri).unwrap();
+        let out = node.to_outbound("test");
+        let ports = out["server_ports"].as_array().unwrap();
+        assert_eq!(ports.len(), 3);
+        assert_eq!(ports[0], "41000:42000");
+        assert_eq!(ports[1], "43000");
+        assert_eq!(ports[2], "44000:45000");
+    }
+
+    #[test]
+    fn vmess_ws_tls_has_alpn() {
+        use base64::Engine;
+        let json = r#"{"v":"2","ps":"ws-tls","add":"1.2.3.4","port":"443","id":"uuid-1234","aid":"0","scy":"auto","net":"ws","type":"none","host":"","path":"/ws","tls":"tls","sni":"example.com","fp":""}"#;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(json);
+        let uri = format!("vmess://{encoded}");
+        let node = ProxyNode::parse(&uri).unwrap();
+        let out = node.to_outbound("test");
+        let alpn = out["tls"]["alpn"].as_array().unwrap();
+        assert!(alpn.contains(&serde_json::json!("h2")));
+        assert!(alpn.contains(&serde_json::json!("http/1.1")));
     }
 }

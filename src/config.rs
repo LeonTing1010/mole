@@ -224,8 +224,8 @@ pub fn generate(
 pub const TEST_PORT: u16 = 18190;
 
 /// Generate a minimal sing-box config for connectivity testing (no TUN, no sudo).
-/// Uses a mixed HTTP/SOCKS5 inbound on 127.0.0.1:TEST_PORT instead of TUN.
-pub fn generate_test(node: &ProxyNode) -> Value {
+/// Uses a mixed HTTP/SOCKS5 inbound on 127.0.0.1:`port` instead of TUN.
+pub fn generate_test_on_port(node: &ProxyNode, port: u16) -> Value {
     let mut outbounds = Vec::new();
     let mut endpoints = Vec::new();
 
@@ -250,7 +250,7 @@ pub fn generate_test(node: &ProxyNode) -> Value {
                 "type": "mixed",
                 "tag": "mixed-in",
                 "listen": "127.0.0.1",
-                "listen_port": TEST_PORT
+                "listen_port": port
             }
         ],
         "outbounds": outbounds,
