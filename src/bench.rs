@@ -113,53 +113,41 @@ pub fn test_node(node: &ProxyNode, rules: &[crate::store::Rule]) -> TestResult {
 
 /// Test a single node without sudo — uses mixed inbound (SOCKS5 proxy) instead of TUN.
 pub fn test_node_nosudo(node: &ProxyNode) -> TestResult {
-    let cfg = config::generate_test(node);
-    let json = config::to_json_pretty(&cfg);
-    let config_path = match runner::write_config(&json) {
-        Ok(p) => p,
-        Err(_) => {
-            return TestResult {
-                ip: String::new(),
-                latency_ms: 9999,
-                ok: false,
-            }
-        }
-    };
+    test_node_on_port(node, config::TEST_PORT)
+}
 
-    let log_file = runner::log_path();
+/// Test a node on a specific port (for concurrent bench).
+fn test_node_on_port(node: &ProxyNode, port: u16) -> TestResult {
+    let cfg = config::generate_test_on_port(node, port);
+    let json = config::to_json_pretty(&cfg);
+
+    let mole_dir = runner::mole_dir();
+    let config_file = mole_dir.join(format!("bench-{port}.json"));
+    let log_file = mole_dir.join(format!("bench-{port}.log"));
+
+    if std::fs::write(&config_file, &json).is_err() {
+        return fail_result();
+    }
+
     let log = match std::fs::File::create(&log_file) {
         Ok(f) => f,
-        Err(_) => {
-            return TestResult {
-                ip: String::new(),
-                latency_ms: 9999,
-                ok: false,
-            }
-        }
+        Err(_) => return fail_result(),
     };
     let log_err = log.try_clone().unwrap();
 
-    // Start sing-box WITHOUT sudo (no TUN = no privilege needed)
     let mut child = match std::process::Command::new(runner::singbox_bin_path())
         .arg("run")
         .arg("-c")
-        .arg(config_path.to_str().unwrap())
+        .arg(config_file.to_str().unwrap())
         .stdout(log)
         .stderr(log_err)
         .spawn()
     {
         Ok(c) => c,
-        Err(_) => {
-            return TestResult {
-                ip: String::new(),
-                latency_ms: 9999,
-                ok: false,
-            }
-        }
+        Err(_) => return fail_result(),
     };
 
-    // Wait for the mixed inbound to be ready
-    let addr = format!("127.0.0.1:{}", config::TEST_PORT);
+    let addr = format!("127.0.0.1:{port}");
     let mut started = false;
     for _ in 0..10 {
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -180,15 +168,11 @@ pub fn test_node_nosudo(node: &ProxyNode) -> TestResult {
     if !started {
         child.kill().ok();
         child.wait().ok();
-        return TestResult {
-            ip: String::new(),
-            latency_ms: 9999,
-            ok: false,
-        };
+        cleanup_bench_files(port);
+        return fail_result();
     }
 
-    // Test through SOCKS5 proxy
-    let proxy_url = format!("socks5://127.0.0.1:{}", config::TEST_PORT);
+    let proxy_url = format!("socks5://127.0.0.1:{port}");
     let start = Instant::now();
     let ip = reqwest::blocking::Client::builder()
         .proxy(reqwest::Proxy::all(&proxy_url).unwrap())
@@ -204,10 +188,29 @@ pub fn test_node_nosudo(node: &ProxyNode) -> TestResult {
 
     child.kill().ok();
     child.wait().ok();
+    cleanup_bench_files(port);
 
     let ok = !ip.is_empty();
     TestResult { ip, latency_ms, ok }
 }
+
+fn fail_result() -> TestResult {
+    TestResult {
+        ip: String::new(),
+        latency_ms: 9999,
+        ok: false,
+    }
+}
+
+fn cleanup_bench_files(port: u16) {
+    let dir = runner::mole_dir();
+    std::fs::remove_file(dir.join(format!("bench-{port}.json"))).ok();
+    std::fs::remove_file(dir.join(format!("bench-{port}.log"))).ok();
+}
+
+/// Concurrency for bench: test up to PARALLEL nodes at once.
+const PARALLEL: usize = 4;
+const BENCH_PORT_BASE: u16 = 18200;
 
 pub fn run_bench(clean: bool) {
     let s = Store::load();
@@ -236,62 +239,74 @@ pub fn run_bench(clean: bool) {
 
     let total = s.nodes.len();
     println!();
-    println!("  \x1b[1mbench\x1b[0m  testing {} nodes...", total);
+    println!(
+        "  \x1b[1mbench\x1b[0m  testing {} nodes ({}x parallel, no sudo)...",
+        total, PARALLEL
+    );
     println!("  \x1b[2m─────────────────────────────────────────────────\x1b[0m");
 
     runner::mole_log("INFO", &format!("bench: testing {total} nodes"));
 
-    let mut results: Vec<(String, TestResult)> = Vec::new();
+    // Pre-parse all nodes
+    let parsed: Vec<(String, Option<ProxyNode>)> = s
+        .nodes
+        .iter()
+        .map(|n| (n.name.clone(), ProxyNode::parse(&n.uri).ok()))
+        .collect();
 
-    for (i, node) in s.nodes.iter().enumerate() {
-        let parsed = match ProxyNode::parse(&node.uri) {
-            Ok(n) => n,
-            Err(e) => {
-                println!(
-                    "  \x1b[31m✗\x1b[0m [{}/{}] {} — parse error: {e}",
-                    i + 1,
-                    total,
-                    node.name
-                );
-                results.push((
-                    node.name.clone(),
-                    TestResult {
-                        ip: String::new(),
-                        latency_ms: 9999,
-                        ok: false,
-                    },
-                ));
-                continue;
+    let mut results: Vec<(String, TestResult)> = Vec::with_capacity(total);
+
+    // Process in chunks of PARALLEL
+    for chunk_start in (0..total).step_by(PARALLEL) {
+        let chunk_end = std::cmp::min(chunk_start + PARALLEL, total);
+        let chunk = &parsed[chunk_start..chunk_end];
+
+        // Spawn threads for this chunk
+        let handles: Vec<_> = chunk
+            .iter()
+            .enumerate()
+            .map(|(slot, (name, maybe_node))| {
+                let port = BENCH_PORT_BASE + slot as u16;
+                let name = name.clone();
+                let node = maybe_node.clone();
+                let idx = chunk_start + slot;
+
+                std::thread::spawn(move || {
+                    let result = match node {
+                        Some(n) => test_node_on_port(&n, port),
+                        None => fail_result(),
+                    };
+                    (idx, name, result)
+                })
+            })
+            .collect();
+
+        // Collect results and print
+        for handle in handles {
+            if let Ok((idx, name, r)) = handle.join() {
+                if r.ok {
+                    println!(
+                        "  \x1b[32m✓\x1b[0m [{}/{}] {:<20} {:>5}ms  {}",
+                        idx + 1,
+                        total,
+                        name,
+                        r.latency_ms,
+                        r.ip
+                    );
+                } else {
+                    println!(
+                        "  \x1b[31m✗\x1b[0m [{}/{}] {} — failed",
+                        idx + 1,
+                        total,
+                        name
+                    );
+                }
+                results.push((name, r));
             }
-        };
-
-        eprint!("  \x1b[33m…\x1b[0m [{}/{}] {} ", i + 1, total, node.name);
-
-        let r = test_node(&parsed, &s.rules);
-
-        eprint!("\r\x1b[K");
-        if r.ok {
-            println!(
-                "  \x1b[32m✓\x1b[0m [{}/{}] {:<20} {:>5}ms  {}",
-                i + 1,
-                total,
-                node.name,
-                r.latency_ms,
-                r.ip
-            );
-        } else {
-            println!(
-                "  \x1b[31m✗\x1b[0m [{}/{}] {} — timeout",
-                i + 1,
-                total,
-                node.name
-            );
         }
-
-        results.push((node.name.clone(), r));
     }
 
-    // Find fastest (lowest latency)
+    // Find fastest
     println!("  \x1b[2m─────────────────────────────────────────────────\x1b[0m");
 
     let best = results

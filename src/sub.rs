@@ -8,7 +8,7 @@ pub fn fetch(url: &str) -> Result<String, String> {
         .build()
         .map_err(|e| format!("http client: {e}"))?
         .get(url)
-        .header("User-Agent", "Mole/0.3")
+        .header("User-Agent", "clash-verge/v2.2.3")
         .send()
         .map_err(|e| format!("fetch failed: {e}"))?;
 
