@@ -68,6 +68,35 @@ mole up
 mole down
 ```
 
+## Deploy Your Own Server
+
+Don't have a proxy server? Set one up in 60 seconds.
+
+**1. Get a VPS** (if you don't have one):
+
+- [Vultr](https://www.vultr.com/?ref=9893285) — from $2.50/mo, 32 locations
+
+**2. Run the setup script** on your VPS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LeonTing1010/mole/master/scripts/mole-server.sh | sudo bash
+```
+
+This installs sing-box, configures VLESS + Reality, and prints a URI.
+
+**3. Connect** from your local machine:
+
+```bash
+mole add "vless://...the-uri-from-step-2..."
+mole up
+```
+
+**Customize** with environment variables:
+
+```bash
+MOLE_PORT=8443 MOLE_SNI=www.apple.com curl -fsSL ... | sudo bash
+```
+
 ## Usage
 
 ### Node Management

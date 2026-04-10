@@ -13,22 +13,43 @@ pub struct IpInfo {
     pub org: String,
 }
 
-pub fn fetch_ip() -> Result<IpInfo, String> {
+fn http_get_json(url: &str) -> Result<serde_json::Value, String> {
     let resp = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .map_err(|e| e.to_string())?
-        .get("https://ipinfo.io/json")
+        .get(url)
         .send()
         .map_err(|e| e.to_string())?;
+    resp.json().map_err(|e| e.to_string())
+}
 
-    let json: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
-    Ok(IpInfo {
-        ip: json["ip"].as_str().unwrap_or("?").to_string(),
-        city: json["city"].as_str().unwrap_or("?").to_string(),
-        country: json["country"].as_str().unwrap_or("?").to_string(),
-        org: json["org"].as_str().unwrap_or("?").to_string(),
-    })
+pub fn fetch_ip() -> Result<IpInfo, String> {
+    // Primary: ipinfo.io (full info)
+    if let Ok(json) = http_get_json("https://ipinfo.io/json") {
+        let ip = json["ip"].as_str().unwrap_or("").to_string();
+        if !ip.is_empty() {
+            return Ok(IpInfo {
+                ip,
+                city: json["city"].as_str().unwrap_or("?").to_string(),
+                country: json["country"].as_str().unwrap_or("?").to_string(),
+                org: json["org"].as_str().unwrap_or("?").to_string(),
+            });
+        }
+    }
+    // Fallback: ip-api.com
+    if let Ok(json) = http_get_json("http://ip-api.com/json") {
+        let ip = json["query"].as_str().unwrap_or("").to_string();
+        if !ip.is_empty() {
+            return Ok(IpInfo {
+                ip,
+                city: json["city"].as_str().unwrap_or("?").to_string(),
+                country: json["countryCode"].as_str().unwrap_or("?").to_string(),
+                org: json["isp"].as_str().unwrap_or("?").to_string(),
+            });
+        }
+    }
+    Err("all ip lookup services failed".to_string())
 }
 
 pub fn measure_latency(host: &str) -> Option<u128> {
@@ -152,12 +173,32 @@ pub fn start_live_monitor(stop: Arc<AtomicBool>) {
             return;
         }
 
-        let ip_str = match fetch_ip() {
-            Ok(info) => format!(
-                "\x1b[32m●\x1b[0m {} ({}, {})",
-                info.ip, info.city, info.country
-            ),
-            Err(_) => "\x1b[32m●\x1b[0m connected".to_string(),
+        // Wait a bit for TUN routing to stabilise before querying IP
+        std::thread::sleep(std::time::Duration::from_secs(3));
+
+        let ip_str = {
+            let mut result = None;
+            for attempt in 0..5u32 {
+                if attempt > 0 {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                }
+                if stop.load(Ordering::Relaxed)
+                    || crate::runner::SHUTTING_DOWN.load(Ordering::Relaxed)
+                {
+                    break;
+                }
+                match fetch_ip() {
+                    Ok(info) => {
+                        result = Some(format!(
+                            "\x1b[32m●\x1b[0m {} ({}, {})",
+                            info.ip, info.city, info.country
+                        ));
+                        break;
+                    }
+                    Err(_) => continue,
+                }
+            }
+            result.unwrap_or_else(|| "\x1b[32m●\x1b[0m connected".to_string())
         };
 
         eprintln!("\r\x1b[K  \x1b[2mstatus\x1b[0m  {ip_str}");

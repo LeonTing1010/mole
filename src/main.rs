@@ -51,7 +51,17 @@ enum Commands {
     Down,
     /// List saved nodes
     #[command(name = "ls")]
-    List,
+    List {
+        /// Group nodes by subscription source
+        #[arg(long)]
+        by_source: bool,
+        /// Hierarchical view: source > country > nodes
+        #[arg(long, short)]
+        tree: bool,
+        /// Tree depth level (1=source only, 2=source+country, 3=full)
+        #[arg(long, short = 'L')]
+        level: Option<usize>,
+    },
     /// Switch active node
     Use { name: String },
     /// Remove a saved node
@@ -59,6 +69,11 @@ enum Commands {
     Remove { name: String },
     /// Normalize node names to use unified format
     Rename,
+    /// Generate QR code for a node (scan with phone to add)
+    Qr {
+        /// Node name (defaults to active node)
+        name: Option<String>,
+    },
     /// Test node connectivity (no sudo required)
     Test {
         /// Test all nodes instead of just the active one
@@ -102,8 +117,12 @@ enum SubCommands {
         #[arg(short, long)]
         name: Option<String>,
     },
-    /// Update all subscriptions
-    Update,
+    /// Update all subscriptions (use --test to auto-test and filter nodes)
+    Update {
+        /// Test and keep only working nodes
+        #[arg(short, long)]
+        test: bool,
+    },
     /// List subscriptions
     Ls,
     /// Remove a subscription and its nodes
@@ -172,9 +191,8 @@ fn main() {
                     eprintln!("sing-box not found, run `mole install` first.");
                     std::process::exit(1);
                 }
-                runner::stop_singbox().ok();
                 eprint!("  testing {node_name}... ");
-                let r = bench::test_node(&node, &Store::load().rules);
+                let r = bench::test_node_nosudo(&node);
                 if !r.ok {
                     eprintln!("\x1b[31mfailed\x1b[0m");
                     std::process::exit(1);
@@ -191,20 +209,87 @@ fn main() {
             println!("added and activated: {node_name}");
         }
 
-        Commands::List => {
+        Commands::List {
+            by_source,
+            tree,
+            level,
+        } => {
             let s = Store::load();
             if s.nodes.is_empty() {
                 println!("no nodes saved. use `mole add <uri>` or `mole sub add <url>`.");
                 return;
             }
-            for n in &s.nodes {
-                let marker = if n.active { ">" } else { " " };
-                let source = n
-                    .source
-                    .as_ref()
-                    .map(|s| format!(" \x1b[2m[{s}]\x1b[0m"))
-                    .unwrap_or_default();
-                println!("{marker} {}{source}", n.name);
+
+            if tree {
+                use std::collections::BTreeMap;
+                let mut source_map: BTreeMap<Option<&str>, BTreeMap<String, Vec<&store::Node>>> =
+                    BTreeMap::new();
+
+                for n in &s.nodes {
+                    let source = n.source.as_deref();
+                    let country = n.name.split(" - ").next().unwrap_or(&n.name).to_string();
+                    source_map
+                        .entry(source)
+                        .or_default()
+                        .entry(country)
+                        .or_default()
+                        .push(n);
+                }
+
+                let depth = level.unwrap_or(3).min(3);
+
+                for (source, country_map) in source_map {
+                    let source_name = source.unwrap_or("manual");
+                    println!("\n\x1b[1;36m{source_name}\x1b[0m");
+                    println!("\x1b[2m{}\x1b[0m", "═".repeat(40));
+
+                    if depth >= 2 {
+                        for (country, nodes) in country_map {
+                            println!("  \x1b[1;33m{country}\x1b[0m ({} nodes)", nodes.len());
+                            if depth >= 3 {
+                                for n in nodes {
+                                    let marker = if n.active { ">" } else { " " };
+                                    let name = n.name.split(" - ").nth(1).unwrap_or(&n.name);
+                                    println!("    {marker} {name}");
+                                }
+                            }
+                        }
+                    } else {
+                        let total: usize = country_map.values().map(|v| v.len()).sum();
+                        println!("  {} total nodes", total);
+                    }
+                }
+                println!();
+            } else if by_source {
+                // Group by source only
+                use std::collections::BTreeMap;
+                let mut groups: BTreeMap<Option<&str>, Vec<&store::Node>> = BTreeMap::new();
+                for n in &s.nodes {
+                    groups.entry(n.source.as_deref()).or_default().push(n);
+                }
+
+                // Print each group
+                for (source, nodes) in groups {
+                    let header = source.unwrap_or("manual");
+                    println!("\n  \x1b[1;36m{}\x1b[0m ({} nodes)", header, nodes.len());
+                    println!("  \x1b[2m{}\x1b[0m", "─".repeat(30));
+                    for n in nodes {
+                        let marker = if n.active { ">" } else { " " };
+                        println!("  {marker} {}", n.name);
+                    }
+                }
+                println!();
+            } else {
+                // Simple flat list
+                for n in &s.nodes {
+                    let marker = if n.active { ">" } else { " " };
+                    let source = n
+                        .source
+                        .as_ref()
+                        .map(|s| format!(" \x1b[2m[{s}]\x1b[0m"))
+                        .unwrap_or_default();
+                    println!("{marker} {}{source}", n.name);
+                }
             }
         }
 
@@ -238,6 +323,39 @@ fn main() {
                 std::process::exit(1);
             }
             println!("node names normalized");
+        }
+
+        Commands::Qr { name } => {
+            let s = Store::load();
+            let node = match name {
+                Some(n) => s.nodes.iter().find(|x| x.name == n),
+                None => s.active_node(),
+            };
+            let node = match node {
+                Some(n) => n,
+                None => {
+                    eprintln!("node not found. use `mole ls` to list nodes.");
+                    std::process::exit(1);
+                }
+            };
+            if let Ok(code) = qrcode::QrCode::new(node.uri.as_bytes()) {
+                let string = code
+                    .render::<char>()
+                    .quiet_zone(false)
+                    .max_dimensions(2, 2)
+                    .build();
+                println!();
+                println!("  \x1b[1;36m  node: {}\x1b[0m", node.name);
+                println!();
+                for line in string.lines() {
+                    println!("  {line}");
+                }
+                println!();
+                println!("  \x1b[2mscan with v2rayNG/Kitsunebi/etc.\x1b[0m");
+            } else {
+                eprintln!("failed to generate QR code");
+                std::process::exit(1);
+            }
         }
 
         Commands::Config => {
@@ -414,20 +532,68 @@ fn main() {
                 s.save().ok();
                 println!("added subscription: {sub_name} ({count} nodes)");
             }
-            SubCommands::Update => {
+            SubCommands::Update { test } => {
                 let mut s = Store::load();
                 if s.subscriptions.is_empty() {
                     println!("no subscriptions.");
                     return;
                 }
+
+                // Check if sing-box is installed for testing
+                let can_test = test && runner::singbox_installed();
+                if test && !can_test {
+                    eprintln!("  \x1b[33mwarning\x1b[0m: sing-box not installed, skipping connectivity test");
+                }
+
                 let subs: Vec<_> = s.subscriptions.clone();
                 for item in &subs {
                     eprint!("  updating {}... ", item.name);
                     match sub::fetch(&item.url) {
                         Ok(body) => {
-                            let nodes = sub::parse_nodes(&body);
-                            eprintln!("{} nodes", nodes.len());
-                            s.update_subscription_nodes(&item.name, nodes);
+                            let raw_nodes = sub::parse_nodes(&body);
+                            eprintln!("{} raw nodes", raw_nodes.len());
+
+                            // Test nodes if requested
+                            let nodes = if can_test {
+                                let mut working = Vec::new();
+                                let total = raw_nodes.len();
+                                for (i, (_, uri)) in raw_nodes.iter().enumerate() {
+                                    eprint!("\r  testing {} [{}/{}]... ", item.name, i + 1, total);
+                                    if let Ok(parsed) = uri::ProxyNode::parse(uri) {
+                                        let r = bench::test_node_nosudo(&parsed);
+                                        if r.ok {
+                                            // Auto-generate good name: country-ip-protocol
+                                            let name = generate_node_name(&r.ip, &parsed);
+                                            working.push((name, uri.clone()));
+                                        }
+                                    }
+                                }
+                                eprintln!();
+                                eprintln!("  \x1b[32m{}\x1b[0m working nodes", working.len());
+                                working
+                            } else {
+                                // Auto-name without testing
+                                raw_nodes
+                                    .iter()
+                                    .filter_map(|(_, uri)| {
+                                        uri::ProxyNode::parse(uri).ok().map(|parsed| {
+                                            let ip = extract_ip_from_node(&parsed);
+                                            (
+                                                generate_node_name(
+                                                    &ip.unwrap_or_default(),
+                                                    &parsed,
+                                                ),
+                                                uri.clone(),
+                                            )
+                                        })
+                                    })
+                                    .collect()
+                            };
+
+                            s.update_subscription_nodes(
+                                &item.name,
+                                nodes.iter().map(|(n, u)| (n.clone(), u.clone())).collect(),
+                            );
                         }
                         Err(e) => eprintln!("failed: {e}"),
                     }
@@ -715,4 +881,74 @@ fn uninstall_service(home: &std::path::Path) {
         let _ = home;
         eprintln!("unsupported platform");
     }
+}
+
+// Helper: generate a nice node name from IP and parsed node
+fn generate_node_name(ip: &str, node: &uri::ProxyNode) -> String {
+    let country = get_country_from_ip(ip);
+    let proto = match node {
+        uri::ProxyNode::Hysteria2 { .. } => "hy2",
+        uri::ProxyNode::Hysteria { .. } => "hy",
+        uri::ProxyNode::Vmess { .. } => "vmess",
+        uri::ProxyNode::Vless { .. } => "vless",
+        uri::ProxyNode::Trojan { .. } => "trojan",
+        uri::ProxyNode::Shadowsocks { .. } => "ss",
+        uri::ProxyNode::Tuic { .. } => "tuic",
+        uri::ProxyNode::WireGuard { .. } => "wg",
+    };
+
+    // Extract last IP segment for uniqueness
+    let ip_suffix = ip.rsplit('.').next().unwrap_or(ip);
+
+    format!("{}-{}-{}", country, ip_suffix, proto)
+}
+
+// Helper: extract IP from parsed node (for naming)
+fn extract_ip_from_node(node: &uri::ProxyNode) -> Option<String> {
+    match node {
+        uri::ProxyNode::Hysteria2 { host, .. } => Some(host.clone()),
+        uri::ProxyNode::Hysteria { host, .. } => Some(host.clone()),
+        uri::ProxyNode::Vmess { host, .. } => Some(host.clone()),
+        uri::ProxyNode::Vless { host, .. } => Some(host.clone()),
+        uri::ProxyNode::Trojan { host, .. } => Some(host.clone()),
+        uri::ProxyNode::Shadowsocks { host, .. } => Some(host.clone()),
+        uri::ProxyNode::Tuic { host, .. } => Some(host.clone()),
+        uri::ProxyNode::WireGuard { host, .. } => Some(host.clone()),
+    }
+}
+
+// Simple country code lookup (major CDNs/ISPs)
+fn get_country_from_ip(ip: &str) -> &'static str {
+    // This is a simplified version - in production you'd use a geo-ip database
+    // For now, return common patterns
+    if ip.starts_with("104.28")
+        || ip.starts_with("104.16")
+        || ip.starts_with("172.64")
+        || ip.starts_with("172.65")
+    {
+        return "us"; // Cloudflare
+    }
+    if ip.starts_with("185.146.")
+        || ip.starts_with("185.143.")
+        || ip.starts_with("91.99")
+        || ip.starts_with("85.198")
+    {
+        return "de"; // Germany
+    }
+    if ip.starts_with("5.175") || ip.starts_with("5.10") {
+        return "de";
+    }
+    if ip.starts_with("91.132") || ip.starts_with("91.209") {
+        return "ae"; // UAE
+    }
+    if ip.starts_with("103.160") || ip.starts_with("103.168") {
+        return "ir"; // Iran
+    }
+    if ip.starts_with("104.26") || ip.starts_with("104.17") || ip.starts_with("104.254") {
+        return "us";
+    }
+    if ip.starts_with("162.159") || ip.starts_with("162.120") {
+        return "us";
+    }
+    "xx" // unknown
 }
