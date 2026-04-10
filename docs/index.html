@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mole — Multi-protocol proxy CLI</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 640px; margin: 60px auto; padding: 0 20px; color: #e0e0e0; background: #1a1a2e; }
+  h1 { font-size: 2em; margin-bottom: 0.2em; }
+  .sub { color: #888; margin-bottom: 2em; }
+  pre { background: #16213e; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 14px; color: #0ff; }
+  code { font-family: 'SF Mono', Menlo, monospace; }
+  a { color: #4db8ff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .step { margin: 1.5em 0; }
+  .step-num { display: inline-block; width: 28px; height: 28px; background: #4db8ff; color: #1a1a2e; border-radius: 50%; text-align: center; line-height: 28px; font-weight: bold; font-size: 14px; margin-right: 8px; }
+  .badge { display: inline-block; background: #16213e; padding: 4px 10px; border-radius: 4px; font-size: 13px; margin-right: 6px; }
+</style>
+</head>
+<body>
+<h1>Mole</h1>
+<p class="sub">Multi-protocol TUN proxy CLI, powered by sing-box</p>
+
+<p>
+  <span class="badge">Hysteria2</span>
+  <span class="badge">VLESS</span>
+  <span class="badge">VMess</span>
+  <span class="badge">Trojan</span>
+  <span class="badge">Shadowsocks</span>
+</p>
+
+<div class="step">
+  <span class="step-num">1</span><strong>Deploy a server</strong> (on your VPS)
+  <pre><code>curl -fsSL https://leonting1010.github.io/mole/install.sh | sudo bash</code></pre>
+</div>
+
+<div class="step">
+  <span class="step-num">2</span><strong>Install Mole</strong> (on your machine)
+  <pre><code>brew install LeonTing1010/tap/mole
+# or: cargo install --git https://github.com/LeonTing1010/mole.git</code></pre>
+</div>
+
+<div class="step">
+  <span class="step-num">3</span><strong>Connect</strong>
+  <pre><code>mole add "vless://...uri-from-step-1..."
+mole up</code></pre>
+</div>
+
+<p style="margin-top: 2em;">
+  <a href="https://github.com/LeonTing1010/mole">GitHub</a> &middot;
+  <a href="https://github.com/LeonTing1010/mole/releases">Releases</a> &middot;
+  MIT License
+</p>
+</body>
+</html>
