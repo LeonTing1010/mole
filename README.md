@@ -79,7 +79,7 @@ Don't have a proxy server? Set one up in 60 seconds.
 **2. Run the setup script** on your VPS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LeonTing1010/mole/master/scripts/mole-server.sh | sudo bash
+curl -fsSL https://leonting1010.github.io/mole/install.sh | sudo bash
 ```
 
 This installs sing-box, configures VLESS + Reality, and prints a URI.
