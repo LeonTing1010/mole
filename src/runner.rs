@@ -228,23 +228,32 @@ pub fn write_config(json: &str) -> Result<PathBuf, String> {
 /// When SHUTTING_DOWN is set (Ctrl+C), skip graceful wait and use SIGKILL directly.
 pub fn stop_singbox() -> Result<bool, String> {
     if SHUTTING_DOWN.load(Ordering::Relaxed) {
-        // Fast path for user-initiated exit
-        let output = Command::new("sudo")
-            .args(["pkill", "-9", "sing-box"])
-            .output()
-            .map_err(|e| format!("pkill: {e}"))?;
+        // Fast path for user-initiated exit - try without sudo first
+        let output = Command::new("pkill").args(["-9", "sing-box"]).output();
+
+        // If failed, try with sudo
+        if !output.as_ref().map(|o| o.status.success()).unwrap_or(false) {
+            let _ = Command::new("sudo")
+                .args(["-n", "pkill", "-9", "sing-box"])
+                .output();
+        }
         std::thread::sleep(Duration::from_millis(500));
         SINGBOX_PID.store(0, Ordering::Relaxed);
-        return Ok(output.status.success());
+        return Ok(true);
     }
 
-    // Graceful: SIGTERM first
-    let term = Command::new("sudo")
-        .args(["pkill", "-TERM", "sing-box"])
-        .output()
-        .map_err(|e| format!("pkill: {e}"))?;
+    // Graceful: try without sudo first (user can kill their own processes)
+    let term = Command::new("pkill").args(["-TERM", "sing-box"]).output();
 
-    if !term.status.success() {
+    // If failed, try with sudo
+    if !term.as_ref().map(|o| o.status.success()).unwrap_or(false) {
+        let _ = Command::new("sudo")
+            .args(["-n", "pkill", "-TERM", "sing-box"])
+            .output();
+    }
+
+    let term_success = term.as_ref().map(|o| o.status.success()).unwrap_or(false);
+    if !term_success {
         SINGBOX_PID.store(0, Ordering::Relaxed);
         return Ok(false); // No process found
     }

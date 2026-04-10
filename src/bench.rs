@@ -8,109 +8,6 @@ pub struct TestResult {
     pub ok: bool,
 }
 
-fn stop_child(child: &mut std::process::Child) {
-    let pid = child.id();
-    let _ = std::process::Command::new("sudo")
-        .args(["kill", &pid.to_string()])
-        .output();
-    runner::stop_singbox().ok();
-    runner::SINGBOX_PID.store(0, Ordering::Relaxed);
-}
-
-/// Test a single node's connectivity. Returns None on config/start error.
-pub fn test_node(node: &ProxyNode, rules: &[crate::store::Rule]) -> TestResult {
-    let cfg = config::generate(&[("proxy", node)], rules, false, None, false);
-    let json = config::to_json_pretty(&cfg);
-    let config_path = match runner::write_config(&json) {
-        Ok(p) => p,
-        Err(_) => {
-            return TestResult {
-                ip: String::new(),
-                latency_ms: 9999,
-                ok: false,
-            }
-        }
-    };
-
-    let log_file = runner::log_path();
-    let log = match std::fs::File::create(&log_file) {
-        Ok(f) => f,
-        Err(_) => {
-            return TestResult {
-                ip: String::new(),
-                latency_ms: 9999,
-                ok: false,
-            }
-        }
-    };
-    let log_err = log.try_clone().unwrap();
-
-    let mut child = match std::process::Command::new("sudo")
-        .arg(runner::singbox_bin_path().to_str().unwrap())
-        .arg("run")
-        .arg("-c")
-        .arg(config_path.to_str().unwrap())
-        .stdout(log)
-        .stderr(log_err)
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => {
-            return TestResult {
-                ip: String::new(),
-                latency_ms: 9999,
-                ok: false,
-            }
-        }
-    };
-
-    runner::SINGBOX_PID.store(child.id(), Ordering::Relaxed);
-
-    // Wait for sing-box to start
-    let mut started = false;
-    for _ in 0..15 {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        if let Ok(Some(_)) = child.try_wait() {
-            break;
-        }
-        if std::net::TcpStream::connect_timeout(
-            &"127.0.0.1:19090".parse().unwrap(),
-            std::time::Duration::from_millis(500),
-        )
-        .is_ok()
-        {
-            started = true;
-            break;
-        }
-    }
-
-    if !started {
-        stop_child(&mut child);
-        return TestResult {
-            ip: String::new(),
-            latency_ms: 9999,
-            ok: false,
-        };
-    }
-
-    let start = Instant::now();
-    let ip = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .ok()
-        .and_then(|c| c.get("https://ipinfo.io/ip").send().ok())
-        .and_then(|r| r.text().ok())
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    let latency_ms = start.elapsed().as_millis() as u64;
-
-    stop_child(&mut child);
-
-    let ok = !ip.is_empty();
-    TestResult { ip, latency_ms, ok }
-}
-
 /// Test a single node without sudo — uses mixed inbound (SOCKS5 proxy) instead of TUN.
 pub fn test_node_nosudo(node: &ProxyNode) -> TestResult {
     test_node_on_port(node, config::TEST_PORT)
@@ -173,25 +70,66 @@ fn test_node_on_port(node: &ProxyNode, port: u16) -> TestResult {
     }
 
     let proxy_url = format!("socks5://127.0.0.1:{port}");
-    let start = Instant::now();
-    let ip = reqwest::blocking::Client::builder()
+    let client = match reqwest::blocking::Client::builder()
         .proxy(reqwest::Proxy::all(&proxy_url).unwrap())
         .timeout(std::time::Duration::from_secs(10))
         .build()
+    {
+        Ok(c) => c,
+        Err(_) => {
+            child.kill().ok();
+            child.wait().ok();
+            cleanup_bench_files(port);
+            return fail_result();
+        }
+    };
+
+    // 1) Get IP (first request also warms up the connection)
+    let ip = client
+        .get("https://ipinfo.io/ip")
+        .send()
         .ok()
-        .and_then(|c| c.get("https://ipinfo.io/ip").send().ok())
         .and_then(|r| r.text().ok())
         .unwrap_or_default()
         .trim()
         .to_string();
-    let latency_ms = start.elapsed().as_millis() as u64;
+
+    if ip.is_empty() {
+        child.kill().ok();
+        child.wait().ok();
+        cleanup_bench_files(port);
+        return fail_result();
+    }
+
+    // 2) Measure HTTP latency: 3 requests, take median
+    let test_urls = [
+        "https://www.google.com/generate_204",
+        "https://cp.cloudflare.com",
+        "https://www.gstatic.com/generate_204",
+    ];
+    let mut times = Vec::with_capacity(3);
+    for url in &test_urls {
+        let start = Instant::now();
+        if client.get(*url).send().is_ok() {
+            times.push(start.elapsed().as_millis() as u64);
+        }
+    }
+    times.sort();
+    let latency_ms = if times.is_empty() {
+        9999
+    } else {
+        times[times.len() / 2] // median
+    };
 
     child.kill().ok();
     child.wait().ok();
     cleanup_bench_files(port);
 
-    let ok = !ip.is_empty();
-    TestResult { ip, latency_ms, ok }
+    TestResult {
+        ip,
+        latency_ms,
+        ok: true,
+    }
 }
 
 fn fail_result() -> TestResult {
