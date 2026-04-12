@@ -127,6 +127,8 @@ enum SubCommands {
     Ls,
     /// Remove a subscription and its nodes
     Rm { name: String },
+    /// Export all nodes as a subscription (base64)
+    Export,
     /// Auto-discover working nodes from configured sources
     Discover {
         /// Only keep nodes that support IPv6
@@ -411,20 +413,35 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            if let Ok(code) = qrcode::QrCode::new(node.uri.as_bytes()) {
+
+            // If node comes from a subscription, show subscription URL QR
+            let qr_content = if let Some(ref src) = node.source {
+                if let Some(sub) = s.subscriptions.iter().find(|s| s.name == *src) {
+                    println!();
+                    println!("  \x1b[1;36m  subscription: {}\x1b[0m", sub.name);
+                    sub.url.clone()
+                } else {
+                    node.uri.clone()
+                }
+            } else {
+                println!();
+                println!("  \x1b[1;36m  node: {}\x1b[0m", node.name);
+                node.uri.clone()
+            };
+
+            if let Ok(code) = qrcode::QrCode::new(qr_content.as_bytes()) {
                 let string = code
                     .render::<char>()
                     .quiet_zone(false)
                     .max_dimensions(2, 2)
                     .build();
                 println!();
-                println!("  \x1b[1;36m  node: {}\x1b[0m", node.name);
-                println!();
                 for line in string.lines() {
                     println!("  {line}");
                 }
                 println!();
-                println!("  \x1b[2mscan with v2rayNG/Kitsunebi/etc.\x1b[0m");
+                println!("  \x1b[2m{qr_content}\x1b[0m");
+                println!("  \x1b[2mscan with Hiddify/v2rayNG/etc.\x1b[0m");
             } else {
                 eprintln!("failed to generate QR code");
                 std::process::exit(1);
@@ -697,6 +714,27 @@ fn main() {
                         .count();
                     let update = item.last_update.as_deref().unwrap_or("never");
                     println!("  {} — {} nodes (updated: {update})", item.name, count);
+                }
+            }
+            SubCommands::Export => {
+                let s = Store::load();
+                if s.subscriptions.is_empty() {
+                    eprintln!("no subscriptions to export.");
+                    std::process::exit(1);
+                }
+                for item in &s.subscriptions {
+                    println!("{}", item.url);
+                    if let Ok(code) = qrcode::QrCode::new(item.url.as_bytes()) {
+                        let string = code
+                            .render::<char>()
+                            .quiet_zone(false)
+                            .max_dimensions(2, 2)
+                            .build();
+                        for line in string.lines() {
+                            println!("  {line}");
+                        }
+                        println!();
+                    }
                 }
             }
             SubCommands::Rm { name } => {
