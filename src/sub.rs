@@ -65,15 +65,58 @@ pub fn node_display_name(node: &ProxyNode) -> String {
     format!("{proto}-{addr}")
 }
 
+/// Extract proxy URIs from an HTML page (e.g. GitHub wiki).
+/// Matches vless://, vmess://, trojan://, ss://, hysteria2:// etc. in the raw HTML.
+pub fn extract_uris_from_html(html: &str) -> Vec<String> {
+    let mut uris = Vec::new();
+    // Match proxy URI patterns in HTML text
+    let mut start = 0;
+    let protocols = ["vless://", "vmess://", "trojan://", "ss://", "hysteria2://", "hysteria://", "hy2://", "tuic://"];
+    while start < html.len() {
+        let mut earliest: Option<(usize, &str)> = None;
+        for proto in &protocols {
+            if let Some(pos) = html[start..].find(proto) {
+                let abs = start + pos;
+                if earliest.is_none() || abs < earliest.unwrap().0 {
+                    earliest = Some((abs, proto));
+                }
+            }
+        }
+        let Some((pos, _)) = earliest else { break };
+        // Extract until whitespace, quote, or angle bracket
+        let end = html[pos..]
+            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '<' || c == '>')
+            .map(|e| pos + e)
+            .unwrap_or(html.len());
+        let uri = &html[pos..end];
+        if uri.len() > 10 {
+            uris.push(uri.to_string());
+        }
+        start = end;
+    }
+    uris.sort();
+    uris.dedup();
+    uris
+}
+
 pub fn parse_nodes(body: &str) -> Vec<(String, String)> {
     parse(body)
         .into_iter()
         .filter_map(|uri| {
             let node = ProxyNode::parse(&uri).ok()?;
-            let name = node
-                .name()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| node_display_name(&node));
+            let name = node_display_name(&node);
+            Some((name, uri))
+        })
+        .collect()
+}
+
+/// Parse proxy nodes from an HTML page (wiki, blog etc.)
+pub fn parse_nodes_from_html(html: &str) -> Vec<(String, String)> {
+    extract_uris_from_html(html)
+        .into_iter()
+        .filter_map(|uri| {
+            let node = ProxyNode::parse(&uri).ok()?;
+            let name = node_display_name(&node);
             Some((name, uri))
         })
         .collect()
@@ -113,6 +156,6 @@ mod tests {
         let body = "trojan://pass@example.com:443#Good\nunknown://bad\n";
         let result = parse_nodes(body);
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].0, "Good");
+        assert_eq!(result[0].0, "trojan-example.com:443");
     }
 }

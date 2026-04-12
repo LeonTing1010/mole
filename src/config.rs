@@ -153,15 +153,19 @@ pub fn generate(
         route_rules.push(r);
     }
 
+    // Force all IPv6 through proxy to prevent IPv6 leak.
+    // Must be before bypass_cn rules so IPv6 is never sent direct.
+    // DNS strategy is ipv4_only, so normal traffic uses IPv4;
+    // this catches any IPv6 that slips through (cached AAAA, direct IP, etc.)
+    route_rules.push(json!({
+        "ip_cidr": ["::/0"],
+        "outbound": "proxy"
+    }));
+
     if bypass_cn {
         route_rules.push(json!({
             "rule_set": ["geoip-cn", "geosite-cn"],
             "outbound": "direct"
-        }));
-        // Force all IPv6 through proxy to prevent IPv6 leak
-        route_rules.push(json!({
-            "ip_cidr": ["::/0"],
-            "outbound": "proxy"
         }));
     }
 
