@@ -1,20 +1,24 @@
-use crate::{config, runner, store::Store, uri::ProxyNode};
+use crate::{config, runner, store, uri::ProxyNode};
+use std::io::Read as _;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 pub struct TestResult {
     pub ip: String,
     pub latency_ms: u64,
+    pub speed_kbps: u64,
+    pub ipv6: bool,
     pub ok: bool,
 }
 
 /// Test a single node without sudo — uses mixed inbound (SOCKS5 proxy) instead of TUN.
+/// Only checks connectivity + latency (no download speed test).
 pub fn test_node_nosudo(node: &ProxyNode) -> TestResult {
-    test_node_on_port(node, config::TEST_PORT)
+    test_node_on_port(node, config::TEST_PORT, false)
 }
 
 /// Test a node on a specific port (for concurrent bench).
-fn test_node_on_port(node: &ProxyNode, port: u16) -> TestResult {
+fn test_node_on_port(node: &ProxyNode, port: u16, measure_speed: bool) -> TestResult {
     let cfg = config::generate_test_on_port(node, port);
     let json = config::to_json_pretty(&cfg);
 
@@ -46,14 +50,14 @@ fn test_node_on_port(node: &ProxyNode, port: u16) -> TestResult {
 
     let addr = format!("127.0.0.1:{port}");
     let mut started = false;
-    for _ in 0..10 {
-        std::thread::sleep(std::time::Duration::from_secs(1));
+    for _ in 0..25 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
         if let Ok(Some(_)) = child.try_wait() {
             break;
         }
         if std::net::TcpStream::connect_timeout(
             &addr.parse().unwrap(),
-            std::time::Duration::from_millis(500),
+            std::time::Duration::from_millis(200),
         )
         .is_ok()
         {
@@ -72,7 +76,7 @@ fn test_node_on_port(node: &ProxyNode, port: u16) -> TestResult {
     let proxy_url = format!("socks5://127.0.0.1:{port}");
     let client = match reqwest::blocking::Client::builder()
         .proxy(reqwest::Proxy::all(&proxy_url).unwrap())
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(5))
         .build()
     {
         Ok(c) => c,
@@ -84,7 +88,8 @@ fn test_node_on_port(node: &ProxyNode, port: u16) -> TestResult {
         }
     };
 
-    // 1) Get IP (first request also warms up the connection)
+    // Get IP
+    let start = Instant::now();
     let ip = client
         .get("https://ipinfo.io/ip")
         .send()
@@ -93,6 +98,7 @@ fn test_node_on_port(node: &ProxyNode, port: u16) -> TestResult {
         .unwrap_or_default()
         .trim()
         .to_string();
+    let latency_ms = start.elapsed().as_millis() as u64;
 
     if ip.is_empty() {
         child.kill().ok();
@@ -101,25 +107,20 @@ fn test_node_on_port(node: &ProxyNode, port: u16) -> TestResult {
         return fail_result();
     }
 
-    // 2) Measure HTTP latency: 3 requests, take median
-    let test_urls = [
-        "https://www.google.com/generate_204",
-        "https://cp.cloudflare.com",
-        "https://www.gstatic.com/generate_204",
-    ];
-    let mut times = Vec::with_capacity(3);
-    for url in &test_urls {
-        let start = Instant::now();
-        if client.get(*url).send().is_ok() {
-            times.push(start.elapsed().as_millis() as u64);
-        }
-    }
-    times.sort();
-    let latency_ms = if times.is_empty() {
-        9999
+    // Download speed test: stream for up to 5 seconds
+    let speed_kbps = if measure_speed {
+        measure_download_speed(&proxy_url)
     } else {
-        times[times.len() / 2] // median
+        0
     };
+
+    // IPv6 support check (always test — single fast request)
+    let ipv6 = client
+        .get("https://api6.ipify.org")
+        .send()
+        .ok()
+        .and_then(|r| r.text().ok())
+        .is_some_and(|t| t.trim().contains(':'));
 
     child.kill().ok();
     child.wait().ok();
@@ -128,14 +129,63 @@ fn test_node_on_port(node: &ProxyNode, port: u16) -> TestResult {
     TestResult {
         ip,
         latency_ms,
+        speed_kbps,
+        ipv6,
         ok: true,
     }
+}
+
+/// Download a test file through the proxy for up to 5 seconds, return speed in KB/s.
+/// Tries multiple CDN URLs in case some are blocked by the proxy.
+fn measure_download_speed(proxy_url: &str) -> u64 {
+    let client = match reqwest::blocking::Client::builder()
+        .proxy(reqwest::Proxy::all(proxy_url).unwrap())
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+
+    let urls = [
+        "https://speed.cloudflare.com/__down?bytes=10000000",
+        "http://cachefly.cachefly.net/10mb.test",
+        "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb",
+    ];
+
+    for url in &urls {
+        let mut resp = match client.get(*url).send() {
+            Ok(r) if r.status().is_success() => r,
+            _ => continue,
+        };
+
+        let start = Instant::now();
+        let mut total_bytes: u64 = 0;
+        let mut buf = [0u8; 16384];
+        loop {
+            if start.elapsed().as_secs() >= 5 {
+                break;
+            }
+            match resp.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => total_bytes += n as u64,
+                Err(_) => break,
+            }
+        }
+        if total_bytes > 0 {
+            let elapsed_ms = start.elapsed().as_millis().max(1) as u64;
+            return total_bytes * 1000 / elapsed_ms / 1024; // KB/s
+        }
+    }
+    0
 }
 
 fn fail_result() -> TestResult {
     TestResult {
         ip: String::new(),
         latency_ms: 9999,
+        speed_kbps: 0,
+        ipv6: false,
         ok: false,
     }
 }
@@ -146,12 +196,137 @@ fn cleanup_bench_files(port: u16) {
     std::fs::remove_file(dir.join(format!("bench-{port}.log"))).ok();
 }
 
-/// Concurrency for bench: test up to PARALLEL nodes at once.
-const PARALLEL: usize = 4;
+/// Concurrency for bench/filter: test up to PARALLEL nodes at once.
+const PARALLEL: usize = 8;
 const BENCH_PORT_BASE: u16 = 18200;
 
+pub fn parallel_count() -> usize {
+    PARALLEL
+}
+
+/// Filter nodes in parallel: test connectivity + IPv6, return (name, uri) of passing nodes.
+/// Prints progress inline. Used by `sub add` and `sub update`.
+pub fn filter_v6_parallel(nodes: &[(String, String)]) -> Vec<(String, TestResult)> {
+    let total = nodes.len();
+    let mut results: Vec<(String, TestResult)> = Vec::new();
+
+    // Pre-parse
+    let parsed: Vec<(String, String, Option<ProxyNode>)> = nodes
+        .iter()
+        .map(|(name, uri)| (name.clone(), uri.clone(), ProxyNode::parse(uri).ok()))
+        .collect();
+
+    for chunk_start in (0..total).step_by(PARALLEL) {
+        let chunk_end = std::cmp::min(chunk_start + PARALLEL, total);
+        let chunk = &parsed[chunk_start..chunk_end];
+
+        let handles: Vec<_> = chunk
+            .iter()
+            .enumerate()
+            .map(|(slot, (name, _uri, maybe_node))| {
+                let port = BENCH_PORT_BASE + slot as u16;
+                let name = name.clone();
+                let node = maybe_node.clone();
+                let idx = chunk_start + slot;
+
+                std::thread::spawn(move || {
+                    let result = match node {
+                        Some(n) => test_node_on_port(&n, port, false),
+                        None => fail_result(),
+                    };
+                    (idx, name, result)
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            if let Ok((idx, name, r)) = handle.join() {
+                if r.ok && r.ipv6 {
+                    eprint!(
+                        "\r  \x1b[32m✓\x1b[0m [{}/{}] v6 {}          \n",
+                        idx + 1, total, name
+                    );
+                    results.push((name, r));
+                } else if r.ok {
+                    eprint!(
+                        "\r  \x1b[2m·\x1b[0m [{}/{}] v4 {}          \n",
+                        idx + 1, total, name
+                    );
+                } else {
+                    eprint!(
+                        "\r  \x1b[31m✗\x1b[0m [{}/{}] {}          \n",
+                        idx + 1, total, name
+                    );
+                }
+            }
+        }
+    }
+
+    results
+}
+
+/// Bench download speed for nodes in parallel. Returns (name, speed_kbps) sorted by speed desc.
+pub fn bench_speed_parallel(nodes: &[(String, String)]) -> Vec<(String, u64)> {
+    let total = nodes.len();
+    let mut results: Vec<(String, u64)> = Vec::new();
+
+    let parsed: Vec<(String, Option<ProxyNode>)> = nodes
+        .iter()
+        .map(|(name, uri)| (name.clone(), ProxyNode::parse(uri).ok()))
+        .collect();
+
+    for chunk_start in (0..total).step_by(PARALLEL) {
+        let chunk_end = std::cmp::min(chunk_start + PARALLEL, total);
+        let chunk = &parsed[chunk_start..chunk_end];
+
+        let handles: Vec<_> = chunk
+            .iter()
+            .enumerate()
+            .map(|(slot, (name, maybe_node))| {
+                let port = BENCH_PORT_BASE + slot as u16;
+                let name = name.clone();
+                let node = maybe_node.clone();
+                let idx = chunk_start + slot;
+
+                std::thread::spawn(move || {
+                    let result = match node {
+                        Some(n) => test_node_on_port(&n, port, true),
+                        None => fail_result(),
+                    };
+                    (idx, name, result)
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            if let Ok((idx, name, r)) = handle.join() {
+                if r.ok && r.speed_kbps > 0 {
+                    println!(
+                        "  \x1b[32m✓\x1b[0m [{}/{}] {:<30} {:>5} KB/s",
+                        idx + 1, total, name, r.speed_kbps
+                    );
+                    results.push((name, r.speed_kbps));
+                } else if r.ok {
+                    println!(
+                        "  \x1b[2m·\x1b[0m [{}/{}] {:<30}     0 KB/s",
+                        idx + 1, total, name
+                    );
+                } else {
+                    println!(
+                        "  \x1b[31m✗\x1b[0m [{}/{}] {} — failed",
+                        idx + 1, total, name
+                    );
+                }
+            }
+        }
+    }
+
+    results.sort_by(|a, b| b.1.cmp(&a.1));
+    results
+}
+
 pub fn run_bench(clean: bool) {
-    let s = Store::load();
+    let s = store::Store::load();
     if s.nodes.is_empty() {
         eprintln!("no nodes saved. use `mole add <uri>` first.");
         std::process::exit(1);
@@ -211,7 +386,7 @@ pub fn run_bench(clean: bool) {
 
                 std::thread::spawn(move || {
                     let result = match node {
-                        Some(n) => test_node_on_port(&n, port),
+                        Some(n) => test_node_on_port(&n, port, true),
                         None => fail_result(),
                     };
                     (idx, name, result)
@@ -223,12 +398,14 @@ pub fn run_bench(clean: bool) {
         for handle in handles {
             if let Ok((idx, name, r)) = handle.join() {
                 if r.ok {
+                    let v6 = if r.ipv6 { "\x1b[36m6\x1b[0m" } else { "4" };
                     println!(
-                        "  \x1b[32m✓\x1b[0m [{}/{}] {:<20} {:>5}ms  {}",
+                        "  \x1b[32m✓\x1b[0m [{}/{}] v{} {:<20} {:>5} KB/s  {}",
                         idx + 1,
                         total,
+                        v6,
                         name,
-                        r.latency_ms,
+                        r.speed_kbps,
                         r.ip
                     );
                 } else {
@@ -247,23 +424,42 @@ pub fn run_bench(clean: bool) {
     // Find fastest
     println!("  \x1b[2m─────────────────────────────────────────────────\x1b[0m");
 
+    // Save bench results to separate file
+    {
+        let mut bench = store::load_bench();
+        for (name, r) in &results {
+            if r.ok {
+                bench.insert(
+                    name.clone(),
+                    store::BenchEntry {
+                        speed_kbps: r.speed_kbps,
+                        ipv6: r.ipv6,
+                    },
+                );
+            } else {
+                bench.remove(name);
+            }
+        }
+        store::save_bench(&bench);
+    }
+
     let best = results
         .iter()
         .filter(|r| r.1.ok)
-        .min_by_key(|r| r.1.latency_ms);
+        .max_by_key(|r| r.1.speed_kbps);
 
     match best {
         Some((name, r)) => {
-            let mut s = Store::load();
+            let mut s = store::Store::load();
             s.select(name);
             s.save().ok();
             runner::mole_log(
                 "INFO",
-                &format!("bench: winner={} latency={}ms", name, r.latency_ms),
+                &format!("bench: winner={} speed={}KB/s", name, r.speed_kbps),
             );
             println!(
-                "\n  \x1b[1;32m★\x1b[0m fastest: \x1b[1m{}\x1b[0m ({}ms, {})",
-                name, r.latency_ms, r.ip
+                "\n  \x1b[1;32m★\x1b[0m fastest: \x1b[1m{}\x1b[0m ({} KB/s, {})",
+                name, r.speed_kbps, r.ip
             );
             println!("  \x1b[2mactivated. run `mole up` to connect.\x1b[0m\n");
         }
@@ -273,20 +469,28 @@ pub fn run_bench(clean: bool) {
         }
     }
 
-    // Clean up failed nodes
+    // Clean up failed nodes and non-v6 nodes
     if clean {
-        let failed: Vec<&str> = results
+        let to_remove: Vec<&str> = results
             .iter()
-            .filter(|r| !r.1.ok)
+            .filter(|r| !r.1.ok || !r.1.ipv6)
             .map(|r| r.0.as_str())
             .collect();
-        if !failed.is_empty() {
-            let mut s = Store::load();
-            for name in &failed {
+        if !to_remove.is_empty() {
+            let failed = results.iter().filter(|r| !r.1.ok).count();
+            let no_v6 = results.iter().filter(|r| r.1.ok && !r.1.ipv6).count();
+            let mut s = store::Store::load();
+            for name in &to_remove {
                 s.remove(name);
             }
             s.save().ok();
-            println!("  \x1b[2mcleaned {} failed nodes\x1b[0m\n", failed.len());
+            if failed > 0 {
+                println!("  \x1b[2mcleaned {failed} failed nodes\x1b[0m");
+            }
+            if no_v6 > 0 {
+                println!("  \x1b[2mcleaned {no_v6} v4-only nodes\x1b[0m");
+            }
+            println!();
         }
     }
 }

@@ -117,7 +117,7 @@ enum SubCommands {
         #[arg(short, long)]
         name: Option<String>,
     },
-    /// Update all subscriptions (use --test to auto-test and filter nodes)
+    /// Update all subscriptions
     Update {
         /// Test and keep only working nodes
         #[arg(short, long)]
@@ -126,6 +126,30 @@ enum SubCommands {
     /// List subscriptions
     Ls,
     /// Remove a subscription and its nodes
+    Rm { name: String },
+    /// Auto-discover from configured sources, keep only IPv6 nodes
+    Discover,
+    /// Manage discover sources
+    Source {
+        #[command(subcommand)]
+        action: SourceCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum SourceCommands {
+    /// Add a discover source
+    Add {
+        url: String,
+        #[arg(short, long)]
+        name: Option<String>,
+        /// Source is an HTML page (extract proxy URIs from content)
+        #[arg(long)]
+        html: bool,
+    },
+    /// List discover sources
+    Ls,
+    /// Remove a discover source
     Rm { name: String },
 }
 
@@ -197,7 +221,11 @@ fn main() {
                     eprintln!("\x1b[31mfailed\x1b[0m");
                     std::process::exit(1);
                 }
-                println!("\x1b[32mok\x1b[0m ({}ms, {})", r.latency_ms, r.ip);
+                if !r.ipv6 {
+                    eprintln!("\x1b[31mno IPv6 support\x1b[0m");
+                    std::process::exit(1);
+                }
+                println!("\x1b[32mok\x1b[0m ({}ms, {} v6)", r.latency_ms, r.ip);
             }
 
             let mut s = Store::load();
@@ -219,6 +247,15 @@ fn main() {
                 println!("no nodes saved. use `mole add <uri>` or `mole sub add <url>`.");
                 return;
             }
+
+            let bench = store::load_bench();
+            let v6_tag = |name: &str| -> &str {
+                if bench.get(name).is_some_and(|b| b.ipv6) {
+                    " \x1b[36mv6\x1b[0m"
+                } else {
+                    ""
+                }
+            };
 
             if tree {
                 use std::collections::BTreeMap;
@@ -249,8 +286,9 @@ fn main() {
                             if depth >= 3 {
                                 for n in nodes {
                                     let marker = if n.active { ">" } else { " " };
+                                    let v6 = v6_tag(&n.name);
                                     let name = n.name.split(" - ").nth(1).unwrap_or(&n.name);
-                                    println!("    {marker} {name}");
+                                    println!("    {marker}{v6} {name}");
                                 }
                             }
                         }
@@ -275,43 +313,72 @@ fn main() {
                     println!("  \x1b[2m{}\x1b[0m", "─".repeat(30));
                     for n in nodes {
                         let marker = if n.active { ">" } else { " " };
-                        println!("  {marker} {}", n.name);
+                        let v6 = v6_tag(&n.name);
+                        println!("  {marker}{v6} {}", n.name);
                     }
                 }
                 println!();
             } else {
                 // Simple flat list
-                for n in &s.nodes {
+                let width = s.nodes.len().to_string().len();
+                for (i, n) in s.nodes.iter().enumerate() {
                     let marker = if n.active { ">" } else { " " };
+                    let idx = i + 1;
                     let source = n
                         .source
                         .as_ref()
                         .map(|s| format!(" \x1b[2m[{s}]\x1b[0m"))
                         .unwrap_or_default();
-                    println!("{marker} {}{source}", n.name);
+                    let v6 = v6_tag(&n.name);
+                    println!("{marker} \x1b[2m{idx:>width$}\x1b[0m{v6} {}{source}", n.name);
                 }
             }
         }
 
         Commands::Use { name } => {
             let mut s = Store::load();
-            if s.select(&name) {
-                s.save().ok();
-                println!("active: {name}");
-            } else {
-                eprintln!("node not found: {name}");
-                std::process::exit(1);
+            match s.find_node(&name) {
+                Ok(idx) => {
+                    let node_name = s.nodes[idx].name.clone();
+                    s.select_by_index(idx);
+                    s.save().ok();
+                    println!("active: {node_name}");
+                }
+                Err(candidates) if !candidates.is_empty() => {
+                    eprintln!("ambiguous match for \"{name}\":");
+                    for (i, cname) in &candidates {
+                        eprintln!("  {} {cname}", i + 1);
+                    }
+                    eprintln!("be more specific or use the index number.");
+                    std::process::exit(1);
+                }
+                _ => {
+                    eprintln!("node not found: {name}");
+                    std::process::exit(1);
+                }
             }
         }
 
         Commands::Remove { name } => {
             let mut s = Store::load();
-            if s.remove(&name) {
-                s.save().ok();
-                println!("removed: {name}");
-            } else {
-                eprintln!("node not found: {name}");
-                std::process::exit(1);
+            match s.find_node(&name) {
+                Ok(idx) => {
+                    let removed = s.remove_by_index(idx);
+                    s.save().ok();
+                    println!("removed: {removed}");
+                }
+                Err(candidates) if !candidates.is_empty() => {
+                    eprintln!("ambiguous match for \"{name}\":");
+                    for (i, cname) in &candidates {
+                        eprintln!("  {} {cname}", i + 1);
+                    }
+                    eprintln!("be more specific or use the index number.");
+                    std::process::exit(1);
+                }
+                _ => {
+                    eprintln!("node not found: {name}");
+                    std::process::exit(1);
+                }
             }
         }
 
@@ -519,10 +586,28 @@ fn main() {
                         .unwrap_or("sub")
                         .to_string()
                 });
-                let count = nodes.len();
+                let total = nodes.len();
+                println!("  {total} raw nodes, testing v6 ({}x parallel)...", bench::parallel_count());
+
                 let mut s = Store::load();
                 s.add_subscription(sub_name.clone(), url);
-                s.update_subscription_nodes(&sub_name, nodes);
+
+                if runner::singbox_installed() {
+                    // Parallel v6 filter
+                    let passing = bench::filter_v6_parallel(&nodes);
+                    println!("  \x1b[32m{}\x1b[0m/{total} nodes support IPv6", passing.len());
+                    let v6_nodes: Vec<(String, String)> = passing
+                        .iter()
+                        .map(|(name, _)| {
+                            let uri = nodes.iter().find(|(n, _)| n == name).unwrap().1.clone();
+                            (name.clone(), uri)
+                        })
+                        .collect();
+                    s.update_subscription_nodes(&sub_name, v6_nodes);
+                } else {
+                    s.update_subscription_nodes(&sub_name, nodes);
+                }
+
                 if s.active_node().is_none() {
                     if let Some(first) = s.nodes.first() {
                         let name = first.name.clone();
@@ -530,7 +615,8 @@ fn main() {
                     }
                 }
                 s.save().ok();
-                println!("added subscription: {sub_name} ({count} nodes)");
+                let final_count = s.nodes.iter().filter(|n| n.source.as_deref() == Some(&sub_name)).count();
+                println!("added subscription: {sub_name} ({final_count} nodes)");
             }
             SubCommands::Update { test } => {
                 let mut s = Store::load();
@@ -539,7 +625,6 @@ fn main() {
                     return;
                 }
 
-                // Check if sing-box is installed for testing
                 let can_test = test && runner::singbox_installed();
                 if test && !can_test {
                     eprintln!("  \x1b[33mwarning\x1b[0m: sing-box not installed, skipping connectivity test");
@@ -553,24 +638,18 @@ fn main() {
                             let raw_nodes = sub::parse_nodes(&body);
                             eprintln!("{} raw nodes", raw_nodes.len());
 
-                            // Test nodes if requested
                             let nodes = if can_test {
-                                let mut working = Vec::new();
-                                let total = raw_nodes.len();
-                                for (i, (_, uri)) in raw_nodes.iter().enumerate() {
-                                    eprint!("\r  testing {} [{}/{}]... ", item.name, i + 1, total);
-                                    if let Ok(parsed) = uri::ProxyNode::parse(uri) {
-                                        let r = bench::test_node_nosudo(&parsed);
-                                        if r.ok {
-                                            // Auto-generate good name: country-ip-protocol
-                                            let name = generate_node_name(&r.ip, &parsed);
-                                            working.push((name, uri.clone()));
-                                        }
-                                    }
-                                }
-                                eprintln!();
-                                eprintln!("  \x1b[32m{}\x1b[0m working nodes", working.len());
-                                working
+                                // Parallel v6 filter
+                                let passing = bench::filter_v6_parallel(&raw_nodes);
+                                eprintln!("  \x1b[32m{}\x1b[0m v6 nodes", passing.len());
+                                passing
+                                    .iter()
+                                    .map(|(name, r)| {
+                                        let uri = raw_nodes.iter().find(|(n, _)| n == name).unwrap().1.clone();
+                                        let final_name = generate_node_name(&r.ip, &uri::ProxyNode::parse(&uri).unwrap());
+                                        (final_name, uri)
+                                    })
+                                    .collect()
                             } else {
                                 // Auto-name without testing
                                 raw_nodes
@@ -579,10 +658,7 @@ fn main() {
                                         uri::ProxyNode::parse(uri).ok().map(|parsed| {
                                             let ip = extract_ip_from_node(&parsed);
                                             (
-                                                generate_node_name(
-                                                    &ip.unwrap_or_default(),
-                                                    &parsed,
-                                                ),
+                                                generate_node_name(&ip.unwrap_or_default(), &parsed),
                                                 uri.clone(),
                                             )
                                         })
@@ -592,7 +668,7 @@ fn main() {
 
                             s.update_subscription_nodes(
                                 &item.name,
-                                nodes.iter().map(|(n, u)| (n.clone(), u.clone())).collect(),
+                                nodes,
                             );
                         }
                         Err(e) => eprintln!("failed: {e}"),
@@ -627,6 +703,185 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+            SubCommands::Discover => {
+                if !runner::singbox_installed() {
+                    eprintln!("sing-box not found, run `mole install` first.");
+                    std::process::exit(1);
+                }
+
+                let mut sources = store::load_sources();
+                if sources.is_empty() {
+                    // Fetch default sources from mole repo
+                    eprint!("  fetching default sources... ");
+                    match sub::fetch("https://raw.githubusercontent.com/LeonTing1010/mole/master/sources.json") {
+                        Ok(body) => {
+                            if let Ok(remote) = serde_json::from_str::<Vec<store::DiscoverSource>>(&body) {
+                                sources = remote;
+                                store::save_sources(&sources);
+                                eprintln!("{} sources", sources.len());
+                            } else {
+                                eprintln!("parse error");
+                                std::process::exit(1);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("failed: {e}");
+                            eprintln!("add sources manually: mole sub source add <url> [--name <name>] [--html]");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+
+                println!();
+                println!("  \x1b[1mdiscover\x1b[0m  scanning {} sources for IPv6 nodes ({}x parallel)...",
+                    sources.len(), bench::parallel_count());
+                println!("  \x1b[2m─────────────────────────────────────────────────\x1b[0m");
+
+                let mut s = Store::load();
+                let mut all_sub_names: Vec<String> = Vec::new();
+                let mut total_v6 = 0usize;
+                const TARGET_NODES: usize = 5;
+
+                for source in &sources {
+                    if total_v6 >= TARGET_NODES * 2 {
+                        break;
+                    }
+
+                    eprint!("  fetching {}... ", source.name);
+                    let body = match sub::fetch(&source.url) {
+                        Ok(b) => b,
+                        Err(e) => { eprintln!("failed: {e}"); continue; }
+                    };
+                    let raw_nodes = if source.source_type == "html" {
+                        sub::parse_nodes_from_html(&body)
+                    } else {
+                        sub::parse_nodes(&body)
+                    };
+                    if raw_nodes.is_empty() {
+                        eprintln!("0 nodes");
+                        continue;
+                    }
+                    eprintln!("{} nodes", raw_nodes.len());
+
+                    let passing = bench::filter_v6_parallel(&raw_nodes);
+                    let v6_count = passing.len();
+                    total_v6 += v6_count;
+                    all_sub_names.push(source.name.clone());
+
+                    if v6_count > 0 {
+                        s.add_subscription(source.name.clone(), source.url.clone());
+                        let v6_nodes: Vec<(String, String)> = passing
+                            .iter()
+                            .map(|(pname, r)| {
+                                let uri = raw_nodes.iter().find(|(n, _)| n == pname).unwrap().1.clone();
+                                let final_name = generate_node_name(&r.ip, &uri::ProxyNode::parse(&uri).unwrap());
+                                (final_name, uri)
+                            })
+                            .collect();
+                        s.update_subscription_nodes(&source.name, v6_nodes);
+                        println!("  \x1b[32m+{v6_count}\x1b[0m v6 nodes from {}", source.name);
+                    } else {
+                        println!("  \x1b[2m0 v6 nodes from {}\x1b[0m", source.name);
+                    }
+                }
+
+                println!("  \x1b[2m─────────────────────────────────────────────────\x1b[0m");
+
+                if total_v6 == 0 {
+                    println!("\n  \x1b[31mno IPv6 nodes found\x1b[0m\n");
+                } else {
+                    s.save().ok();
+                    println!("\n  \x1b[1m{total_v6}\x1b[0m v6 nodes found, benchmarking speed...");
+                    println!("  \x1b[2m─────────────────────────────────────────────────\x1b[0m");
+
+                    let all_v6: Vec<(String, String)> = s
+                        .nodes
+                        .iter()
+                        .filter(|n| all_sub_names.iter().any(|sn| n.source.as_deref() == Some(sn.as_str())))
+                        .map(|n| (n.name.clone(), n.uri.clone()))
+                        .collect();
+
+                    let ranked = bench::bench_speed_parallel(&all_v6);
+
+                    println!("  \x1b[2m─────────────────────────────────────────────────\x1b[0m");
+
+                    let keep: std::collections::HashSet<String> = ranked
+                        .iter()
+                        .take(TARGET_NODES)
+                        .map(|(name, _)| name.clone())
+                        .collect();
+
+                    let to_remove: Vec<String> = s
+                        .nodes
+                        .iter()
+                        .filter(|n| {
+                            all_sub_names.iter().any(|sn| n.source.as_deref() == Some(sn.as_str()))
+                                && !keep.contains(&n.name)
+                        })
+                        .map(|n| n.name.clone())
+                        .collect();
+                    for name in &to_remove {
+                        s.remove(name);
+                    }
+
+                    if let Some((best_name, best_speed)) = ranked.first() {
+                        s.select(best_name);
+                        println!(
+                            "\n  \x1b[1;32m★\x1b[0m fastest: \x1b[1m{best_name}\x1b[0m ({best_speed} KB/s)"
+                        );
+                    }
+                    s.save().ok();
+
+                    let kept = keep.len().min(ranked.len());
+                    println!("  \x1b[2mkept top {kept} nodes. run `mole up` to connect.\x1b[0m\n");
+                }
+            }
+            SubCommands::Source { action } => match action {
+                SourceCommands::Add { url, name, html } => {
+                    let source_name = name.unwrap_or_else(|| {
+                        url.split("//")
+                            .nth(1)
+                            .and_then(|s| s.split('/').next())
+                            .and_then(|s| s.split(':').next())
+                            .unwrap_or("source")
+                            .to_string()
+                    });
+                    let mut sources = store::load_sources();
+                    // Replace if exists
+                    sources.retain(|s| s.name != source_name);
+                    sources.push(store::DiscoverSource {
+                        name: source_name.clone(),
+                        url,
+                        source_type: if html { "html".into() } else { "subscription".into() },
+                    });
+                    store::save_sources(&sources);
+                    println!("added source: {source_name}");
+                }
+                SourceCommands::Ls => {
+                    let sources = store::load_sources();
+                    if sources.is_empty() {
+                        println!("no discover sources configured.");
+                        println!("add sources with: mole sub source add <url> [--name <name>] [--html]");
+                        return;
+                    }
+                    for s in &sources {
+                        let tag = if s.source_type == "html" { " \x1b[2m[html]\x1b[0m" } else { "" };
+                        println!("  {}{tag} — {}", s.name, s.url);
+                    }
+                }
+                SourceCommands::Rm { name } => {
+                    let mut sources = store::load_sources();
+                    let before = sources.len();
+                    sources.retain(|s| s.name != name);
+                    if sources.len() < before {
+                        store::save_sources(&sources);
+                        println!("removed source: {name}");
+                    } else {
+                        eprintln!("not found: {name}");
+                        std::process::exit(1);
+                    }
+                }
+            },
         },
 
         // ── Rules ───────────────────────────────────────────────

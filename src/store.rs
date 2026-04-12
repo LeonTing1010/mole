@@ -51,6 +51,78 @@ fn store_path() -> PathBuf {
     dir.join("nodes.json")
 }
 
+// ── Bench results (separate from node config) ──────────────
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct BenchEntry {
+    pub speed_kbps: u64,
+    pub ipv6: bool,
+}
+
+/// Bench results stored in ~/.mole/bench.json, keyed by node name.
+pub type BenchResults = std::collections::HashMap<String, BenchEntry>;
+
+fn bench_path() -> PathBuf {
+    let dir = dirs::home_dir()
+        .expect("cannot find home directory")
+        .join(".mole");
+    dir.join("bench.json")
+}
+
+pub fn load_bench() -> BenchResults {
+    let path = bench_path();
+    if !path.exists() {
+        return BenchResults::new();
+    }
+    let data = fs::read_to_string(&path).unwrap_or_default();
+    serde_json::from_str(&data).unwrap_or_default()
+}
+
+pub fn save_bench(results: &BenchResults) {
+    let path = bench_path();
+    if let Ok(json) = serde_json::to_string_pretty(results) {
+        fs::write(&path, json).ok();
+    }
+}
+
+// ── Discover sources (separate from subscriptions) ─────────
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct DiscoverSource {
+    pub name: String,
+    pub url: String,
+    /// "subscription" (parse URIs) or "html" (extract URIs from HTML)
+    #[serde(default = "default_source_type")]
+    pub source_type: String,
+}
+
+fn default_source_type() -> String {
+    "subscription".to_string()
+}
+
+fn sources_path() -> PathBuf {
+    let dir = dirs::home_dir()
+        .expect("cannot find home directory")
+        .join(".mole");
+    dir.join("sources.json")
+}
+
+pub fn load_sources() -> Vec<DiscoverSource> {
+    let path = sources_path();
+    if !path.exists() {
+        return vec![];
+    }
+    let data = fs::read_to_string(&path).unwrap_or_default();
+    serde_json::from_str(&data).unwrap_or_default()
+}
+
+pub fn save_sources(sources: &[DiscoverSource]) {
+    let path = sources_path();
+    if let Ok(json) = serde_json::to_string_pretty(sources) {
+        fs::write(&path, json).ok();
+    }
+}
+
 impl Store {
     pub fn load() -> Self {
         let path = store_path();
@@ -89,12 +161,42 @@ impl Store {
                 uri,
                 active: true,
                 source: None,
+
             });
         }
     }
 
     pub fn active_node(&self) -> Option<&Node> {
         self.nodes.iter().find(|n| n.active)
+    }
+
+    /// Find a node index by: exact name, 1-based index, or case-insensitive substring.
+    /// Returns `Ok(index)` on unique match, `Err(candidates)` if ambiguous (multiple matches).
+    pub fn find_node(&self, query: &str) -> Result<usize, Vec<(usize, &str)>> {
+        // 1. Exact match
+        if let Some(i) = self.nodes.iter().position(|n| n.name == query) {
+            return Ok(i);
+        }
+        // 2. Numeric index (1-based)
+        if let Ok(idx) = query.parse::<usize>() {
+            if idx >= 1 && idx <= self.nodes.len() {
+                return Ok(idx - 1);
+            }
+        }
+        // 3. Case-insensitive substring
+        let lower = query.to_lowercase();
+        let matches: Vec<(usize, &str)> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.name.to_lowercase().contains(&lower))
+            .map(|(i, n)| (i, n.name.as_str()))
+            .collect();
+        match matches.len() {
+            1 => Ok(matches[0].0),
+            0 => Err(vec![]),
+            _ => Err(matches),
+        }
     }
 
     pub fn select(&mut self, name: &str) -> bool {
@@ -107,10 +209,22 @@ impl Store {
         found
     }
 
+    pub fn select_by_index(&mut self, idx: usize) {
+        for (i, n) in self.nodes.iter_mut().enumerate() {
+            n.active = i == idx;
+        }
+    }
+
     pub fn remove(&mut self, name: &str) -> bool {
         let len = self.nodes.len();
         self.nodes.retain(|n| n.name != name);
         self.nodes.len() < len
+    }
+
+    pub fn remove_by_index(&mut self, idx: usize) -> String {
+        let name = self.nodes[idx].name.clone();
+        self.nodes.remove(idx);
+        name
     }
 
     /// Get the next node after `current_name` (wraps around). Returns None if ≤1 node.
@@ -177,6 +291,7 @@ impl Store {
                 uri,
                 active: false,
                 source: Some(sub_name.to_string()),
+
             });
         }
 
@@ -237,18 +352,21 @@ mod tests {
                     uri: "trojan://p@a.com:443#n1".into(),
                     active: true,
                     source: Some("sub1".into()),
+    
                 },
                 Node {
                     name: "n2".into(),
                     uri: "trojan://p@b.com:443#n2".into(),
                     active: false,
                     source: Some("sub1".into()),
+    
                 },
                 Node {
                     name: "manual".into(),
                     uri: "trojan://p@c.com:443#manual".into(),
                     active: false,
                     source: None,
+    
                 },
             ],
             bypass_cn: true,
