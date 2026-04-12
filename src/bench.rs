@@ -204,13 +204,12 @@ pub fn parallel_count() -> usize {
     PARALLEL
 }
 
-/// Filter nodes in parallel: test connectivity + IPv6, return (name, uri) of passing nodes.
-/// Prints progress inline. Used by `sub add` and `sub update`.
-pub fn filter_v6_parallel(nodes: &[(String, String)]) -> Vec<(String, TestResult)> {
+/// Filter working nodes in parallel: test connectivity + IPv6 detection.
+/// Returns all working nodes (v4 and v6). Prints progress inline.
+pub fn filter_parallel(nodes: &[(String, String)]) -> Vec<(String, TestResult)> {
     let total = nodes.len();
     let mut results: Vec<(String, TestResult)> = Vec::new();
 
-    // Pre-parse
     let parsed: Vec<(String, String, Option<ProxyNode>)> = nodes
         .iter()
         .map(|(name, uri)| (name.clone(), uri.clone(), ProxyNode::parse(uri).ok()))
@@ -241,17 +240,13 @@ pub fn filter_v6_parallel(nodes: &[(String, String)]) -> Vec<(String, TestResult
 
         for handle in handles {
             if let Ok((idx, name, r)) = handle.join() {
-                if r.ok && r.ipv6 {
+                if r.ok {
+                    let v6 = if r.ipv6 { "\x1b[36m6\x1b[0m" } else { "4" };
                     eprint!(
-                        "\r  \x1b[32m✓\x1b[0m [{}/{}] v6 {}          \n",
-                        idx + 1, total, name
+                        "\r  \x1b[32m✓\x1b[0m [{}/{}] v{} {}          \n",
+                        idx + 1, total, v6, name
                     );
                     results.push((name, r));
-                } else if r.ok {
-                    eprint!(
-                        "\r  \x1b[2m·\x1b[0m [{}/{}] v4 {}          \n",
-                        idx + 1, total, name
-                    );
                 } else {
                     eprint!(
                         "\r  \x1b[31m✗\x1b[0m [{}/{}] {}          \n",
@@ -301,14 +296,22 @@ pub fn bench_speed_parallel(nodes: &[(String, String)]) -> Vec<(String, u64)> {
         for handle in handles {
             if let Ok((idx, name, r)) = handle.join() {
                 if r.ok && r.speed_kbps > 0 {
+                    let v6 = if r.ipv6 { "\x1b[36m6\x1b[0m" } else { "4" };
                     println!(
-                        "  \x1b[32m✓\x1b[0m [{}/{}] {:<30} {:>5} KB/s",
-                        idx + 1, total, name, r.speed_kbps
+                        "  \x1b[32m✓\x1b[0m [{}/{}] v{} {:<28} {:>5} KB/s",
+                        idx + 1, total, v6, name, r.speed_kbps
                     );
+                    // Save bench result immediately
+                    let mut bench = store::load_bench();
+                    bench.insert(name.clone(), store::BenchEntry {
+                        speed_kbps: r.speed_kbps,
+                        ipv6: r.ipv6,
+                    });
+                    store::save_bench(&bench);
                     results.push((name, r.speed_kbps));
                 } else if r.ok {
                     println!(
-                        "  \x1b[2m·\x1b[0m [{}/{}] {:<30}     0 KB/s",
+                        "  \x1b[2m·\x1b[0m [{}/{}]    {:<28}     0 KB/s",
                         idx + 1, total, name
                     );
                 } else {
@@ -323,6 +326,70 @@ pub fn bench_speed_parallel(nodes: &[(String, String)]) -> Vec<(String, u64)> {
 
     results.sort_by(|a, b| b.1.cmp(&a.1));
     results
+}
+
+/// Discover mode: test nodes with speed, call `on_pass` for each passing node immediately.
+/// This allows saving each node as soon as it passes — survives Ctrl+C.
+pub fn bench_discover(nodes: &[(String, String)], mut on_pass: impl FnMut(&str, u64, bool)) {
+    let total = nodes.len();
+    let parsed: Vec<(String, Option<ProxyNode>)> = nodes
+        .iter()
+        .map(|(name, uri)| (name.clone(), ProxyNode::parse(uri).ok()))
+        .collect();
+
+    for chunk_start in (0..total).step_by(PARALLEL) {
+        let chunk_end = std::cmp::min(chunk_start + PARALLEL, total);
+        let chunk = &parsed[chunk_start..chunk_end];
+
+        let handles: Vec<_> = chunk
+            .iter()
+            .enumerate()
+            .map(|(slot, (name, maybe_node))| {
+                let port = BENCH_PORT_BASE + slot as u16;
+                let name = name.clone();
+                let node = maybe_node.clone();
+                let idx = chunk_start + slot;
+                std::thread::spawn(move || {
+                    let result = match node {
+                        Some(n) => test_node_on_port(&n, port, true),
+                        None => fail_result(),
+                    };
+                    (idx, name, result)
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            if let Ok((idx, name, r)) = handle.join() {
+                if r.ok && r.speed_kbps > 0 {
+                    let v6 = if r.ipv6 { "\x1b[36m6\x1b[0m" } else { "4" };
+                    println!(
+                        "  \x1b[32m✓\x1b[0m [{}/{}] v{} {:<28} {:>5} KB/s",
+                        idx + 1, total, v6, name, r.speed_kbps
+                    );
+                    // Save bench result
+                    let mut bench = store::load_bench();
+                    bench.insert(name.clone(), store::BenchEntry {
+                        speed_kbps: r.speed_kbps,
+                        ipv6: r.ipv6,
+                    });
+                    store::save_bench(&bench);
+                    // Callback to save node
+                    on_pass(&name, r.speed_kbps, r.ipv6);
+                } else if r.ok {
+                    println!(
+                        "  \x1b[2m·\x1b[0m [{}/{}]    {:<28}     0 KB/s",
+                        idx + 1, total, name
+                    );
+                } else {
+                    println!(
+                        "  \x1b[31m✗\x1b[0m [{}/{}] {} — failed",
+                        idx + 1, total, name
+                    );
+                }
+            }
+        }
+    }
 }
 
 pub fn run_bench(clean: bool) {
@@ -469,28 +536,20 @@ pub fn run_bench(clean: bool) {
         }
     }
 
-    // Clean up failed nodes and non-v6 nodes
+    // Clean up failed nodes
     if clean {
-        let to_remove: Vec<&str> = results
+        let failed: Vec<&str> = results
             .iter()
-            .filter(|r| !r.1.ok || !r.1.ipv6)
+            .filter(|r| !r.1.ok)
             .map(|r| r.0.as_str())
             .collect();
-        if !to_remove.is_empty() {
-            let failed = results.iter().filter(|r| !r.1.ok).count();
-            let no_v6 = results.iter().filter(|r| r.1.ok && !r.1.ipv6).count();
+        if !failed.is_empty() {
             let mut s = store::Store::load();
-            for name in &to_remove {
+            for name in &failed {
                 s.remove(name);
             }
             s.save().ok();
-            if failed > 0 {
-                println!("  \x1b[2mcleaned {failed} failed nodes\x1b[0m");
-            }
-            if no_v6 > 0 {
-                println!("  \x1b[2mcleaned {no_v6} v4-only nodes\x1b[0m");
-            }
-            println!();
+            println!("  \x1b[2mcleaned {} failed nodes\x1b[0m\n", failed.len());
         }
     }
 }

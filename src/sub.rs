@@ -1,4 +1,5 @@
 use crate::uri::ProxyNode;
+use chrono::Local;
 use std::time::Duration;
 
 /// Fetch subscription content from a URL.
@@ -67,11 +68,11 @@ pub fn node_display_name(node: &ProxyNode) -> String {
 
 /// Extract proxy URIs from an HTML page (e.g. GitHub wiki).
 /// Matches vless://, vmess://, trojan://, ss://, hysteria2:// etc. in the raw HTML.
+/// Decodes HTML entities (&amp; etc.) and deduplicates by server address.
 pub fn extract_uris_from_html(html: &str) -> Vec<String> {
     let mut uris = Vec::new();
-    // Match proxy URI patterns in HTML text
     let mut start = 0;
-    let protocols = ["vless://", "vmess://", "trojan://", "ss://", "hysteria2://", "hysteria://", "hy2://", "tuic://"];
+    let protocols = ["vless://", "vmess://", "trojan://", "ss://", "hysteria2://", "hysteria://", "hy2://", "tuic://", "wireguard://"];
     while start < html.len() {
         let mut earliest: Option<(usize, &str)> = None;
         for proto in &protocols {
@@ -88,15 +89,66 @@ pub fn extract_uris_from_html(html: &str) -> Vec<String> {
             .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '<' || c == '>')
             .map(|e| pos + e)
             .unwrap_or(html.len());
-        let uri = &html[pos..end];
-        if uri.len() > 10 {
-            uris.push(uri.to_string());
+        let raw = &html[pos..end];
+        if raw.len() > 10 {
+            // Decode HTML entities
+            let uri = raw.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&#x2F;", "/");
+            uris.push(uri);
         }
         start = end;
     }
-    uris.sort();
-    uris.dedup();
-    uris
+
+    // Deduplicate: keep the longest URI per protocol+host+port
+    // (short truncated URIs are subsets of the full one)
+    uris.sort_by(|a, b| b.len().cmp(&a.len())); // longest first
+    let mut seen_servers = std::collections::HashSet::new();
+    let mut unique = Vec::new();
+    for uri in &uris {
+        // Extract server key: proto + host + port
+        let key = if let Ok(node) = crate::uri::ProxyNode::parse(uri) {
+            format!("{}:{}", node.protocol(), node.server_addr())
+        } else {
+            uri.clone() // unparseable — keep as-is
+        };
+        if seen_servers.insert(key) {
+            unique.push(uri.clone());
+        }
+    }
+    unique
+}
+
+/// Expand date-pattern URL and fetch nodes from all files.
+/// Supports placeholders: {YYYY}, {MM}, {DD}, {YYYYMMDD}, {N}
+/// Tries today first, falls back to yesterday if today returns no nodes.
+pub fn fetch_date_pattern(pattern: &str, count: usize) -> Vec<(String, String)> {
+    let count = if count == 0 { 1 } else { count };
+
+    for days_ago in 0..=3 {
+        let date = Local::now().date_naive() - chrono::Duration::days(days_ago);
+        let yyyy = date.format("%Y").to_string();
+        let mm = date.format("%m").to_string();
+        let dd = date.format("%d").to_string();
+        let yyyymmdd = date.format("%Y%m%d").to_string();
+
+        let mut all_nodes = Vec::new();
+        for n in 0..count {
+            let url = pattern
+                .replace("{YYYY}", &yyyy)
+                .replace("{MM}", &mm)
+                .replace("{DD}", &dd)
+                .replace("{YYYYMMDD}", &yyyymmdd)
+                .replace("{N}", &n.to_string());
+
+            if let Ok(body) = fetch(&url) {
+                let nodes = parse_nodes(&body);
+                all_nodes.extend(nodes);
+            }
+        }
+        if !all_nodes.is_empty() {
+            return all_nodes;
+        }
+    }
+    vec![]
 }
 
 pub fn parse_nodes(body: &str) -> Vec<(String, String)> {
@@ -111,15 +163,101 @@ pub fn parse_nodes(body: &str) -> Vec<(String, String)> {
 }
 
 /// Parse proxy nodes from an HTML page (wiki, blog etc.)
+/// If no direct proxy URIs found, looks for linked .txt subscription files and fetches those.
 pub fn parse_nodes_from_html(html: &str) -> Vec<(String, String)> {
-    extract_uris_from_html(html)
-        .into_iter()
-        .filter_map(|uri| {
-            let node = ProxyNode::parse(&uri).ok()?;
-            let name = node_display_name(&node);
-            Some((name, uri))
-        })
-        .collect()
+    // First try: direct proxy URIs in the HTML
+    let direct = extract_uris_from_html(html);
+    if !direct.is_empty() {
+        return direct
+            .into_iter()
+            .filter_map(|uri| {
+                let node = ProxyNode::parse(&uri).ok()?;
+                let name = node_display_name(&node);
+                Some((name, uri))
+            })
+            .collect();
+    }
+
+    // Second try: find linked pages that might contain nodes
+    // Look for article links (e.g. *-node-share.htm) and .txt subscription files
+    let mut all_nodes = Vec::new();
+
+    // Find .txt subscription links
+    let txt_urls: Vec<String> = extract_uris_from_html_by_ext(html, ".txt");
+    for url in &txt_urls {
+        if let Ok(body) = fetch(url) {
+            all_nodes.extend(parse_nodes(&body));
+        }
+    }
+    if !all_nodes.is_empty() {
+        return all_nodes;
+    }
+
+    // Find article page links and recurse one level
+    let article_links: Vec<String> = extract_uris_from_html_by_ext(html, "node-share");
+    if let Some(link) = article_links.first() {
+        if let Ok(article_html) = fetch(link) {
+            let sub_urls = extract_uris_from_html_by_ext(&article_html, ".txt");
+            for url in &sub_urls {
+                if let Ok(body) = fetch(url) {
+                    all_nodes.extend(parse_nodes(&body));
+                }
+            }
+            if all_nodes.is_empty() {
+                // Try direct URIs from article page
+                return extract_uris_from_html(&article_html)
+                    .into_iter()
+                    .filter_map(|uri| {
+                        let node = ProxyNode::parse(&uri).ok()?;
+                        let name = node_display_name(&node);
+                        Some((name, uri))
+                    })
+                    .collect();
+            }
+        }
+    }
+
+    all_nodes
+}
+
+/// Extract HTTP URLs from HTML that end with the given suffix.
+fn extract_uris_from_html_by_ext(html: &str, suffix: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    // Match href="..." patterns
+    let mut pos = 0;
+    while let Some(idx) = html[pos..].find("href=\"") {
+        let start = pos + idx + 6;
+        if let Some(end) = html[start..].find('"') {
+            let url = &html[start..start + end];
+            if url.contains(suffix) {
+                let full = if url.starts_with("http") {
+                    url.to_string()
+                } else if url.starts_with('/') {
+                    // Resolve relative URL — extract origin from any http URL in the page
+                    if let Some(origin_start) = html.find("https://") {
+                        let origin_end = html[origin_start + 8..]
+                            .find('/')
+                            .map(|e| origin_start + 8 + e)
+                            .unwrap_or(origin_start + 8);
+                        format!("{}{}", &html[origin_start..origin_end], url)
+                    } else {
+                        pos = start + end;
+                        continue;
+                    }
+                } else {
+                    pos = start + end;
+                    continue;
+                };
+                if !urls.contains(&full) {
+                    urls.push(full);
+                }
+            }
+            pos = start + end;
+        } else {
+            break;
+        }
+    }
+    urls
 }
 
 #[cfg(test)]

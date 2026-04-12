@@ -127,8 +127,12 @@ enum SubCommands {
     Ls,
     /// Remove a subscription and its nodes
     Rm { name: String },
-    /// Auto-discover from configured sources, keep only IPv6 nodes
-    Discover,
+    /// Auto-discover working nodes from configured sources
+    Discover {
+        /// Only keep nodes that support IPv6
+        #[arg(long)]
+        v6: bool,
+    },
     /// Manage discover sources
     Source {
         #[command(subcommand)]
@@ -221,11 +225,8 @@ fn main() {
                     eprintln!("\x1b[31mfailed\x1b[0m");
                     std::process::exit(1);
                 }
-                if !r.ipv6 {
-                    eprintln!("\x1b[31mno IPv6 support\x1b[0m");
-                    std::process::exit(1);
-                }
-                println!("\x1b[32mok\x1b[0m ({}ms, {} v6)", r.latency_ms, r.ip);
+                let v6_tag = if r.ipv6 { " v6" } else { "" };
+                println!("\x1b[32mok\x1b[0m ({}ms, {}{})", r.latency_ms, r.ip, v6_tag);
             }
 
             let mut s = Store::load();
@@ -234,7 +235,12 @@ fn main() {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
-            println!("added and activated: {node_name}");
+            if !test {
+                println!("added and activated: {node_name}");
+                println!("  \x1b[2mtip: use -t to test connectivity and detect IPv6 support\x1b[0m");
+            } else {
+                println!("added and activated: {node_name}");
+            }
         }
 
         Commands::List {
@@ -594,7 +600,7 @@ fn main() {
 
                 if runner::singbox_installed() {
                     // Parallel v6 filter
-                    let passing = bench::filter_v6_parallel(&nodes);
+                    let passing = bench::filter_parallel(&nodes);
                     println!("  \x1b[32m{}\x1b[0m/{total} nodes support IPv6", passing.len());
                     let v6_nodes: Vec<(String, String)> = passing
                         .iter()
@@ -640,7 +646,7 @@ fn main() {
 
                             let nodes = if can_test {
                                 // Parallel v6 filter
-                                let passing = bench::filter_v6_parallel(&raw_nodes);
+                                let passing = bench::filter_parallel(&raw_nodes);
                                 eprintln!("  \x1b[32m{}\x1b[0m v6 nodes", passing.len());
                                 passing
                                     .iter()
@@ -703,7 +709,7 @@ fn main() {
                     std::process::exit(1);
                 }
             }
-            SubCommands::Discover => {
+            SubCommands::Discover { v6 } => {
                 if !runner::singbox_installed() {
                     eprintln!("sing-box not found, run `mole install` first.");
                     std::process::exit(1);
@@ -738,101 +744,118 @@ fn main() {
                 println!("  \x1b[2m─────────────────────────────────────────────────\x1b[0m");
 
                 let mut s = Store::load();
+                // Existing node URIs — skip duplicates, detect full cycle
+                let known_uris: std::collections::HashSet<String> =
+                    s.nodes.iter().map(|n| n.uri.clone()).collect();
                 let mut all_sub_names: Vec<String> = Vec::new();
-                let mut total_v6 = 0usize;
+                let mut total_found = 0usize;
                 const TARGET_NODES: usize = 5;
 
                 for source in &sources {
-                    if total_v6 >= TARGET_NODES * 2 {
+                    if total_found >= TARGET_NODES * 2 {
                         break;
                     }
 
                     eprint!("  fetching {}... ", source.name);
-                    let body = match sub::fetch(&source.url) {
-                        Ok(b) => b,
-                        Err(e) => { eprintln!("failed: {e}"); continue; }
-                    };
-                    let raw_nodes = if source.source_type == "html" {
-                        sub::parse_nodes_from_html(&body)
+                    let raw_nodes = if source.source_type == "date-pattern" {
+                        sub::fetch_date_pattern(&source.url, source.count)
+                    } else if source.source_type == "html" {
+                        match sub::fetch(&source.url) {
+                            Ok(body) => sub::parse_nodes_from_html(&body),
+                            Err(e) => { eprintln!("failed: {e}"); continue; }
+                        }
                     } else {
-                        sub::parse_nodes(&body)
+                        match sub::fetch(&source.url) {
+                            Ok(body) => sub::parse_nodes(&body),
+                            Err(e) => { eprintln!("failed: {e}"); continue; }
+                        }
                     };
                     if raw_nodes.is_empty() {
                         eprintln!("0 nodes");
                         continue;
                     }
-                    eprintln!("{} nodes", raw_nodes.len());
 
-                    let passing = bench::filter_v6_parallel(&raw_nodes);
-                    let v6_count = passing.len();
-                    total_v6 += v6_count;
+                    // Skip nodes we already have
+                    let mut new_nodes: Vec<(String, String)> = raw_nodes
+                        .into_iter()
+                        .filter(|(_, uri)| !known_uris.contains(uri))
+                        .collect();
+                    if new_nodes.is_empty() {
+                        eprintln!("all known — skipping");
+                        continue;
+                    }
+
+                    // Cap per-source — take the most recent (lists are newest-first)
+                    const MAX_PER_SOURCE: usize = 24;
+                    if new_nodes.len() > MAX_PER_SOURCE {
+                        new_nodes.truncate(MAX_PER_SOURCE);
+                    }
+                    eprintln!("{} new nodes", new_nodes.len());
                     all_sub_names.push(source.name.clone());
 
-                    if v6_count > 0 {
-                        s.add_subscription(source.name.clone(), source.url.clone());
-                        let v6_nodes: Vec<(String, String)> = passing
-                            .iter()
-                            .map(|(pname, r)| {
-                                let uri = raw_nodes.iter().find(|(n, _)| n == pname).unwrap().1.clone();
-                                let final_name = generate_node_name(&r.ip, &uri::ProxyNode::parse(&uri).unwrap());
-                                (final_name, uri)
-                            })
-                            .collect();
-                        s.update_subscription_nodes(&source.name, v6_nodes);
-                        println!("  \x1b[32m+{v6_count}\x1b[0m v6 nodes from {}", source.name);
-                    } else {
-                        println!("  \x1b[2m0 v6 nodes from {}\x1b[0m", source.name);
+                    // Test + save one by one via bench_discover
+                    let mut source_count = 0usize;
+                    bench::bench_discover(&new_nodes, |name, _speed, ipv6| {
+                        if v6 && !ipv6 { return; }
+                        if source_count == 0 {
+                            s.add_subscription(source.name.clone(), source.url.clone());
+                        }
+                        let uri = new_nodes.iter().find(|(n, _)| n == name).unwrap().1.clone();
+                        s.add_with_source(name.to_string(), uri, &source.name);
+                        s.save().ok();
+                        source_count += 1;
+                        total_found += 1;
+                    });
+                    if source_count == 0 {
+                        println!("  \x1b[2m0 working nodes from {}\x1b[0m", source.name);
                     }
                 }
 
                 println!("  \x1b[2m─────────────────────────────────────────────────\x1b[0m");
 
-                if total_v6 == 0 {
-                    println!("\n  \x1b[31mno IPv6 nodes found\x1b[0m\n");
+                if total_found == 0 {
+                    println!("\n  \x1b[31mno working nodes found\x1b[0m\n");
                 } else {
-                    s.save().ok();
-                    println!("\n  \x1b[1m{total_v6}\x1b[0m v6 nodes found, benchmarking speed...");
-                    println!("  \x1b[2m─────────────────────────────────────────────────\x1b[0m");
-
-                    let all_v6: Vec<(String, String)> = s
+                    // Keep top N by speed, remove the rest
+                    let discover_nodes: Vec<String> = s
                         .nodes
                         .iter()
                         .filter(|n| all_sub_names.iter().any(|sn| n.source.as_deref() == Some(sn.as_str())))
-                        .map(|n| (n.name.clone(), n.uri.clone()))
+                        .map(|n| n.name.clone())
                         .collect();
 
-                    let ranked = bench::bench_speed_parallel(&all_v6);
+                    // Sort by bench speed
+                    let bench_data = store::load_bench();
+                    let mut by_speed: Vec<(&String, u64)> = discover_nodes
+                        .iter()
+                        .map(|n| (n, bench_data.get(n).map(|b| b.speed_kbps).unwrap_or(0)))
+                        .collect();
+                    by_speed.sort_by(|a, b| b.1.cmp(&a.1));
 
-                    println!("  \x1b[2m─────────────────────────────────────────────────\x1b[0m");
-
-                    let keep: std::collections::HashSet<String> = ranked
+                    let keep: std::collections::HashSet<&String> = by_speed
                         .iter()
                         .take(TARGET_NODES)
-                        .map(|(name, _)| name.clone())
+                        .map(|(name, _)| *name)
                         .collect();
 
-                    let to_remove: Vec<String> = s
-                        .nodes
+                    let to_remove: Vec<String> = discover_nodes
                         .iter()
-                        .filter(|n| {
-                            all_sub_names.iter().any(|sn| n.source.as_deref() == Some(sn.as_str()))
-                                && !keep.contains(&n.name)
-                        })
-                        .map(|n| n.name.clone())
+                        .filter(|n| !keep.contains(n))
+                        .cloned()
                         .collect();
                     for name in &to_remove {
                         s.remove(name);
                     }
 
-                    if let Some((best_name, best_speed)) = ranked.first() {
-                        s.select(best_name);
+                    if let Some((best, speed)) = by_speed.first() {
+                        s.select(best);
                         println!(
-                            "\n  \x1b[1;32m★\x1b[0m fastest: \x1b[1m{best_name}\x1b[0m ({best_speed} KB/s)"
+                            "\n  \x1b[1;32m★\x1b[0m fastest: \x1b[1m{best}\x1b[0m ({speed} KB/s)"
                         );
                     }
                     s.save().ok();
 
-                    let kept = keep.len().min(ranked.len());
+                    let kept = keep.len().min(by_speed.len());
                     println!("  \x1b[2mkept top {kept} nodes. run `mole up` to connect.\x1b[0m\n");
                 }
             }
@@ -847,12 +870,12 @@ fn main() {
                             .to_string()
                     });
                     let mut sources = store::load_sources();
-                    // Replace if exists
                     sources.retain(|s| s.name != source_name);
                     sources.push(store::DiscoverSource {
                         name: source_name.clone(),
                         url,
                         source_type: if html { "html".into() } else { "subscription".into() },
+                        count: 0,
                     });
                     store::save_sources(&sources);
                     println!("added source: {source_name}");
@@ -865,7 +888,11 @@ fn main() {
                         return;
                     }
                     for s in &sources {
-                        let tag = if s.source_type == "html" { " \x1b[2m[html]\x1b[0m" } else { "" };
+                        let tag = match s.source_type.as_str() {
+                            "html" => " \x1b[2m[html]\x1b[0m",
+                            "date-pattern" => " \x1b[2m[daily]\x1b[0m",
+                            _ => "",
+                        };
                         println!("  {}{tag} — {}", s.name, s.url);
                     }
                 }

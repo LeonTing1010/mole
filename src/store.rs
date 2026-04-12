@@ -91,9 +91,16 @@ pub fn save_bench(results: &BenchResults) {
 pub struct DiscoverSource {
     pub name: String,
     pub url: String,
-    /// "subscription" (parse URIs) or "html" (extract URIs from HTML)
+    /// "subscription", "html", or "date-pattern"
     #[serde(default = "default_source_type")]
     pub source_type: String,
+    /// For date-pattern: number of files (0..count), default 1
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub count: usize,
+}
+
+fn is_zero(v: &usize) -> bool {
+    *v == 0
 }
 
 fn default_source_type() -> String {
@@ -161,7 +168,21 @@ impl Store {
                 uri,
                 active: true,
                 source: None,
+            });
+        }
+    }
 
+    /// Add a node with a source tag (for discover). Does not deactivate other nodes.
+    pub fn add_with_source(&mut self, name: String, uri: String, source: &str) {
+        if let Some(existing) = self.nodes.iter_mut().find(|n| n.name == name) {
+            existing.uri = uri;
+            existing.source = Some(source.to_string());
+        } else {
+            self.nodes.push(Node {
+                name,
+                uri,
+                active: false,
+                source: Some(source.to_string()),
             });
         }
     }
