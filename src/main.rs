@@ -3,6 +3,7 @@ mod config;
 mod connect;
 mod platform;
 mod runner;
+mod server;
 mod status;
 mod store;
 mod sub;
@@ -107,6 +108,11 @@ enum Commands {
         #[command(subcommand)]
         action: ServiceCommands,
     },
+    /// Manage self-hosted proxy servers (deploy VPS + hysteria2)
+    Server {
+        #[command(subcommand)]
+        action: ServerCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -181,6 +187,64 @@ enum ServiceCommands {
     Install,
     /// Uninstall system service
     Uninstall,
+}
+
+#[derive(Subcommand)]
+enum ServerCommands {
+    /// Save Vultr API key
+    Setup,
+    /// Deploy a new user (reuses existing server if slots available, else creates new VPS)
+    Deploy {
+        /// Region (e.g. nrt=Tokyo, icn=Seoul, sgp=Singapore)
+        #[arg(long, default_value = "nrt")]
+        region: String,
+        /// VPS plan (default: vc2-1c-1gb ~$2.50/mo)
+        #[arg(long)]
+        plan: Option<String>,
+        /// User name (for identifying this slot)
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Provision a full server (3 slots) and output URIs for Creem license keys
+    Provision {
+        /// Region (e.g. nrt=Tokyo, icn=Seoul, sgp=Singapore)
+        #[arg(long, default_value = "nrt")]
+        region: String,
+        /// VPS plan
+        #[arg(long)]
+        plan: Option<String>,
+    },
+    /// Add a user to an existing server
+    AddUser {
+        /// Server name
+        server: String,
+        /// User name
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Remove a user from a server
+    RmUser {
+        /// Server name
+        server: String,
+        /// User name to remove
+        user: String,
+    },
+    /// List deployed servers and their users
+    Ls,
+    /// Destroy a server and remove its node
+    Destroy { name: String },
+    /// List available Vultr regions
+    Regions,
+    /// Test SSH connectivity to a server IP
+    SshTest { ip: String },
+    /// Configure Creem payment integration
+    CreemSetup,
+    /// Start webhook server (receives Creem payments, auto-deploys users)
+    Serve {
+        /// HTTP port to listen on
+        #[arg(long, default_value = "8080")]
+        port: u16,
+    },
 }
 
 fn main() {
@@ -566,9 +630,12 @@ fn main() {
                     let pids = String::from_utf8_lossy(&output.stdout);
                     for pid in pids.lines() {
                         let pid = pid.trim();
-                        if pid != my_pid {
-                            std::process::Command::new("kill").arg(pid).output().ok();
-                            killed_mole = true;
+                        if !pid.is_empty() && pid != my_pid {
+                            if let Ok(out) = std::process::Command::new("kill").arg(pid).output() {
+                                if out.status.success() {
+                                    killed_mole = true;
+                                }
+                            }
                         }
                     }
                 }
@@ -1016,6 +1083,75 @@ fn main() {
             }
         }
 
+        // ── Server ──────────────────────────────────────────────
+        Commands::Server { action } => match action {
+            ServerCommands::Setup => {
+                if let Err(e) = server::cmd_setup() {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            ServerCommands::Deploy {
+                region,
+                plan,
+                name,
+            } => {
+                if let Err(e) = server::cmd_deploy(&region, plan.as_deref(), name.as_deref()) {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            ServerCommands::Provision { region, plan } => {
+                if let Err(e) = server::cmd_provision(&region, plan.as_deref()) {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            ServerCommands::AddUser { server, name } => {
+                if let Err(e) = server::cmd_add_user(&server, name.as_deref()) {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            ServerCommands::RmUser { server, user } => {
+                if let Err(e) = server::cmd_rm_user(&server, &user) {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            ServerCommands::Ls => server::cmd_ls(),
+            ServerCommands::Destroy { name } => {
+                if let Err(e) = server::cmd_destroy(&name) {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            ServerCommands::SshTest { ip } => {
+                if let Err(e) = server::cmd_ssh_test(&ip) {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            ServerCommands::Regions => {
+                if let Err(e) = server::cmd_regions() {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            ServerCommands::CreemSetup => {
+                if let Err(e) = server::cmd_creem_setup() {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            ServerCommands::Serve { port } => {
+                if let Err(e) = server::cmd_serve(port) {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        },
+
         // ── Connect ─────────────────────────────────────────────
         Commands::Up {
             bypass_cn,
@@ -1030,6 +1166,14 @@ fn main() {
                 eprintln!("no nodes. use `mole add <uri>` or `mole sub add <url>` first.");
                 std::process::exit(1);
             }
+            // Prevent double-launch
+            if !is_daemon {
+                if let Err(e) = runner::check_already_running() {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
+
             if !runner::singbox_installed() {
                 println!("sing-box not found, installing...");
                 if let Err(e) = runner::install_singbox() {
@@ -1038,10 +1182,17 @@ fn main() {
                 }
             }
             runner::stop_singbox().ok();
+            runner::cleanup_tun();
 
             // Daemon: re-exec in background
             if daemon && !is_daemon {
-                let exe = std::env::current_exe().expect("current exe");
+                let exe = match std::env::current_exe() {
+                    Ok(e) => e,
+                    Err(e) => {
+                        eprintln!("cannot find executable: {e}");
+                        std::process::exit(1);
+                    }
+                };
                 let mut args = vec![
                     "up".to_string(),
                     "--bypass-cn".to_string(),
@@ -1053,17 +1204,34 @@ fn main() {
                 if share {
                     args.push("--share".to_string());
                 }
-                let log = std::fs::File::create(runner::mole_dir().join("daemon.log"))
-                    .expect("create log");
-                let log_err = log.try_clone().expect("clone");
-                let mut child = std::process::Command::new(&exe)
+                let log = match std::fs::File::create(runner::mole_dir().join("daemon.log")) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("create daemon log: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                let log_err = match log.try_clone() {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("clone log handle: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                let mut child = match std::process::Command::new(&exe)
                     .args(&args)
                     .env("MOLE_DAEMON", "1")
                     .stdin(std::process::Stdio::null())
                     .stdout(log)
                     .stderr(log_err)
                     .spawn()
-                    .expect("spawn daemon");
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("spawn daemon: {e}");
+                        std::process::exit(1);
+                    }
+                };
                 let pid = child.id();
                 // Reap child in background so parent doesn't leave a zombie
                 std::thread::spawn(move || {
@@ -1076,7 +1244,7 @@ fn main() {
             }
 
             // Ctrl+C handler
-            ctrlc::set_handler(move || {
+            if let Err(e) = ctrlc::set_handler(move || {
                 if runner::SHUTTING_DOWN.swap(true, Ordering::SeqCst) {
                     std::process::exit(130);
                 }
@@ -1085,8 +1253,9 @@ fn main() {
                 eprintln!("\r\x1b[K  \x1b[2mstatus\x1b[0m  disconnected");
                 std::fs::remove_file(runner::pid_path()).ok();
                 std::process::exit(0);
-            })
-            .ok();
+            }) {
+                eprintln!("warning: Ctrl+C handler failed: {e}");
+            }
 
             if is_daemon {
                 std::fs::write(runner::pid_path(), std::process::id().to_string()).ok();

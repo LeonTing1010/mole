@@ -72,6 +72,34 @@ pub fn prev_log_path() -> PathBuf {
     mole_dir().join("sing-box.prev.log")
 }
 
+// ── PID file locking ───────────────────────────────────────────────
+
+/// Check if another mole instance is already running. Returns Err with PID if so.
+pub fn check_already_running() -> Result<(), String> {
+    let path = pid_path();
+    if !path.exists() {
+        return Ok(());
+    }
+    let pid_str = fs::read_to_string(&path).unwrap_or_default();
+    let pid = pid_str.trim();
+    if pid.is_empty() {
+        return Ok(());
+    }
+    // Check if the process is actually alive
+    let alive = Command::new("kill")
+        .args(["-0", pid])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if alive {
+        Err(format!("mole already running (pid={pid}). Use 'mole down' to stop it first."))
+    } else {
+        // Stale PID file — clean up
+        fs::remove_file(&path).ok();
+        Ok(())
+    }
+}
+
 // ── Structured logging ──────────────────────────────────────────────
 
 /// Append a timestamped line to ~/.mole/mole.log.
@@ -80,6 +108,45 @@ pub fn mole_log(level: &str, msg: &str) {
     let path = mole_dir().join("mole.log");
     if let Ok(mut f) = fs::File::options().create(true).append(true).open(&path) {
         writeln!(f, "{timestamp} [{level}] {msg}").ok();
+    }
+}
+
+// ── TUN cleanup ────────────────────────────────────────────────────
+
+/// Clean up orphaned TUN interfaces left by crashed sing-box.
+/// Must be called before starting a new sing-box instance.
+pub fn cleanup_tun() {
+    #[cfg(target_os = "macos")]
+    {
+        // On macOS, sing-box creates utun* interfaces. Find and remove them.
+        if let Ok(output) = Command::new("ifconfig").output() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                // utun interfaces created by sing-box have 172.19.0.1
+                if line.starts_with("utun") && line.contains("flags=") {
+                    let iface = line.split(':').next().unwrap_or("");
+                    if !iface.is_empty() {
+                        // Check if this interface has our TUN address
+                        if let Ok(detail) = Command::new("ifconfig").arg(iface).output() {
+                            let detail_str = String::from_utf8_lossy(&detail.stdout);
+                            if detail_str.contains("172.19.0.1") {
+                                let _ = Command::new("sudo")
+                                    .args(["-n", "ifconfig", iface, "destroy"])
+                                    .output();
+                                mole_log("INFO", &format!("cleaned up orphaned TUN: {iface}"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // On Linux, explicitly delete the tun interface
+        let _ = Command::new("sudo")
+            .args(["-n", "ip", "link", "delete", "tun0"])
+            .output();
     }
 }
 
@@ -131,8 +198,10 @@ pub fn check_config(config_path: &std::path::Path) -> Result<(), String> {
     if !bin.exists() {
         return Err("sing-box binary not found".into());
     }
-    let output = Command::new(bin.to_str().unwrap())
-        .args(["check", "-c", config_path.to_str().unwrap()])
+    let bin_str = bin.to_str().ok_or("non-UTF8 binary path")?;
+    let cfg_str = config_path.to_str().ok_or("non-UTF8 config path")?;
+    let output = Command::new(bin_str)
+        .args(["check", "-c", cfg_str])
         .output()
         .map_err(|e| format!("config check: {e}"))?;
     if !output.status.success() {
@@ -227,34 +296,24 @@ pub fn write_config(json: &str) -> Result<PathBuf, String> {
 /// Stop sing-box: SIGTERM → wait → SIGKILL.
 /// When SHUTTING_DOWN is set (Ctrl+C), skip graceful wait and use SIGKILL directly.
 pub fn stop_singbox() -> Result<bool, String> {
-    if SHUTTING_DOWN.load(Ordering::Relaxed) {
-        // Fast path for user-initiated exit - try without sudo first
-        let output = Command::new("pkill").args(["-9", "sing-box"]).output();
-
-        // If failed, try with sudo
-        if !output.as_ref().map(|o| o.status.success()).unwrap_or(false) {
-            let _ = Command::new("sudo")
-                .args(["-n", "pkill", "-9", "sing-box"])
-                .output();
-        }
+    if SHUTTING_DOWN.load(Ordering::SeqCst) {
+        // Fast path: SIGKILL immediately
+        let _ = Command::new("sudo")
+            .args(["-n", "pkill", "-9", "sing-box"])
+            .output();
         std::thread::sleep(Duration::from_millis(500));
-        SINGBOX_PID.store(0, Ordering::Relaxed);
+        SINGBOX_PID.store(0, Ordering::SeqCst);
         return Ok(true);
     }
 
-    // Graceful: try without sudo first (user can kill their own processes)
-    let term = Command::new("pkill").args(["-TERM", "sing-box"]).output();
-
-    // If failed, try with sudo
-    if !term.as_ref().map(|o| o.status.success()).unwrap_or(false) {
-        let _ = Command::new("sudo")
-            .args(["-n", "pkill", "-TERM", "sing-box"])
-            .output();
-    }
+    // Graceful: SIGTERM first, sudo (sing-box runs as root)
+    let term = Command::new("sudo")
+        .args(["-n", "pkill", "-TERM", "sing-box"])
+        .output();
 
     let term_success = term.as_ref().map(|o| o.status.success()).unwrap_or(false);
     if !term_success {
-        SINGBOX_PID.store(0, Ordering::Relaxed);
+        SINGBOX_PID.store(0, Ordering::SeqCst);
         return Ok(false); // No process found
     }
 
@@ -269,19 +328,26 @@ pub fn stop_singbox() -> Result<bool, String> {
 
     if alive {
         let _ = Command::new("sudo")
-            .args(["pkill", "-9", "sing-box"])
+            .args(["-n", "pkill", "-9", "sing-box"])
             .output();
         std::thread::sleep(Duration::from_millis(500));
     }
 
-    SINGBOX_PID.store(0, Ordering::Relaxed);
+    SINGBOX_PID.store(0, Ordering::SeqCst);
     Ok(true)
 }
 
 // ── Keepalive + health watchdog ─────────────────────────────────────
 
+/// Keepalive failure threshold. Higher = fewer false positives on flaky networks.
+const KEEPALIVE_THRESHOLD: u32 = 5;
+/// Keepalive DNS read timeout. Generous to avoid false positives on high-latency links.
+const KEEPALIVE_DNS_TIMEOUT: Duration = Duration::from_secs(5);
+/// Keepalive check interval.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+
 /// Background keepalive: sends DNS query every 30s, verifies response.
-/// After 3 consecutive failures, triggers sing-box restart via HEALTH_KILL.
+/// After KEEPALIVE_THRESHOLD consecutive failures, triggers sing-box restart.
 pub fn start_keepalive(stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         use std::net::UdpSocket;
@@ -299,23 +365,26 @@ pub fn start_keepalive(stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
         ];
         let mut consecutive_failures: u32 = 0;
 
-        loop {
-            std::thread::sleep(Duration::from_secs(30));
+        // Initial delay: let sing-box establish tunnel before checking
+        std::thread::sleep(Duration::from_secs(10));
 
-            if stop.load(Ordering::Relaxed) || SHUTTING_DOWN.load(Ordering::Relaxed) {
+        loop {
+            if stop.load(Ordering::SeqCst) || SHUTTING_DOWN.load(Ordering::SeqCst) {
                 break;
             }
 
-            let ok = (|| -> Option<()> {
-                let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
-                sock.set_write_timeout(Some(Duration::from_secs(2))).ok();
-                sock.set_read_timeout(Some(Duration::from_secs(3))).ok();
-                sock.send_to(&dns_query, "8.8.8.8:53").ok()?;
-                let mut buf = [0u8; 512];
-                sock.recv_from(&mut buf).ok()?;
-                Some(())
-            })()
-            .is_some();
+            // Try multiple DNS servers to reduce false positives
+            let ok = ["8.8.8.8:53", "1.1.1.1:53", "9.9.9.9:53"].iter().any(|server| {
+                (|| -> Option<()> {
+                    let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
+                    sock.set_read_timeout(Some(KEEPALIVE_DNS_TIMEOUT)).ok();
+                    sock.send_to(&dns_query, server).ok()?;
+                    let mut buf = [0u8; 512];
+                    sock.recv_from(&mut buf).ok()?;
+                    Some(())
+                })()
+                .is_some()
+            });
 
             if ok {
                 if consecutive_failures > 0 {
@@ -329,10 +398,10 @@ pub fn start_keepalive(stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
                 consecutive_failures += 1;
                 mole_log(
                     "WARN",
-                    &format!("keepalive: no response ({consecutive_failures}/3)"),
+                    &format!("keepalive: no response ({consecutive_failures}/{KEEPALIVE_THRESHOLD})"),
                 );
 
-                if consecutive_failures >= 3 {
+                if consecutive_failures >= KEEPALIVE_THRESHOLD {
                     mole_log("WARN", "keepalive: tunnel appears dead, triggering restart");
                     HEALTH_KILL.store(true, Ordering::SeqCst);
                     stop_singbox().ok();
@@ -341,6 +410,8 @@ pub fn start_keepalive(stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
                     std::thread::sleep(Duration::from_secs(30));
                 }
             }
+
+            std::thread::sleep(KEEPALIVE_INTERVAL);
         }
     })
 }
@@ -380,11 +451,13 @@ fn spawn_singbox(config_path: &std::path::Path, retry_num: u32) -> Result<Child,
     };
     let log_err = log.try_clone().map_err(|e| format!("clone log: {e}"))?;
 
+    let bin_str = bin.to_str().ok_or("non-UTF8 binary path")?;
+    let cfg_str = config_path.to_str().ok_or("non-UTF8 config path")?;
     let child = Command::new("sudo")
-        .arg(bin.to_str().unwrap())
+        .arg(bin_str)
         .arg("run")
         .arg("-c")
-        .arg(config_path.to_str().unwrap())
+        .arg(cfg_str)
         .stdout(log)
         .stderr(log_err)
         .spawn()
@@ -403,6 +476,13 @@ pub fn run_singbox(config_path: &std::path::Path) -> Result<ExitReason, String> 
     let mut retries: u32 = 0;
 
     loop {
+        // Kill any orphaned sing-box and clean up TUN before each spawn
+        let _ = Command::new("sudo")
+            .args(["-n", "pkill", "-9", "sing-box"])
+            .output();
+        std::thread::sleep(Duration::from_millis(500));
+        cleanup_tun();
+
         let mut child = spawn_singbox(config_path, retries)?;
         let pid = child.id();
         SINGBOX_PID.store(pid, Ordering::SeqCst);
@@ -411,10 +491,11 @@ pub fn run_singbox(config_path: &std::path::Path) -> Result<ExitReason, String> 
         let started_at = Instant::now();
         let status = child.wait().map_err(|e| format!("wait: {e}"))?;
         let uptime = started_at.elapsed();
-        SINGBOX_PID.store(0, Ordering::Relaxed);
+        SINGBOX_PID.store(0, Ordering::SeqCst);
 
         // User-initiated shutdown
-        if SHUTTING_DOWN.load(Ordering::Relaxed) {
+        if SHUTTING_DOWN.load(Ordering::SeqCst) {
+            cleanup_tun();
             return Ok(ExitReason::Clean);
         }
 
@@ -430,6 +511,7 @@ pub fn run_singbox(config_path: &std::path::Path) -> Result<ExitReason, String> 
         if let Some(sig) = status.signal() {
             if !was_health_kill && (sig == 2 || sig == 15) {
                 // SIGINT/SIGTERM from user — clean exit
+                cleanup_tun();
                 return Ok(ExitReason::Clean);
             }
             mole_log(
@@ -462,6 +544,7 @@ pub fn run_singbox(config_path: &std::path::Path) -> Result<ExitReason, String> 
             );
             eprintln!("\nsing-box crashed {MAX_RETRIES} times, giving up");
             eprintln!("check log: {}", log_path().display());
+            cleanup_tun();
             return Ok(ExitReason::MaxRetries);
         }
 

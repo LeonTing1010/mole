@@ -100,7 +100,7 @@ pub fn extract_uris_from_html(html: &str) -> Vec<String> {
 
     // Deduplicate: keep the longest URI per protocol+host+port
     // (short truncated URIs are subsets of the full one)
-    uris.sort_by(|a, b| b.len().cmp(&a.len())); // longest first
+    uris.sort_by_key(|u| std::cmp::Reverse(u.len())); // longest first
     let mut seen_servers = std::collections::HashSet::new();
     let mut unique = Vec::new();
     for uri in &uris {

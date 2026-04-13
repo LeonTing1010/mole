@@ -19,10 +19,28 @@ pub fn arch_name() -> &'static str {
     }
 }
 
-/// Detect the primary network interface.
+/// Detect the primary network interface dynamically.
 pub fn default_interface() -> String {
     #[cfg(target_os = "macos")]
     {
+        // Use route to find the actual default interface (handles WiFi/Ethernet/Thunderbolt)
+        if let Ok(output) = Command::new("route")
+            .args(["-n", "get", "default"])
+            .output()
+        {
+            if output.status.success() {
+                let text = String::from_utf8_lossy(&output.stdout);
+                for line in text.lines() {
+                    let trimmed = line.trim();
+                    if let Some(iface) = trimmed.strip_prefix("interface:") {
+                        let iface = iface.trim();
+                        if !iface.is_empty() {
+                            return iface.to_string();
+                        }
+                    }
+                }
+            }
+        }
         return "en0".to_string();
     }
 

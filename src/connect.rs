@@ -220,7 +220,7 @@ pub fn run_single(s: &store::Store, bypass_cn: bool, is_daemon: bool, share: boo
 
     let mut current_node = node;
     let mut tried_nodes: Vec<String> = vec![];
-    let mut thread_stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::new(AtomicBool::new(false));
     let mut first_node = true;
 
     loop {
@@ -308,8 +308,13 @@ pub fn run_single(s: &store::Store, bypass_cn: bool, is_daemon: bool, share: boo
                 break;
             }
             Ok(runner::ExitReason::MaxRetries) => {
+                // Signal old keepalive/monitor threads to stop, then reset for next node
                 thread_stop.store(true, Ordering::SeqCst);
                 runner::stop_singbox().ok();
+                // Wait for old threads to see stop signal (keepalive checks every 30s,
+                // but is sleeping — worst case we wait a bit longer than needed)
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                thread_stop.store(false, Ordering::SeqCst);
 
                 tried_nodes.push(current_node.name.clone());
                 let s = store::Store::load();
@@ -319,7 +324,6 @@ pub fn run_single(s: &store::Store, bypass_cn: bool, is_daemon: bool, share: boo
                             "INFO",
                             &format!("failover: {} -> {}", current_node.name, next.name),
                         );
-                        thread_stop = Arc::new(AtomicBool::new(false));
                         current_node = next;
                         continue;
                     }

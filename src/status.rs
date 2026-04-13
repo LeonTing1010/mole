@@ -133,10 +133,18 @@ fn wait_for_singbox_ready(stop: &AtomicBool) -> bool {
         if stop.load(Ordering::Relaxed) || crate::runner::SHUTTING_DOWN.load(Ordering::Relaxed) {
             return false;
         }
-        // Check for fatal errors in log
-        if let Ok(log) = std::fs::read_to_string(&log_path) {
-            if log.contains("FATAL") {
-                for line in log.lines() {
+        // Check for fatal errors in log (read tail only to avoid blocking on large logs)
+        if let Ok(file) = std::fs::File::open(&log_path) {
+            use std::io::{Read, Seek, SeekFrom};
+            let mut file = file;
+            let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+            // Only read last 4KB — FATAL errors appear near the end
+            if len > 4096 {
+                let _ = file.seek(SeekFrom::End(-4096));
+            }
+            let mut tail = String::new();
+            if file.read_to_string(&mut tail).is_ok() && tail.contains("FATAL") {
+                for line in tail.lines() {
                     if line.contains("FATAL") {
                         eprintln!(
                             "  \x1b[31merror:\x1b[0m {}",
