@@ -240,6 +240,12 @@ All state lives under `~/.mole/`:
 - macOS 11+ or Linux (kernel 4.1+ with TUN support)
 - sudo access (required for TUN interface)
 
+## Support
+
+If mole is useful to you, consider buying me a coffee:
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/leonting1010)
+
 ## License
 
 MIT
