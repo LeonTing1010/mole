@@ -351,14 +351,6 @@ impl Store {
         self.rules.clear();
     }
 
-    pub fn normalize_names(&mut self) {
-        use crate::uri::ProxyNode;
-        for node in &mut self.nodes {
-            if let Ok(parsed) = ProxyNode::parse(&node.uri) {
-                node.name = crate::sub::node_display_name(&parsed);
-            }
-        }
-    }
 }
 
 #[cfg(test)]

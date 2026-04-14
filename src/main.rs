@@ -14,48 +14,55 @@ use std::sync::atomic::Ordering;
 use clap::{Parser, Subcommand};
 use store::Store;
 
-/// Render a QR code to the terminal using Unicode half-block characters.
-/// Each text row encodes two QR rows, producing a compact, scannable output.
+/// Render a QR code compactly using Unicode Braille characters (2x4 dots per char).
+/// EcLevel::L minimizes QR version. Result is ~18 chars wide for typical URIs.
 fn render_qr(content: &str) -> Option<String> {
-    let code = qrcode::QrCode::new(content.as_bytes()).ok()?;
+    use qrcode::EcLevel;
+    let code = qrcode::QrCode::with_error_correction_level(content.as_bytes(), EcLevel::L).ok()?;
     let colors = code.to_colors();
-    let width = code.width();
+    let w = code.width();
     let modules: Vec<Vec<bool>> = colors
-        .chunks(width)
+        .chunks(w)
         .map(|row| row.iter().map(|c| *c == qrcode::Color::Dark).collect())
         .collect();
-    let height = modules.len();
+    let h = modules.len();
 
-    // Add 1-module quiet zone around the code
-    let total_w = width + 2;
-    let total_h = height + 2;
+    // 1-module quiet zone
+    let tw = w + 2;
+    let th = h + 2;
     let get = |r: usize, c: usize| -> bool {
-        if r == 0 || r > height || c == 0 || c > width {
-            false // quiet zone = light
-        } else {
-            modules[r - 1][c - 1]
-        }
+        if r == 0 || r > h || c == 0 || c > w { false } else { modules[r - 1][c - 1] }
     };
 
+    // Braille: each char is a 2-wide × 4-tall dot grid (U+2800 base)
+    // Dot positions:  (0,0)=0x01 (1,0)=0x08
+    //                 (0,1)=0x02 (1,1)=0x10
+    //                 (0,2)=0x04 (1,2)=0x20
+    //                 (0,3)=0x40 (1,3)=0x80
+    let dot_map: [[u8; 4]; 2] = [
+        [0x01, 0x02, 0x04, 0x40],
+        [0x08, 0x10, 0x20, 0x80],
+    ];
+
     let mut out = String::new();
-    // Process two rows at a time using half-block characters
-    // ▀ = top dark, bottom light  ▄ = top light, bottom dark
-    // █ = both dark               ' ' = both light
     let mut r = 0;
-    while r < total_h {
-        out.push_str("  "); // left margin
-        for c in 0..total_w {
-            let top = get(r, c);
-            let bot = if r + 1 < total_h { get(r + 1, c) } else { false };
-            out.push(match (top, bot) {
-                (true, true) => '\u{2588}',   // █
-                (true, false) => '\u{2580}',  // ▀
-                (false, true) => '\u{2584}',  // ▄
-                (false, false) => ' ',
-            });
+    while r < th {
+        out.push_str("  ");
+        let mut c = 0;
+        while c < tw {
+            let mut bits: u8 = 0;
+            for (dc, col_dots) in dot_map.iter().enumerate() {
+                for (dr, &dot_bit) in col_dots.iter().enumerate() {
+                    if r + dr < th && c + dc < tw && get(r + dr, c + dc) {
+                        bits |= dot_bit;
+                    }
+                }
+            }
+            out.push(char::from_u32(0x2800 + bits as u32).unwrap_or(' '));
+            c += 2;
         }
         out.push('\n');
-        r += 2;
+        r += 4;
     }
     Some(out)
 }
@@ -114,18 +121,10 @@ enum Commands {
     /// Remove a saved node
     #[command(name = "rm")]
     Remove { name: String },
-    /// Normalize node names to use unified format
-    Rename,
     /// Generate QR code for a node (scan with phone to add)
     Qr {
         /// Node name (defaults to active node)
         name: Option<String>,
-    },
-    /// Test node connectivity (no sudo required)
-    Test {
-        /// Test all nodes instead of just the active one
-        #[arg(long)]
-        all: bool,
     },
     /// Benchmark all nodes and activate the fastest
     Bench {
@@ -133,12 +132,6 @@ enum Commands {
         #[arg(long)]
         clean: bool,
     },
-    /// Show connection status, IP, and latency
-    Status,
-    /// Download the sing-box binary
-    Install,
-    /// Print generated sing-box config for the active node (dry run)
-    Config,
     /// Manage subscriptions
     Sub {
         #[command(subcommand)]
@@ -148,11 +141,6 @@ enum Commands {
     Rule {
         #[command(subcommand)]
         action: RuleCommands,
-    },
-    /// Manage system service (launchd/systemd)
-    Service {
-        #[command(subcommand)]
-        action: ServiceCommands,
     },
     /// Manage self-hosted proxy servers (deploy VPS + hysteria2)
     Server {
@@ -179,36 +167,12 @@ enum SubCommands {
     Ls,
     /// Remove a subscription and its nodes
     Rm { name: String },
-    /// Export all nodes as a subscription (base64)
-    Export,
     /// Auto-discover working nodes from configured sources
     Discover {
         /// Only keep nodes that support IPv6
         #[arg(long)]
         v6: bool,
     },
-    /// Manage discover sources
-    Source {
-        #[command(subcommand)]
-        action: SourceCommands,
-    },
-}
-
-#[derive(Subcommand)]
-enum SourceCommands {
-    /// Add a discover source
-    Add {
-        url: String,
-        #[arg(short, long)]
-        name: Option<String>,
-        /// Source is an HTML page (extract proxy URIs from content)
-        #[arg(long)]
-        html: bool,
-    },
-    /// List discover sources
-    Ls,
-    /// Remove a discover source
-    Rm { name: String },
 }
 
 #[derive(Subcommand)]
@@ -225,14 +189,6 @@ enum RuleCommands {
     Rm { index: usize },
     /// Remove all rules
     Clear,
-}
-
-#[derive(Subcommand)]
-enum ServiceCommands {
-    /// Install as system service (launchd on macOS, systemd on Linux)
-    Install,
-    /// Uninstall system service
-    Uninstall,
 }
 
 #[derive(Subcommand)]
@@ -303,13 +259,6 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Install => {
-            if let Err(e) = runner::install_singbox() {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            }
-        }
-
         Commands::Add {
             uri: raw,
             name,
@@ -360,6 +309,23 @@ fn main() {
             tree,
             level,
         } => {
+            // Connection status header
+            if status::is_singbox_running() {
+                let ip_info = status::fetch_ip().ok();
+                let ping = status::measure_latency("8.8.8.8");
+                let loc = ip_info
+                    .as_ref()
+                    .map(|i| format!("{} ({}, {})", i.ip, i.city, i.country))
+                    .unwrap_or_else(|| "?".into());
+                let lat = ping
+                    .map(|ms| format!("{ms}ms"))
+                    .unwrap_or_else(|| "timeout".into());
+                println!("  \x1b[32m●\x1b[0m connected  {loc}  ping {lat}");
+            } else {
+                println!("  \x1b[2m○ disconnected\x1b[0m");
+            }
+            println!();
+
             let s = Store::load();
             if s.nodes.is_empty() {
                 println!("no nodes saved. use `mole add <uri>` or `mole sub add <url>`.");
@@ -500,16 +466,6 @@ fn main() {
             }
         }
 
-        Commands::Rename => {
-            let mut s = Store::load();
-            s.normalize_names();
-            if let Err(e) = s.save() {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            }
-            println!("node names normalized");
-        }
-
         Commands::Qr { name } => {
             let s = Store::load();
             let node = match name {
@@ -544,111 +500,7 @@ fn main() {
             }
         }
 
-        Commands::Config => {
-            let s = Store::load();
-            let node = match s.active_node() {
-                Some(n) => n,
-                None => {
-                    eprintln!("no active node.");
-                    std::process::exit(1);
-                }
-            };
-            let parsed = match uri::ProxyNode::parse(&node.uri) {
-                Ok(n) => n,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                }
-            };
-            println!("// {}", node.name);
-            let cfg = config::generate(&[("proxy", &parsed)], &s.rules, s.bypass_cn, None, false);
-            println!("{}", config::to_json_pretty(&cfg));
-        }
-
-        Commands::Test { all } => {
-            let s = Store::load();
-            if s.nodes.is_empty() {
-                eprintln!("no nodes. use `mole add <uri>` or `mole sub add <url>` first.");
-                std::process::exit(1);
-            }
-            if !runner::singbox_installed() {
-                eprintln!("sing-box not found, run `mole install` first.");
-                std::process::exit(1);
-            }
-
-            if all {
-                let total = s.nodes.len();
-                println!();
-                println!("  \x1b[1mtest\x1b[0m  testing {} nodes (no sudo)...", total);
-                println!("  \x1b[2m─────────────────────────────────────────────────\x1b[0m");
-
-                let mut ok_count = 0;
-                for (i, node) in s.nodes.iter().enumerate() {
-                    let parsed = match uri::ProxyNode::parse(&node.uri) {
-                        Ok(n) => n,
-                        Err(e) => {
-                            println!(
-                                "  \x1b[31m✗\x1b[0m [{}/{}] {} — parse error: {e}",
-                                i + 1,
-                                total,
-                                node.name
-                            );
-                            continue;
-                        }
-                    };
-                    eprint!("  \x1b[33m…\x1b[0m [{}/{}] {} ", i + 1, total, node.name);
-                    let r = bench::test_node_nosudo(&parsed);
-                    eprint!("\r\x1b[K");
-                    if r.ok {
-                        ok_count += 1;
-                        println!(
-                            "  \x1b[32m✓\x1b[0m [{}/{}] {:<20} {:>5}ms  {}",
-                            i + 1,
-                            total,
-                            node.name,
-                            r.latency_ms,
-                            r.ip
-                        );
-                    } else {
-                        println!(
-                            "  \x1b[31m✗\x1b[0m [{}/{}] {} — failed",
-                            i + 1,
-                            total,
-                            node.name
-                        );
-                    }
-                }
-
-                println!("  \x1b[2m─────────────────────────────────────────────────\x1b[0m");
-                println!("\n  {ok_count}/{total} nodes passed\n");
-            } else {
-                let node = match s.active_node() {
-                    Some(n) => n,
-                    None => {
-                        eprintln!("no active node. use `mole use <name>`.");
-                        std::process::exit(1);
-                    }
-                };
-                let parsed = match uri::ProxyNode::parse(&node.uri) {
-                    Ok(n) => n,
-                    Err(e) => {
-                        eprintln!("parse error: {e}");
-                        std::process::exit(1);
-                    }
-                };
-                eprint!("  testing {}... ", node.name);
-                let r = bench::test_node_nosudo(&parsed);
-                if r.ok {
-                    println!("\x1b[32mok\x1b[0m ({}ms, {})", r.latency_ms, r.ip);
-                } else {
-                    eprintln!("\x1b[31mfailed\x1b[0m");
-                    std::process::exit(1);
-                }
-            }
-        }
-
         Commands::Bench { clean } => bench::run_bench(clean),
-        Commands::Status => status::print_status(),
 
         Commands::Down => {
             // Kill orphaned mole processes (daemon, stuck bench, etc.)
@@ -825,19 +677,6 @@ fn main() {
                     println!("  {} — {} nodes (updated: {update})", item.name, count);
                 }
             }
-            SubCommands::Export => {
-                let s = Store::load();
-                if s.subscriptions.is_empty() {
-                    eprintln!("no subscriptions to export.");
-                    std::process::exit(1);
-                }
-                for item in &s.subscriptions {
-                    println!("{}", item.url);
-                    if let Some(qr) = render_qr(&item.url) {
-                        print!("{qr}");
-                    }
-                }
-            }
             SubCommands::Rm { name } => {
                 let mut s = Store::load();
                 if s.remove_subscription(&name) {
@@ -998,56 +837,6 @@ fn main() {
                     println!("  \x1b[2mkept top {kept} nodes. run `mole up` to connect.\x1b[0m\n");
                 }
             }
-            SubCommands::Source { action } => match action {
-                SourceCommands::Add { url, name, html } => {
-                    let source_name = name.unwrap_or_else(|| {
-                        url.split("//")
-                            .nth(1)
-                            .and_then(|s| s.split('/').next())
-                            .and_then(|s| s.split(':').next())
-                            .unwrap_or("source")
-                            .to_string()
-                    });
-                    let mut sources = store::load_sources();
-                    sources.retain(|s| s.name != source_name);
-                    sources.push(store::DiscoverSource {
-                        name: source_name.clone(),
-                        url,
-                        source_type: if html { "html".into() } else { "subscription".into() },
-                        count: 0,
-                    });
-                    store::save_sources(&sources);
-                    println!("added source: {source_name}");
-                }
-                SourceCommands::Ls => {
-                    let sources = store::load_sources();
-                    if sources.is_empty() {
-                        println!("no discover sources configured.");
-                        println!("add sources with: mole sub source add <url> [--name <name>] [--html]");
-                        return;
-                    }
-                    for s in &sources {
-                        let tag = match s.source_type.as_str() {
-                            "html" => " \x1b[2m[html]\x1b[0m",
-                            "date-pattern" => " \x1b[2m[daily]\x1b[0m",
-                            _ => "",
-                        };
-                        println!("  {}{tag} — {}", s.name, s.url);
-                    }
-                }
-                SourceCommands::Rm { name } => {
-                    let mut sources = store::load_sources();
-                    let before = sources.len();
-                    sources.retain(|s| s.name != name);
-                    if sources.len() < before {
-                        store::save_sources(&sources);
-                        println!("removed source: {name}");
-                    } else {
-                        eprintln!("not found: {name}");
-                        std::process::exit(1);
-                    }
-                }
-            },
         },
 
         // ── Rules ───────────────────────────────────────────────
@@ -1101,21 +890,6 @@ fn main() {
                 println!("all rules cleared");
             }
         },
-
-        // ── Service ─────────────────────────────────────────────
-        Commands::Service { action } => {
-            let exe = std::env::current_exe()
-                .expect("current exe")
-                .to_str()
-                .expect("utf8")
-                .to_string();
-            let home = dirs::home_dir().expect("home dir");
-            let log = home.join(".mole/service.log");
-            match action {
-                ServiceCommands::Install => install_service(&exe, &home, &log),
-                ServiceCommands::Uninstall => uninstall_service(&home),
-            }
-        }
 
         // ── Server ──────────────────────────────────────────────
         Commands::Server { action } => match action {
@@ -1303,106 +1077,6 @@ fn main() {
 
             std::fs::remove_file(runner::pid_path()).ok();
         }
-    }
-}
-
-// ── Service helpers ─────────────────────────────────────────────────
-
-fn install_service(exe: &str, home: &std::path::Path, log: &std::path::Path) {
-    #[cfg(target_os = "macos")]
-    {
-        let dir = home.join("Library/LaunchAgents");
-        std::fs::create_dir_all(&dir).ok();
-        let path = dir.join("com.mole.vpn.plist");
-        std::fs::write(&path, format!(r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key><string>com.mole.vpn</string>
-    <key>ProgramArguments</key><array><string>{exe}</string><string>up</string></array>
-    <key>RunAtLoad</key><true/>
-    <key>KeepAlive</key><true/>
-    <key>StandardOutPath</key><string>{log}</string>
-    <key>StandardErrorPath</key><string>{log}</string>
-</dict>
-</plist>"#, log = log.display())).expect("write plist");
-        std::process::Command::new("launchctl")
-            .args(["load", path.to_str().unwrap()])
-            .output()
-            .ok();
-        println!("installed: {}", path.display());
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let dir = home.join(".config/systemd/user");
-        std::fs::create_dir_all(&dir).ok();
-        let path = dir.join("mole.service");
-        std::fs::write(
-            &path,
-            format!(
-                r#"[Unit]
-Description=Mole VPN
-After=network-online.target
-Wants=network-online.target
-[Service]
-Type=simple
-ExecStart={exe} up
-Restart=on-failure
-RestartSec=5
-StandardOutput=append:{log}
-StandardError=append:{log}
-[Install]
-WantedBy=default.target"#,
-                log = log.display()
-            ),
-        )
-        .expect("write unit");
-        std::process::Command::new("systemctl")
-            .args(["--user", "enable", "--now", "mole"])
-            .output()
-            .ok();
-        println!("installed: {}", path.display());
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        let _ = (exe, home, log);
-        eprintln!("unsupported platform");
-    }
-}
-
-fn uninstall_service(home: &std::path::Path) {
-    #[cfg(target_os = "macos")]
-    {
-        let path = home.join("Library/LaunchAgents/com.mole.vpn.plist");
-        if path.exists() {
-            std::process::Command::new("launchctl")
-                .args(["unload", path.to_str().unwrap()])
-                .output()
-                .ok();
-            std::fs::remove_file(&path).ok();
-            println!("uninstalled");
-        } else {
-            println!("not installed");
-        }
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let path = home.join(".config/systemd/user/mole.service");
-        if path.exists() {
-            std::process::Command::new("systemctl")
-                .args(["--user", "disable", "--now", "mole"])
-                .output()
-                .ok();
-            std::fs::remove_file(&path).ok();
-            println!("uninstalled");
-        } else {
-            println!("not installed");
-        }
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        let _ = home;
-        eprintln!("unsupported platform");
     }
 }
 

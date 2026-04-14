@@ -10,7 +10,6 @@ pub struct IpInfo {
     pub ip: String,
     pub city: String,
     pub country: String,
-    pub org: String,
 }
 
 fn http_get_json(url: &str) -> Result<serde_json::Value, String> {
@@ -33,7 +32,6 @@ pub fn fetch_ip() -> Result<IpInfo, String> {
                 ip,
                 city: json["city"].as_str().unwrap_or("?").to_string(),
                 country: json["country"].as_str().unwrap_or("?").to_string(),
-                org: json["org"].as_str().unwrap_or("?").to_string(),
             });
         }
     }
@@ -45,7 +43,6 @@ pub fn fetch_ip() -> Result<IpInfo, String> {
                 ip,
                 city: json["city"].as_str().unwrap_or("?").to_string(),
                 country: json["countryCode"].as_str().unwrap_or("?").to_string(),
-                org: json["isp"].as_str().unwrap_or("?").to_string(),
             });
         }
     }
@@ -95,35 +92,6 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-pub fn print_status() {
-    // Daemon info
-    let pid_file = crate::runner::pid_path();
-    if pid_file.exists() {
-        if let Ok(pid) = std::fs::read_to_string(&pid_file) {
-            println!("daemon: running (pid={})", pid.trim());
-        }
-    }
-
-    if !is_singbox_running() {
-        println!("status: disconnected");
-        return;
-    }
-
-    println!("status: connected");
-
-    match fetch_ip() {
-        Ok(info) => {
-            println!("    ip: {} ({}, {})", info.ip, info.city, info.country);
-            println!("   org: {}", info.org);
-        }
-        Err(e) => println!("    ip: failed ({e})"),
-    }
-
-    match measure_latency("8.8.8.8") {
-        Some(ms) => println!("  ping: {ms}ms (8.8.8.8)"),
-        None => println!("  ping: timeout"),
-    }
-}
 
 /// Wait for sing-box to be ready by probing the clash API and checking logs for fatal errors.
 fn wait_for_singbox_ready(stop: &AtomicBool) -> bool {
