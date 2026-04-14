@@ -693,8 +693,8 @@ pub fn cmd_ls() {
         return;
     }
     println!(
-        "{:<20} {:<6} {:<16} {:<8} {}",
-        "NAME", "REGION", "IP", "USERS", "CREATED"
+        "{:<20} {:<6} {:<16} {:<8} CREATED",
+        "NAME", "REGION", "IP", "USERS"
     );
     for s in &servers {
         println!(
@@ -763,7 +763,7 @@ pub fn cmd_regions() -> Result<(), String> {
     let resp = vultr(&api_key, "GET", "/regions", None)?;
     let regions = resp["regions"].as_array().ok_or("unexpected response")?;
 
-    println!("{:<6} {:<25} {}", "ID", "CITY", "CONTINENT");
+    println!("{:<6} {:<25} CONTINENT", "ID", "CITY");
     for r in regions {
         println!(
             "{:<6} {:<25} {}",
@@ -837,10 +837,11 @@ pub fn cmd_creem_setup() -> Result<(), String> {
     Ok(())
 }
 
+/// Parsed HTTP request components.
+type HttpRequest = (String, String, Vec<(String, String)>, Vec<u8>);
+
 /// Parse an HTTP request from a TcpStream. Returns (method, path, headers, body).
-fn parse_http_request(
-    stream: &mut std::net::TcpStream,
-) -> Option<(String, String, Vec<(String, String)>, Vec<u8>)> {
+fn parse_http_request(stream: &mut std::net::TcpStream) -> Option<HttpRequest> {
     let mut reader = BufReader::new(stream.try_clone().ok()?);
 
     let mut request_line = String::new();
