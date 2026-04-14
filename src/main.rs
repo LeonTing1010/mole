@@ -14,52 +14,9 @@ use std::sync::atomic::Ordering;
 use clap::{Parser, Subcommand};
 use store::Store;
 
-/// Render a scannable QR code using half-block chars with ANSI colors.
-/// EcLevel::L minimizes QR version. Each char encodes 2 vertical modules.
-/// Colors are streamed without per-char reset to avoid inter-character gaps.
-fn render_qr(content: &str) -> Option<String> {
-    use qrcode::EcLevel;
-    let code = qrcode::QrCode::with_error_correction_level(content.as_bytes(), EcLevel::L).ok()?;
-    let colors = code.to_colors();
-    let w = code.width();
-    let modules: Vec<Vec<bool>> = colors
-        .chunks(w)
-        .map(|row| row.iter().map(|c| *c == qrcode::Color::Dark).collect())
-        .collect();
-    let h = modules.len();
-
-    // 2-module quiet zone for reliable scanning
-    let pad = 2;
-    let tw = w + pad * 2;
-    let th = h + pad * 2;
-    let dark = |r: usize, c: usize| -> bool {
-        r >= pad && r < pad + h && c >= pad && c < pad + w && modules[r - pad][c - pad]
-    };
-
-    // ▄ (U+2584): bottom half = foreground, top half = background.
-    // Stream colors without reset between chars to avoid gaps.
-    let mut out = String::new();
-    let mut r = 0;
-    while r < th {
-        out.push_str("  ");
-        for c in 0..tw {
-            let top = dark(r, c);
-            let bot = if r + 1 < th { dark(r + 1, c) } else { false };
-            match (top, bot) {
-                // bg=black, space shows full black
-                (true, true) => out.push_str("\x1b[40m "),
-                // bg=white, space shows full white
-                (false, false) => out.push_str("\x1b[107m "),
-                // bg=black(top), fg=white(bot)
-                (true, false) => out.push_str("\x1b[40;107m\u{2584}"),
-                // bg=white(top), fg=black(bot)
-                (false, true) => out.push_str("\x1b[107;30m\u{2584}"),
-            }
-        }
-        out.push_str("\x1b[0m\n");
-        r += 2;
-    }
-    Some(out)
+/// Print a scannable QR code to stdout using qr2term.
+fn print_qr(content: &str) -> bool {
+    qr2term::print_qr(content).is_ok()
 }
 
 #[derive(Parser)]
@@ -483,16 +440,13 @@ fn main() {
             }
             let qr_content = node.uri.clone();
 
-            if let Some(qr) = render_qr(&qr_content) {
-                println!();
-                print!("{qr}");
-                println!();
-                println!("  \x1b[2m{qr_content}\x1b[0m");
-                println!("  \x1b[2mscan with Hiddify/v2rayNG/etc.\x1b[0m");
-            } else {
+            println!();
+            if !print_qr(&qr_content) {
                 eprintln!("failed to generate QR code");
                 std::process::exit(1);
             }
+            println!("  \x1b[2m{qr_content}\x1b[0m");
+            println!("  \x1b[2mscan with Hiddify/v2rayNG/etc.\x1b[0m");
         }
 
         Commands::Bench { clean } => bench::run_bench(clean),

@@ -65,8 +65,7 @@ fn print_share_info() {
     eprintln!();
 
     // QR code for easy phone setup
-    if let Some(qr) = crate::render_qr(&proxy_url) {
-        eprint!("{qr}");
+    if crate::print_qr(&proxy_url) {
         eprintln!("  \x1b[2mscan QR or set Wi-Fi proxy to {ip}:{port}\x1b[0m");
     } else {
         eprintln!("  \x1b[2mset Wi-Fi HTTP proxy to {ip}:{port}\x1b[0m");
