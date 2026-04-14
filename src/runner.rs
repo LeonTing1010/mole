@@ -349,28 +349,50 @@ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
 const KEEPALIVE_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 /// HTTP probe timeout.
 const KEEPALIVE_HTTP_TIMEOUT: Duration = Duration::from_secs(8);
+/// Grace period after sing-box start: must observe at least one successful
+/// probe before the watchdog starts counting failures. Avoids killing a
+/// node that simply takes longer than usual to finish handshake.
+const KEEPALIVE_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Probe actual end-to-end connectivity through the proxy via HTTP.
 /// Unlike UDP DNS (which gets hijacked by sing-box and may return cached results),
 /// this makes a real TCP connection through the TUN to a remote server,
 /// proving the full path: TUN → sing-box → proxy → internet → response.
+///
+/// Races several endpoints in parallel; any one success means the tunnel is alive.
+/// Endpoints are chosen to be reachable from both CN and non-CN egress and to
+/// tolerate individual domains being censored, rate-limited, or load-shedding.
 fn probe_connectivity() -> bool {
-    // Try connectivity check endpoints — fast, reliable, return small responses
     let endpoints = [
-        "http://connectivitycheck.gstatic.com/generate_204",
+        "http://www.gstatic.com/generate_204",
+        "http://www.google.com/generate_204",
+        "http://captive.apple.com",
         "http://cp.cloudflare.com",
     ];
-    for url in &endpoints {
-        let ok = reqwest::blocking::Client::builder()
-            .timeout(KEEPALIVE_HTTP_TIMEOUT)
-            .no_proxy()
-            .build()
-            .ok()
-            .and_then(|c| c.get(*url).send().ok())
-            .map(|r| r.status().is_success() || r.status().as_u16() == 204)
-            .unwrap_or(false);
-        if ok {
-            return true;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    for url in endpoints {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let ok = reqwest::blocking::Client::builder()
+                .timeout(KEEPALIVE_HTTP_TIMEOUT)
+                .no_proxy()
+                .build()
+                .ok()
+                .and_then(|c| c.get(url).send().ok())
+                .map(|r| r.status().is_success() || r.status().as_u16() == 204)
+                .unwrap_or(false);
+            let _ = tx.send(ok);
+        });
+    }
+    drop(tx);
+
+    let deadline = Instant::now() + KEEPALIVE_HTTP_TIMEOUT;
+    while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+        match rx.recv_timeout(remaining) {
+            Ok(true) => return true,
+            Ok(false) => continue,
+            Err(_) => break,
         }
     }
     false
@@ -382,6 +404,11 @@ fn probe_connectivity() -> bool {
 pub fn start_keepalive(stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut consecutive_failures: u32 = 0;
+        // Bootstrap gate: arm the watchdog only after the first successful probe
+        // (or after KEEPALIVE_BOOTSTRAP_TIMEOUT elapses, whichever comes first).
+        // This prevents a slow-to-handshake node from being killed during startup.
+        let started_at = Instant::now();
+        let mut armed = false;
 
         // Initial delay: let sing-box establish tunnel before checking
         std::thread::sleep(Duration::from_secs(15));
@@ -392,13 +419,29 @@ pub fn start_keepalive(stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
             }
 
             if probe_connectivity() {
-                if consecutive_failures > 0 {
+                if !armed {
+                    armed = true;
+                    mole_log("INFO", "keepalive: bootstrap probe succeeded, watchdog armed");
+                } else if consecutive_failures > 0 {
                     mole_log(
                         "INFO",
                         &format!("keepalive: recovered after {consecutive_failures} failures"),
                     );
                 }
                 consecutive_failures = 0;
+            } else if !armed {
+                // Still in bootstrap: don't count failures, don't restart.
+                // Arm automatically once the bootstrap timeout elapses so a
+                // permanently-broken node can still be recovered.
+                if started_at.elapsed() >= KEEPALIVE_BOOTSTRAP_TIMEOUT {
+                    armed = true;
+                    mole_log(
+                        "WARN",
+                        "keepalive: bootstrap window expired without a successful probe, watchdog armed",
+                    );
+                } else {
+                    mole_log("DEBUG", "keepalive: probe failed during bootstrap (ignored)");
+                }
             } else {
                 consecutive_failures += 1;
                 mole_log(
@@ -463,6 +506,10 @@ fn spawn_singbox(config_path: &std::path::Path, retry_num: u32) -> Result<Child,
 
     let bin_str = bin.to_str().ok_or("non-UTF8 binary path")?;
     let cfg_str = config_path.to_str().ok_or("non-UTF8 config path")?;
+    mole_log(
+        "DEBUG",
+        &format!("spawn cmd: sudo {bin_str} run -c {cfg_str} (retry={retry_num})"),
+    );
     let child = Command::new("sudo")
         .arg(bin_str)
         .arg("run")
@@ -474,6 +521,54 @@ fn spawn_singbox(config_path: &std::path::Path, retry_num: u32) -> Result<Child,
         .map_err(|e| format!("failed to spawn sing-box: {e}"))?;
 
     Ok(child)
+}
+
+/// Read the last N lines of sing-box.log for post-mortem diagnosis.
+fn tail_singbox_log(n: usize) -> Vec<String> {
+    let Ok(content) = fs::read_to_string(log_path()) else {
+        return Vec::new();
+    };
+    content
+        .lines()
+        .rev()
+        .take(n)
+        .map(|s| {
+            s.replace("\x1b[31m", "")
+                .replace("\x1b[0m", "")
+                .replace("\x1b[36m", "")
+                .replace("\x1b[33m", "")
+                .trim()
+                .to_string()
+        })
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+/// Classify a sing-box exit by inspecting the log tail and return a short hint.
+/// Returns None if no well-known pattern is detected.
+fn classify_exit(tail: &[String]) -> Option<&'static str> {
+    let blob = tail.join("\n").to_lowercase();
+    if blob.contains("sudo: a password is required")
+        || blob.contains("sudo: a terminal is required")
+    {
+        return Some("sudo needs a password — run `sudo -v` in your terminal first, or configure NOPASSWD for sing-box");
+    }
+    if blob.contains("operation not permitted") {
+        return Some("permission denied creating TUN — sing-box must run as root");
+    }
+    if blob.contains("address already in use") {
+        return Some("port already bound — another sing-box/mole may still be alive");
+    }
+    if blob.contains("no such file or directory") && blob.contains(".srs") {
+        return Some("geo rule set missing — run `mole install` or download .srs files");
+    }
+    if blob.contains("connection refused") || blob.contains("i/o timeout") {
+        return Some("upstream unreachable — node may be down, try `mole bench` to pick another");
+    }
+    None
 }
 
 /// Run sing-box with auto-restart, exponential backoff, and health-kill awareness.
@@ -502,6 +597,23 @@ pub fn run_singbox(config_path: &std::path::Path) -> Result<ExitReason, String> 
         let status = child.wait().map_err(|e| format!("wait: {e}"))?;
         let uptime = started_at.elapsed();
         SINGBOX_PID.store(0, Ordering::SeqCst);
+
+        mole_log(
+            "DEBUG",
+            &format!(
+                "sing-box wait returned: code={:?} signal={:?} uptime={}s shutting_down={} health_kill={}",
+                status.code(),
+                {
+                    #[cfg(unix)]
+                    { status.signal() }
+                    #[cfg(not(unix))]
+                    { None::<i32> }
+                },
+                uptime.as_secs(),
+                SHUTTING_DOWN.load(Ordering::SeqCst),
+                HEALTH_KILL.load(Ordering::SeqCst),
+            ),
+        );
 
         // User-initiated shutdown
         if SHUTTING_DOWN.load(Ordering::SeqCst) {
@@ -535,18 +647,27 @@ pub fn run_singbox(config_path: &std::path::Path) -> Result<ExitReason, String> 
         }
 
         // Capture sing-box crash reason from its log
-        if let Ok(content) = fs::read_to_string(log_path()) {
-            let tail: Vec<&str> = content.lines().rev().take(10).collect();
-            for line in tail.iter().rev() {
+        let tail = tail_singbox_log(15);
+        if tail.is_empty() {
+            mole_log(
+                "WARN",
+                "sing-box.log is empty — likely died before writing (sudo denied or exec failed)",
+            );
+        } else {
+            // Always dump the tail so failures without FATAL/ERROR markers (e.g. sudo) are visible
+            for line in &tail {
+                mole_log("TRACE", &format!("sing-box: {line}"));
+            }
+            for line in &tail {
                 if line.contains("FATAL") || line.contains("ERROR") {
-                    let clean = line
-                        .replace("\x1b[31m", "")
-                        .replace("\x1b[0m", "")
-                        .replace("\x1b[36m", "");
-                    mole_log("ERROR", &format!("sing-box: {}", clean.trim()));
-                    eprintln!("  \x1b[31m{}\x1b[0m", clean.trim());
+                    mole_log("ERROR", &format!("sing-box: {line}"));
+                    eprintln!("  \x1b[31m{line}\x1b[0m");
                 }
             }
+        }
+        if let Some(hint) = classify_exit(&tail) {
+            mole_log("ERROR", &format!("diagnosis: {hint}"));
+            eprintln!("  \x1b[33mhint: {hint}\x1b[0m");
         }
 
         // Reset retry counter if the process ran for >5 minutes (was stable)
