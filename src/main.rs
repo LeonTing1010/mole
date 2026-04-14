@@ -16,6 +16,7 @@ use store::Store;
 
 /// Render a scannable QR code using half-block chars with ANSI colors.
 /// EcLevel::L minimizes QR version. Each char encodes 2 vertical modules.
+/// Colors are streamed without per-char reset to avoid inter-character gaps.
 fn render_qr(content: &str) -> Option<String> {
     use qrcode::EcLevel;
     let code = qrcode::QrCode::with_error_correction_level(content.as_bytes(), EcLevel::L).ok()?;
@@ -35,8 +36,8 @@ fn render_qr(content: &str) -> Option<String> {
         r >= pad && r < pad + h && c >= pad && c < pad + w && modules[r - pad][c - pad]
     };
 
-    // Use ▀ (U+2580) with ANSI fg/bg to encode 2 rows per line.
-    // dark=black(30/40), light=white(37/47) — standard QR palette.
+    // ▄ (U+2584): bottom half = foreground, top half = background.
+    // Stream colors without reset between chars to avoid gaps.
     let mut out = String::new();
     let mut r = 0;
     while r < th {
@@ -45,13 +46,17 @@ fn render_qr(content: &str) -> Option<String> {
             let top = dark(r, c);
             let bot = if r + 1 < th { dark(r + 1, c) } else { false };
             match (top, bot) {
-                (true, true) => out.push_str("\x1b[40m \x1b[0m"),
-                (false, false) => out.push_str("\x1b[47m \x1b[0m"),
-                (true, false) => out.push_str("\x1b[40;47m\u{2584}\x1b[0m"),
-                (false, true) => out.push_str("\x1b[47;40m\u{2584}\x1b[0m"),
+                // bg=black, space shows full black
+                (true, true) => out.push_str("\x1b[40m "),
+                // bg=white, space shows full white
+                (false, false) => out.push_str("\x1b[107m "),
+                // bg=black(top), fg=white(bot)
+                (true, false) => out.push_str("\x1b[40;107m\u{2584}"),
+                // bg=white(top), fg=black(bot)
+                (false, true) => out.push_str("\x1b[107;30m\u{2584}"),
             }
         }
-        out.push('\n');
+        out.push_str("\x1b[0m\n");
         r += 2;
     }
     Some(out)
