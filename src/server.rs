@@ -1384,20 +1384,16 @@ mod tests {
     }
 
     #[test]
-    fn vultr_api_key_from_env() {
-        // With env var set
-        std::env::set_var("VULTR_API_KEY", "test-key-123");
+    fn vultr_api_key_env_var() {
+        // Run both cases sequentially to avoid env var race with parallel tests
+        unsafe { std::env::set_var("VULTR_API_KEY", "test-key-123") };
         let key = vultr_api_key().unwrap();
         assert_eq!(key, "test-key-123");
-        std::env::remove_var("VULTR_API_KEY");
-    }
 
-    #[test]
-    fn vultr_api_key_empty_env() {
-        std::env::set_var("VULTR_API_KEY", "");
-        // Should fall through to file check (which won't exist in test)
-        let result = vultr_api_key();
-        assert!(result.is_err());
-        std::env::remove_var("VULTR_API_KEY");
+        // Empty string should fall through to file check (which won't exist in test)
+        unsafe { std::env::set_var("VULTR_API_KEY", "") };
+        assert!(vultr_api_key().is_err());
+
+        unsafe { std::env::remove_var("VULTR_API_KEY") };
     }
 }
