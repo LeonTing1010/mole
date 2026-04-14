@@ -14,8 +14,8 @@ use std::sync::atomic::Ordering;
 use clap::{Parser, Subcommand};
 use store::Store;
 
-/// Render a QR code compactly using Unicode Braille characters (2x4 dots per char).
-/// EcLevel::L minimizes QR version. Result is ~18 chars wide for typical URIs.
+/// Render a scannable QR code using half-block chars with ANSI colors.
+/// EcLevel::L minimizes QR version. Each char encodes 2 vertical modules.
 fn render_qr(content: &str) -> Option<String> {
     use qrcode::EcLevel;
     let code = qrcode::QrCode::with_error_correction_level(content.as_bytes(), EcLevel::L).ok()?;
@@ -27,42 +27,32 @@ fn render_qr(content: &str) -> Option<String> {
         .collect();
     let h = modules.len();
 
-    // 1-module quiet zone
-    let tw = w + 2;
-    let th = h + 2;
-    let get = |r: usize, c: usize| -> bool {
-        if r == 0 || r > h || c == 0 || c > w { false } else { modules[r - 1][c - 1] }
+    // 2-module quiet zone for reliable scanning
+    let pad = 2;
+    let tw = w + pad * 2;
+    let th = h + pad * 2;
+    let dark = |r: usize, c: usize| -> bool {
+        r >= pad && r < pad + h && c >= pad && c < pad + w && modules[r - pad][c - pad]
     };
 
-    // Braille: each char is a 2-wide × 4-tall dot grid (U+2800 base)
-    // Dot positions:  (0,0)=0x01 (1,0)=0x08
-    //                 (0,1)=0x02 (1,1)=0x10
-    //                 (0,2)=0x04 (1,2)=0x20
-    //                 (0,3)=0x40 (1,3)=0x80
-    let dot_map: [[u8; 4]; 2] = [
-        [0x01, 0x02, 0x04, 0x40],
-        [0x08, 0x10, 0x20, 0x80],
-    ];
-
+    // Use ▀ (U+2580) with ANSI fg/bg to encode 2 rows per line.
+    // dark=black(30/40), light=white(37/47) — standard QR palette.
     let mut out = String::new();
     let mut r = 0;
     while r < th {
         out.push_str("  ");
-        let mut c = 0;
-        while c < tw {
-            let mut bits: u8 = 0;
-            for (dc, col_dots) in dot_map.iter().enumerate() {
-                for (dr, &dot_bit) in col_dots.iter().enumerate() {
-                    if r + dr < th && c + dc < tw && get(r + dr, c + dc) {
-                        bits |= dot_bit;
-                    }
-                }
+        for c in 0..tw {
+            let top = dark(r, c);
+            let bot = if r + 1 < th { dark(r + 1, c) } else { false };
+            match (top, bot) {
+                (true, true) => out.push_str("\x1b[40m \x1b[0m"),
+                (false, false) => out.push_str("\x1b[47m \x1b[0m"),
+                (true, false) => out.push_str("\x1b[40;47m\u{2584}\x1b[0m"),
+                (false, true) => out.push_str("\x1b[47;40m\u{2584}\x1b[0m"),
             }
-            out.push(char::from_u32(0x2800 + bits as u32).unwrap_or(' '));
-            c += 2;
         }
         out.push('\n');
-        r += 4;
+        r += 2;
     }
     Some(out)
 }
