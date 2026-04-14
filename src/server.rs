@@ -58,7 +58,7 @@ impl Server {
             self.ip.clone()
         };
         format!(
-            "hy2://{password}@{host}:{}?insecure=1&sni=bing.com#{label}",
+            "hy2://{label}%3A{password}@{host}:{}?insecure=1&sni=bing.com#{label}",
             self.hy2_port
         )
     }
