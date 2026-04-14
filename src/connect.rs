@@ -65,16 +65,8 @@ fn print_share_info() {
     eprintln!();
 
     // QR code for easy phone setup
-    if let Ok(code) = qrcode::QrCode::new(proxy_url.as_bytes()) {
-        let string = code
-            .render::<char>()
-            .quiet_zone(true)
-            .module_dimensions(2, 1)
-            .build();
-        for line in string.lines() {
-            eprintln!("  {line}");
-        }
-        eprintln!();
+    if let Some(qr) = crate::render_qr(&proxy_url) {
+        eprint!("{qr}");
         eprintln!("  \x1b[2mscan QR or set Wi-Fi proxy to {ip}:{port}\x1b[0m");
     } else {
         eprintln!("  \x1b[2mset Wi-Fi HTTP proxy to {ip}:{port}\x1b[0m");

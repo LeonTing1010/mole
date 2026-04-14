@@ -14,6 +14,52 @@ use std::sync::atomic::Ordering;
 use clap::{Parser, Subcommand};
 use store::Store;
 
+/// Render a QR code to the terminal using Unicode half-block characters.
+/// Each text row encodes two QR rows, producing a compact, scannable output.
+fn render_qr(content: &str) -> Option<String> {
+    let code = qrcode::QrCode::new(content.as_bytes()).ok()?;
+    let colors = code.to_colors();
+    let width = code.width();
+    let modules: Vec<Vec<bool>> = colors
+        .chunks(width)
+        .map(|row| row.iter().map(|c| *c == qrcode::Color::Dark).collect())
+        .collect();
+    let height = modules.len();
+
+    // Add 1-module quiet zone around the code
+    let total_w = width + 2;
+    let total_h = height + 2;
+    let get = |r: usize, c: usize| -> bool {
+        if r == 0 || r > height || c == 0 || c > width {
+            false // quiet zone = light
+        } else {
+            modules[r - 1][c - 1]
+        }
+    };
+
+    let mut out = String::new();
+    // Process two rows at a time using half-block characters
+    // ▀ = top dark, bottom light  ▄ = top light, bottom dark
+    // █ = both dark               ' ' = both light
+    let mut r = 0;
+    while r < total_h {
+        out.push_str("  "); // left margin
+        for c in 0..total_w {
+            let top = get(r, c);
+            let bot = if r + 1 < total_h { get(r + 1, c) } else { false };
+            out.push(match (top, bot) {
+                (true, true) => '\u{2588}',   // █
+                (true, false) => '\u{2580}',  // ▀
+                (false, true) => '\u{2584}',  // ▄
+                (false, false) => ' ',
+            });
+        }
+        out.push('\n');
+        r += 2;
+    }
+    Some(out)
+}
+
 #[derive(Parser)]
 #[command(
     name = "mole",
@@ -486,16 +532,9 @@ fn main() {
             }
             let qr_content = node.uri.clone();
 
-            if let Ok(code) = qrcode::QrCode::new(qr_content.as_bytes()) {
-                let string = code
-                    .render::<char>()
-                    .quiet_zone(false)
-                    .max_dimensions(2, 2)
-                    .build();
+            if let Some(qr) = render_qr(&qr_content) {
                 println!();
-                for line in string.lines() {
-                    println!("  {line}");
-                }
+                print!("{qr}");
                 println!();
                 println!("  \x1b[2m{qr_content}\x1b[0m");
                 println!("  \x1b[2mscan with Hiddify/v2rayNG/etc.\x1b[0m");
@@ -794,16 +833,8 @@ fn main() {
                 }
                 for item in &s.subscriptions {
                     println!("{}", item.url);
-                    if let Ok(code) = qrcode::QrCode::new(item.url.as_bytes()) {
-                        let string = code
-                            .render::<char>()
-                            .quiet_zone(false)
-                            .max_dimensions(2, 2)
-                            .build();
-                        for line in string.lines() {
-                            println!("  {line}");
-                        }
-                        println!();
+                    if let Some(qr) = render_qr(&item.url) {
+                        print!("{qr}");
                     }
                 }
             }
