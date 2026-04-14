@@ -478,20 +478,13 @@ fn main() {
                 }
             };
 
-            // If node comes from a subscription, show subscription URL QR
-            let qr_content = if let Some(ref src) = node.source {
-                if let Some(sub) = s.subscriptions.iter().find(|s| s.name == *src) {
-                    println!();
-                    println!("  \x1b[1;36m  subscription: {}\x1b[0m", sub.name);
-                    sub.url.clone()
-                } else {
-                    node.uri.clone()
-                }
-            } else {
-                println!();
-                println!("  \x1b[1;36m  node: {}\x1b[0m", node.name);
-                node.uri.clone()
-            };
+            // Always show node URI QR so clients import the actual proxy config
+            println!();
+            println!("  \x1b[1;36m  node: {}\x1b[0m", node.name);
+            if let Some(ref src) = node.source {
+                println!("  \x1b[2m  source: {src}\x1b[0m");
+            }
+            let qr_content = node.uri.clone();
 
             if let Ok(code) = qrcode::QrCode::new(qr_content.as_bytes()) {
                 let string = code

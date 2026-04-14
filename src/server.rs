@@ -52,14 +52,17 @@ impl Server {
     }
 
     /// Build hy2 URI for a specific user on this server.
+    /// Fragment encodes a friendly name for display in clients like Hiddify/v2rayNG.
     pub fn user_uri(&self, password: &str, label: &str) -> String {
         let host = if self.ip.contains(':') {
             format!("[{}]", self.ip)
         } else {
             self.ip.clone()
         };
+        let raw_name = format!("Mole {} ({})", self.region, label);
+        let display_name = urlencoding::encode(&raw_name);
         format!(
-            "hy2://{label}%3A{password}@{host}:{}?insecure=1&sni=bing.com#{label}",
+            "hy2://{label}%3A{password}@{host}:{}?insecure=1&sni=bing.com#{display_name}",
             self.hy2_port
         )
     }
@@ -1331,7 +1334,10 @@ mod tests {
             users: vec![],
         };
         let uri = server.user_uri("mypw", "alice");
-        assert_eq!(uri, "hy2://alice%3Amypw@1.2.3.4:443?insecure=1&sni=bing.com#alice");
+        assert_eq!(
+            uri,
+            "hy2://alice%3Amypw@1.2.3.4:443?insecure=1&sni=bing.com#Mole%20nrt%20%28alice%29"
+        );
     }
 
     #[test]
