@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 
-const SINGBOX_VERSION: &str = "1.13.4";
+const SINGBOX_VERSION: &str = "1.13.7";
 const MAX_RETRIES: u32 = 10;
 
 /// Global stop signal — set by Ctrl+C or shutdown paths.
@@ -302,6 +302,7 @@ pub fn stop_singbox() -> Result<bool, String> {
             .args(["-n", "pkill", "-9", "sing-box"])
             .output();
         std::thread::sleep(Duration::from_millis(500));
+        cleanup_tun();
         SINGBOX_PID.store(0, Ordering::SeqCst);
         return Ok(true);
     }
@@ -333,60 +334,64 @@ pub fn stop_singbox() -> Result<bool, String> {
         std::thread::sleep(Duration::from_millis(500));
     }
 
+    cleanup_tun();
     SINGBOX_PID.store(0, Ordering::SeqCst);
     Ok(true)
 }
 
 // ── Keepalive + health watchdog ─────────────────────────────────────
 
-/// Keepalive failure threshold. Higher = fewer false positives on flaky networks.
-const KEEPALIVE_THRESHOLD: u32 = 5;
-/// Keepalive DNS read timeout. Generous to avoid false positives on high-latency links.
-const KEEPALIVE_DNS_TIMEOUT: Duration = Duration::from_secs(5);
-/// Keepalive check interval.
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+/// Keepalive failure threshold before triggering restart.
+const KEEPALIVE_THRESHOLD: u32 = 3;
+/// Normal keepalive interval (when healthy).
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
+/// Fast-retry interval after a failure (adaptive probing).
+const KEEPALIVE_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+/// HTTP probe timeout.
+const KEEPALIVE_HTTP_TIMEOUT: Duration = Duration::from_secs(8);
 
-/// Background keepalive: sends DNS query every 30s, verifies response.
+/// Probe actual end-to-end connectivity through the proxy via HTTP.
+/// Unlike UDP DNS (which gets hijacked by sing-box and may return cached results),
+/// this makes a real TCP connection through the TUN to a remote server,
+/// proving the full path: TUN → sing-box → proxy → internet → response.
+fn probe_connectivity() -> bool {
+    // Try connectivity check endpoints — fast, reliable, return small responses
+    let endpoints = [
+        "http://connectivitycheck.gstatic.com/generate_204",
+        "http://cp.cloudflare.com",
+    ];
+    for url in &endpoints {
+        let ok = reqwest::blocking::Client::builder()
+            .timeout(KEEPALIVE_HTTP_TIMEOUT)
+            .no_proxy()
+            .build()
+            .ok()
+            .and_then(|c| c.get(*url).send().ok())
+            .map(|r| r.status().is_success() || r.status().as_u16() == 204)
+            .unwrap_or(false);
+        if ok {
+            return true;
+        }
+    }
+    false
+}
+
+/// Background keepalive: probes real HTTP connectivity every 20s.
 /// After KEEPALIVE_THRESHOLD consecutive failures, triggers sing-box restart.
+/// Uses adaptive probing: retries faster (5s) after first failure for quick recovery.
 pub fn start_keepalive(stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        use std::net::UdpSocket;
-        // Minimal DNS query for "." (root)
-        let dns_query: [u8; 17] = [
-            0x00, 0x01, // ID
-            0x01, 0x00, // Flags: standard query
-            0x00, 0x01, // Questions: 1
-            0x00, 0x00, // Answers: 0
-            0x00, 0x00, // Authority: 0
-            0x00, 0x00, // Additional: 0
-            0x00, // Root name
-            0x00, 0x01, // Type: A
-            0x00, 0x01, // Class: IN
-        ];
         let mut consecutive_failures: u32 = 0;
 
         // Initial delay: let sing-box establish tunnel before checking
-        std::thread::sleep(Duration::from_secs(10));
+        std::thread::sleep(Duration::from_secs(15));
 
         loop {
             if stop.load(Ordering::SeqCst) || SHUTTING_DOWN.load(Ordering::SeqCst) {
                 break;
             }
 
-            // Try multiple DNS servers to reduce false positives
-            let ok = ["8.8.8.8:53", "1.1.1.1:53", "9.9.9.9:53"].iter().any(|server| {
-                (|| -> Option<()> {
-                    let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
-                    sock.set_read_timeout(Some(KEEPALIVE_DNS_TIMEOUT)).ok();
-                    sock.send_to(&dns_query, server).ok()?;
-                    let mut buf = [0u8; 512];
-                    sock.recv_from(&mut buf).ok()?;
-                    Some(())
-                })()
-                .is_some()
-            });
-
-            if ok {
+            if probe_connectivity() {
                 if consecutive_failures > 0 {
                     mole_log(
                         "INFO",
@@ -398,20 +403,25 @@ pub fn start_keepalive(stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
                 consecutive_failures += 1;
                 mole_log(
                     "WARN",
-                    &format!("keepalive: no response ({consecutive_failures}/{KEEPALIVE_THRESHOLD})"),
+                    &format!("keepalive: probe failed ({consecutive_failures}/{KEEPALIVE_THRESHOLD})"),
                 );
 
                 if consecutive_failures >= KEEPALIVE_THRESHOLD {
-                    mole_log("WARN", "keepalive: tunnel appears dead, triggering restart");
+                    mole_log("WARN", "keepalive: tunnel dead, triggering restart");
                     HEALTH_KILL.store(true, Ordering::SeqCst);
                     stop_singbox().ok();
                     consecutive_failures = 0;
-                    // Wait for restart to complete before resuming checks
-                    std::thread::sleep(Duration::from_secs(30));
+                    std::thread::sleep(Duration::from_secs(10));
                 }
             }
 
-            std::thread::sleep(KEEPALIVE_INTERVAL);
+            // Adaptive interval: fast retry on failure, normal when healthy
+            let interval = if consecutive_failures > 0 {
+                KEEPALIVE_RETRY_INTERVAL
+            } else {
+                KEEPALIVE_INTERVAL
+            };
+            std::thread::sleep(interval);
         }
     })
 }
@@ -522,6 +532,21 @@ pub fn run_singbox(config_path: &std::path::Path) -> Result<ExitReason, String> 
                 ),
             );
             eprintln!("\nsing-box killed by signal {sig}");
+        }
+
+        // Capture sing-box crash reason from its log
+        if let Ok(content) = fs::read_to_string(log_path()) {
+            let tail: Vec<&str> = content.lines().rev().take(10).collect();
+            for line in tail.iter().rev() {
+                if line.contains("FATAL") || line.contains("ERROR") {
+                    let clean = line
+                        .replace("\x1b[31m", "")
+                        .replace("\x1b[0m", "")
+                        .replace("\x1b[36m", "");
+                    mole_log("ERROR", &format!("sing-box: {}", clean.trim()));
+                    eprintln!("  \x1b[31m{}\x1b[0m", clean.trim());
+                }
+            }
         }
 
         // Reset retry counter if the process ran for >5 minutes (was stable)

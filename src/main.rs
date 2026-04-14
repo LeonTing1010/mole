@@ -642,9 +642,19 @@ fn main() {
             }
             std::fs::remove_file(runner::pid_path()).ok();
             match runner::stop_singbox() {
-                Ok(true) => println!("disconnected"),
-                Ok(false) if killed_mole => println!("disconnected"),
-                Ok(false) => println!("not running"),
+                Ok(true) => {
+                    runner::cleanup_tun();
+                    println!("disconnected");
+                }
+                Ok(false) if killed_mole => {
+                    runner::cleanup_tun();
+                    println!("disconnected");
+                }
+                Ok(false) => {
+                    // Even if sing-box wasn't running, clean up any orphaned TUN
+                    runner::cleanup_tun();
+                    println!("not running");
+                }
                 Err(e) => {
                     eprintln!("error: {e}");
                     std::process::exit(1);

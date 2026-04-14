@@ -15,7 +15,7 @@ pub struct IpInfo {
 
 fn http_get_json(url: &str) -> Result<serde_json::Value, String> {
     let resp = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?
         .get(url)

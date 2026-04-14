@@ -1381,6 +1381,24 @@ mod tests {
     }
 
     #[test]
+    fn hy2_url_encoded_colon_password() {
+        let uri = "hy2://433%3A51a84387759d7697@108.61.127.169:443?insecure=1&sni=bing.com#433";
+        let node = ProxyNode::parse(uri).unwrap();
+        let out = node.to_outbound("proxy");
+        eprintln!("outbound: {}", serde_json::to_string_pretty(&out).unwrap());
+        if let ProxyNode::Hysteria2 { password, host, port, sni, insecure, .. } = &node {
+            eprintln!("password={password:?} host={host:?} port={port} sni={sni:?} insecure={insecure}");
+            assert_eq!(password, "433:51a84387759d7697");
+            assert_eq!(host, "108.61.127.169");
+            assert_eq!(*port, 443);
+            assert_eq!(sni.as_deref(), Some("bing.com"));
+            assert!(*insecure);
+        } else {
+            panic!("expected Hysteria2");
+        }
+    }
+
+    #[test]
     fn vmess_h2_transport() {
         use base64::Engine;
         let json = r#"{"v":"2","ps":"h2-node","add":"1.2.3.4","port":"443","id":"uuid-1234","aid":"0","scy":"auto","net":"h2","type":"none","host":"example.com","path":"/h2path","tls":"tls","sni":"example.com","fp":""}"#;

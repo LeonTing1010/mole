@@ -26,6 +26,7 @@ pub struct Server {
     pub instance_id: String,
     pub region: String,
     pub ip: String,
+    #[serde(default)]
     pub ip_v6: String,
     pub created_at: String,
     pub hy2_port: u16,
@@ -1255,6 +1256,7 @@ mod tests {
             instance_id: "i1".into(),
             region: "nrt".into(),
             ip: "1.1.1.1".into(),
+            ip_v6: String::new(),
             created_at: "2026-01-01".into(),
             hy2_port: 443,
             hy2_password: String::new(),
@@ -1328,7 +1330,7 @@ mod tests {
             users: vec![],
         };
         let uri = server.user_uri("mypw", "alice");
-        assert_eq!(uri, "hy2://mypw@1.2.3.4:443?insecure=1&sni=bing.com#alice");
+        assert_eq!(uri, "hy2://alice%3Amypw@1.2.3.4:443?insecure=1&sni=bing.com#alice");
     }
 
     #[test]

@@ -41,14 +41,16 @@ pub fn generate(
     }
 
     // bypass-cn: CN domains matched by geosite-cn → local DNS (fast).
-    // All other domains → remote DNS (8.8.8.8 via proxy) for correct IPs.
+    // All other domains → remote DNS (via proxy) for correct IPs.
     // Using local DNS for foreign domains causes issues: Chinese DNS may
     // return CDN IPs (e.g. Akamai) that match geoip-cn, misrouting to direct.
+    // DoH (HTTPS, port 443) over proxy is much faster than DoT (TLS, port 853):
+    // DoT uses TCP-over-QUIC which suffers from double retransmission on packet loss.
     let dns_final = "remote";
 
     let dns = json!({
         "servers": [
-            { "tag": "remote", "type": "tls", "server": "8.8.8.8", "detour": "proxy" },
+            { "tag": "remote", "type": "https", "server": "1.1.1.1", "detour": "proxy" },
             { "tag": "local", "type": "udp", "server": "223.5.5.5" }
         ],
         "rules": dns_rules,
