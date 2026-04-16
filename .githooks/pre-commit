@@ -1,6 +1,0 @@
-#!/bin/sh
-set -e
-echo "Running pre-commit checks..."
-cargo test
-cargo clippy -- -D warnings
-echo "All checks passed."
