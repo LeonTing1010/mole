@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "🚀 Installing mole-go and HiddifyCli..."
+echo "🚀 Installing mole-go and sing-box..."
 
 # Colors
 RED='\033[0;31m'
@@ -35,22 +35,78 @@ BIN_DIR="$MOLE_DIR/bin"
 mkdir -p "$BIN_DIR"
 echo -e "${BLUE}📁 Created directory: $MOLE_DIR${NC}"
 
-# Check if HiddifyCli already exists
-if command -v HiddifyCli &> /dev/null; then
-    echo -e "${GREEN}✅ HiddifyCli already installed${NC}"
-    HiddifyCli version
+# Function to download sing-box from GitHub
+download_singbox() {
+    local VERSION="v1.11.4"
+    local URL="https://github.com/SagerNet/sing-box/releases/download/${VERSION}/sing-box-${VERSION}-${OS}-${ARCH}.tar.gz"
+    local TEMP_DIR=$(mktemp -d)
+    
+    echo -e "${BLUE}📥 Downloading sing-box ${VERSION}...${NC}"
+    echo "   URL: $URL"
+    
+    if ! curl -L --fail --progress-bar -o "$TEMP_DIR/sing-box.tar.gz" "$URL" 2>&1; then
+        echo -e "${RED}❌ Download failed${NC}"
+        rm -rf "$TEMP_DIR"
+        return 1
+    fi
+    
+    # Check file size
+    local FILE_SIZE=$(stat -f%z "$TEMP_DIR/sing-box.tar.gz" 2>/dev/null || stat -c%s "$TEMP_DIR/sing-box.tar.gz" 2>/dev/null || echo "0")
+    if [ "$FILE_SIZE" -lt 1000 ]; then
+        echo -e "${RED}❌ Downloaded file is too small (${FILE_SIZE} bytes)${NC}"
+        rm -rf "$TEMP_DIR"
+        return 1
+    fi
+    
+    echo -e "${GREEN}✅ Downloaded ${FILE_SIZE} bytes${NC}"
+    
+    # Extract
+    echo -e "${BLUE}📦 Extracting...${NC}"
+    if ! tar -xzf "$TEMP_DIR/sing-box.tar.gz" -C "$TEMP_DIR" 2>&1; then
+        echo -e "${RED}❌ Failed to extract archive${NC}"
+        rm -rf "$TEMP_DIR"
+        return 1
+    fi
+    
+    # Find sing-box binary
+    local SINGBOX_BIN=$(find "$TEMP_DIR" -name "sing-box" -type f 2>/dev/null | head -1)
+    
+    if [ -n "$SINGBOX_BIN" ]; then
+        cp "$SINGBOX_BIN" "$BIN_DIR/sing-box"
+        chmod +x "$BIN_DIR/sing-box"
+        echo -e "${GREEN}✅ sing-box installed to $BIN_DIR/sing-box${NC}"
+        rm -rf "$TEMP_DIR"
+        return 0
+    else
+        echo -e "${RED}❌ sing-box binary not found in archive${NC}"
+        echo "   Contents:"
+        find "$TEMP_DIR" -type f | head -20
+        rm -rf "$TEMP_DIR"
+        return 1
+    fi
+}
+
+# Check if sing-box already exists
+if command -v sing-box &> /dev/null; then
+    echo -e "${GREEN}✅ sing-box already installed: $(which sing-box)${NC}"
+    sing-box version
+elif [ -f "$BIN_DIR/sing-box" ]; then
+    echo -e "${GREEN}✅ sing-box found in $BIN_DIR${NC}"
+    "$BIN_DIR/sing-box" version
 else
-    echo -e "${YELLOW}📥 Installing HiddifyCli via official script...${NC}"
+    echo -e "${YELLOW}📥 Installing sing-box...${NC}"
     
-    # Official Hiddify install script
-    bash <(curl -fsSL https://i.hiddify.com) || {
-        echo -e "${RED}❌ Failed to install HiddifyCli${NC}"
-        echo "Please check your internet connection or install manually:"
-        echo "  bash <(curl -fsSL https://i.hiddify.com)"
+    if download_singbox; then
+        echo -e "${GREEN}✅ sing-box installed successfully${NC}"
+    else
+        echo -e "${RED}❌ Failed to install sing-box${NC}"
+        echo ""
+        echo "Please install manually:"
+        echo "  1. Visit: https://github.com/SagerNet/sing-box/releases"
+        echo "  2. Download: sing-box-1.11.4-${OS}-${ARCH}.tar.gz"
+        echo "  3. Extract and copy sing-box to $BIN_DIR/"
         exit 1
-    }
-    
-    echo -e "${GREEN}✅ HiddifyCli installed successfully${NC}"
+    fi
 fi
 
 # Build mole-go
@@ -67,14 +123,11 @@ fi
 
 # Create symlink to PATH
 if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
-    ln -sf "$BIN_DIR/mole" /usr/local/bin/mole
+    ln -sf "$BIN_DIR/mole" /usr/local/bin/mole 2>/dev/null || true
     echo -e "${GREEN}✅ Created symlink: /usr/local/bin/mole${NC}"
 else
     echo -e "${YELLOW}⚠️  Please add $BIN_DIR to your PATH:${NC}"
     echo "  export PATH=\"$BIN_DIR:\$PATH\""
-    echo ""
-    echo "Add to your ~/.zshrc or ~/.bashrc:"
-    echo "  echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.zshrc"
 fi
 
 # Create sample config if not exists
@@ -108,12 +161,5 @@ echo "  mole up              # Start VPN"
 echo "  mole down            # Stop VPN"
 echo "  mole status          # Check status"
 echo "  mole logs -f         # View logs"
-echo "  mole config validate # Validate config"
 echo ""
 echo "Configuration: $MOLE_DIR/config.yaml"
-echo "Logs: $MOLE_DIR/mole.log"
-echo ""
-echo -e "${BLUE}Quick start:${NC}"
-echo "  1. Edit config: vim $MOLE_DIR/config.yaml"
-echo "  2. Start VPN:   mole up"
-echo "  3. Check status: mole status"
