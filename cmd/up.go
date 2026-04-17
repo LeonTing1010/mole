@@ -129,6 +129,12 @@ func runDaemon() error {
 	}
 	defer utils.RestoreDNS()
 
+	// Raise UDP socket buffers so hy2/QUIC can saturate the link on macOS.
+	if err := utils.TuneUDPBuffers(); err != nil {
+		fmt.Printf("⚠️  UDP buffer tuning failed: %v\n", err)
+	}
+	defer utils.RestoreUDPBuffers()
+
 	core.SetServerAddress(srv.IP)
 
 	sup := core.NewSupervisor(cfgPath, srv.Name, core.SupervisorOpts{})
