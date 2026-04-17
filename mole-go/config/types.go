@@ -92,7 +92,9 @@ type DefaultDomainResolver struct {
 }
 
 type RouteRule struct {
+	Action   string   `json:"action,omitempty"`
+	Protocol string   `json:"protocol,omitempty"`
 	IPCIDR   []string `json:"ip_cidr,omitempty"`
 	RuleSet  []string `json:"rule_set,omitempty"`
-	Outbound string   `json:"outbound"`
+	Outbound string   `json:"outbound,omitempty"`
 }

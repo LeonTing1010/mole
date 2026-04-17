@@ -31,3 +31,6 @@ func SingboxConfigPath() string { return filepath.Join(MoleDir(), "sing-box-conf
 
 // PIDPath is the running mole process pid file.
 func PIDPath() string { return filepath.Join(MoleDir(), "mole.pid") }
+
+// LogPath is where sing-box output is captured.
+func LogPath() string { return filepath.Join(MoleDir(), "mole.log") }

@@ -14,4 +14,5 @@ func init() {
 	rootCmd.AddCommand(useCmd)
 	rootCmd.AddCommand(upCmd)
 	rootCmd.AddCommand(downCmd)
+	rootCmd.AddCommand(statusCmd)
 }

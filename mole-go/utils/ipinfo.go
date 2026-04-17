@@ -60,6 +60,27 @@ func GetIPInfo(server string) (IPInfo, error) {
 	return info, nil
 }
 
+// GetMyIPInfo returns geolocation for the caller's own public IP (i.e. the
+// current egress — useful for confirming VPN exit).
+func GetMyIPInfo() (IPInfo, error) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("https://ipinfo.io/json")
+	if err != nil {
+		return IPInfo{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return IPInfo{}, fmt.Errorf("ipinfo.io returned status %d", resp.StatusCode)
+	}
+	var r struct {
+		IP, City, Region, Country, Org string
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return IPInfo{}, err
+	}
+	return IPInfo{IP: r.IP, City: r.City, Region: r.Region, Country: r.Country, Org: r.Org}, nil
+}
+
 // getIPInfoFromService queries IP geolocation services
 func getIPInfoFromService(ip string) (IPInfo, error) {
 	// Service 1: ipinfo.io (no auth required for basic info)

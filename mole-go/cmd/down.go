@@ -3,7 +3,7 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/leo/mole/core"
+	"github.com/LeonTing1010/mole/mole-go/core"
 	"github.com/spf13/cobra"
 )
 

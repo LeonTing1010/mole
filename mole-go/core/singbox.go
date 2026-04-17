@@ -9,11 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leo/mole/utils"
+	"github.com/LeonTing1010/mole/mole-go/utils"
 )
 
 var (
 	currentProcess *exec.Cmd
+	processExit    chan error
 	processMutex   sync.Mutex
 	serverAddress  string
 )
@@ -39,8 +40,12 @@ func Start(configPath string) error {
 	} else {
 		cmd = exec.Command(singboxPath, "run", "-c", configPath)
 	}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	logFile, err := os.OpenFile(utils.LogPath(), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("open log file: %w", err)
+	}
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 	cmd.Env = append(os.Environ(),
 		"ENABLE_DEPRECATED_LEGACY_DNS_SERVERS=true",
 		"ENABLE_DEPRECATED_MISSING_DOMAIN_RESOLVER=true",
@@ -50,11 +55,17 @@ func Start(configPath string) error {
 		return fmt.Errorf("failed to start sing-box: %w", err)
 	}
 	currentProcess = cmd
+	processExit = make(chan error, 1)
+	go func(c *exec.Cmd, ch chan<- error) {
+		ch <- c.Wait()
+	}(cmd, processExit)
 
-	time.Sleep(2 * time.Second)
-	if currentProcess.ProcessState != nil && currentProcess.ProcessState.Exited() {
+	select {
+	case <-processExit:
 		currentProcess = nil
-		return fmt.Errorf("sing-box exited unexpectedly")
+		processExit = nil
+		return fmt.Errorf("sing-box exited unexpectedly (see %s)", utils.LogPath())
+	case <-time.After(2 * time.Second):
 	}
 	return nil
 }
@@ -75,14 +86,14 @@ func Stop() error {
 		}
 	}
 
-	done := make(chan error, 1)
-	go func() { done <- currentProcess.Wait() }()
 	select {
-	case <-done:
+	case <-processExit:
 	case <-time.After(5 * time.Second):
 		currentProcess.Process.Kill()
+		<-processExit
 	}
 	currentProcess = nil
+	processExit = nil
 	return nil
 }
 

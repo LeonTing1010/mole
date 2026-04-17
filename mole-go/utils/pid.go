@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // WritePID writes the current process PID to file
@@ -38,7 +39,7 @@ func IsRunning(pid int) bool {
 		return false
 	}
 	// On Unix, FindProcess always succeeds, need to send signal 0 to check
-	err = process.Signal(os.Signal(nil))
+	err = process.Signal(syscall.Signal(0))
 	return err == nil
 }
 

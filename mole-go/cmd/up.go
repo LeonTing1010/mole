@@ -6,9 +6,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/leo/mole/config"
-	"github.com/leo/mole/core"
-	"github.com/leo/mole/utils"
+	"github.com/LeonTing1010/mole/mole-go/config"
+	"github.com/LeonTing1010/mole/mole-go/core"
+	"github.com/LeonTing1010/mole/mole-go/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -54,6 +54,7 @@ func runUp(_ *cobra.Command, _ []string) error {
 	}
 	core.SetServerAddress(srv.IP)
 	fmt.Println("✅ Connected. Ctrl+C to stop.")
+	fmt.Printf("📄 Logs: %s\n", utils.LogPath())
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

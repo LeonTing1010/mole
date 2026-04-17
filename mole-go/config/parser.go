@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/leo/mole/utils"
+	"github.com/LeonTing1010/mole/mole-go/utils"
 )
 
 // Build assembles a sing-box config from a server URI (vless://, hy2://).
@@ -23,7 +23,7 @@ func Build(serverURI string) (*SingboxConfig, error) {
 
 	dnsServers := []DNSServer{
 		{Type: "tls", Server: "1.1.1.1", Tag: "dns-remote", Detour: "proxy"},
-		{Type: "udp", Server: "223.5.5.5", Tag: "dns-direct", Detour: "direct"},
+		{Type: "udp", Server: "223.5.5.5", Tag: "dns-direct"},
 	}
 
 	dnsRules := []DNSRule{}
@@ -39,9 +39,11 @@ func Build(serverURI string) (*SingboxConfig, error) {
 	})
 
 	routeRules := []RouteRule{
-		{IPCIDR: []string{"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "127.0.0.0/8"}, Outbound: "direct"},
-		{RuleSet: []string{"geosite-cn"}, Outbound: "direct"},
-		{RuleSet: []string{"geoip-cn"}, Outbound: "direct"},
+		{Action: "sniff"},
+		{Protocol: "dns", Action: "hijack-dns"},
+		{IPCIDR: []string{"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "127.0.0.0/8"}, Action: "direct"},
+		{RuleSet: []string{"geosite-cn"}, Action: "direct"},
+		{RuleSet: []string{"geoip-cn"}, Action: "direct"},
 	}
 
 	ruleSets := []RuleSet{
@@ -59,11 +61,7 @@ func Build(serverURI string) (*SingboxConfig, error) {
 			AutoRoute: true,
 			Stack:     "mixed",
 		}},
-		Outbounds: []OutboundConfig{
-			*outbound,
-			{Type: "direct", Tag: "direct"},
-			{Type: "block", Tag: "block"},
-		},
+		Outbounds: []OutboundConfig{*outbound},
 		Route: RouteConfig{
 			Rules:               routeRules,
 			RuleSet:             ruleSets,
