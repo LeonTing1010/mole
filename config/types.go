@@ -53,6 +53,8 @@ type OutboundConfig struct {
 	Password   string           `json:"password,omitempty"`
 	Flow       string           `json:"flow,omitempty"`
 	Network    string           `json:"network,omitempty"`
+	UpMbps     int              `json:"up_mbps,omitempty"`
+	DownMbps   int              `json:"down_mbps,omitempty"`
 	TLS        *TLSConfig       `json:"tls,omitempty"`
 	Transport  *TransportConfig `json:"transport,omitempty"`
 }

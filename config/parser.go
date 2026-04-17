@@ -53,13 +53,14 @@ func Build(serverURI string) (*SingboxConfig, error) {
 
 	return &SingboxConfig{
 		Log: LogConfig{Level: "debug", Timestamp: true},
-		DNS: DNSConfig{Servers: dnsServers, Rules: dnsRules, Strategy: "prefer_ipv4"},
+		DNS: DNSConfig{Servers: dnsServers, Rules: dnsRules, Strategy: "ipv4_only"},
 		Inbounds: []InboundConfig{{
 			Type: "tun", Tag: "tun-in",
-			Address:   []string{"172.19.0.1/30", "fdfe:dcba:9876::1/126"},
-			MTU:       1400,
-			AutoRoute: true,
-			Stack:     "mixed",
+			Address:     []string{"172.19.0.1/28"},
+			MTU:         9000,
+			AutoRoute:   true,
+			StrictRoute: true,
+			Stack:       "gvisor",
 		}},
 		Outbounds: []OutboundConfig{
 			*outbound,
@@ -155,6 +156,8 @@ func parseHysteria2(u *url.URL) (*OutboundConfig, error) {
 		Type: "hysteria2", Tag: "proxy",
 		Server: host, ServerPort: port,
 		Password: u.User.Username(),
+		UpMbps:   50,
+		DownMbps: 200,
 	}
 	q := u.Query()
 	if sni := q.Get("sni"); sni != "" {
