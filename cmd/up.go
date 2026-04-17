@@ -67,6 +67,12 @@ func runUp(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("start vpn: %w", err)
 	}
 	core.SetServerAddress(srv.IP)
+
+	if err := utils.TakeOverDNS(); err != nil {
+		fmt.Printf("⚠️  DNS takeover failed (may still work): %v\n", err)
+	}
+	defer utils.RestoreDNS()
+
 	fmt.Println("✅ Connected. Ctrl+C to stop.")
 	fmt.Printf("📄 Logs: %s\n", utils.LogPath())
 

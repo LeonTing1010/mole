@@ -14,7 +14,6 @@ import (
 )
 
 // Build assembles a sing-box config from a server URI (vless://, hy2://).
-// The result has CN-direct routing baked in.
 func Build(serverURI string) (*SingboxConfig, error) {
 	outbound, err := parseServerURL(serverURI)
 	if err != nil {
@@ -22,7 +21,7 @@ func Build(serverURI string) (*SingboxConfig, error) {
 	}
 
 	dnsServers := []DNSServer{
-		{Type: "tls", Server: "1.1.1.1", Tag: "dns-remote", Detour: "proxy"},
+		{Type: "tls", Server: "1.1.1.1", Tag: "dns-remote"},
 		{Type: "udp", Server: "223.5.5.5", Tag: "dns-direct"},
 	}
 
@@ -41,6 +40,7 @@ func Build(serverURI string) (*SingboxConfig, error) {
 	routeRules := []RouteRule{
 		{Action: "sniff"},
 		{Protocol: "dns", Action: "hijack-dns"},
+		{Protocol: "quic", Action: "reject"},
 		{IPCIDR: []string{"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "127.0.0.0/8"}, Outbound: "direct"},
 		{RuleSet: []string{"geosite-cn"}, Outbound: "direct"},
 		{RuleSet: []string{"geoip-cn"}, Outbound: "direct"},
@@ -52,7 +52,7 @@ func Build(serverURI string) (*SingboxConfig, error) {
 	}
 
 	return &SingboxConfig{
-		Log: LogConfig{Level: "debug", Timestamp: true},
+		Log: LogConfig{Level: "info"},
 		DNS: DNSConfig{Servers: dnsServers, Rules: dnsRules, Strategy: "ipv4_only"},
 		Inbounds: []InboundConfig{{
 			Type: "tun", Tag: "tun-in",
@@ -72,8 +72,7 @@ func Build(serverURI string) (*SingboxConfig, error) {
 			AutoDetectInterface: true,
 			Final:               "proxy",
 			DefaultDomainResolver: &DefaultDomainResolver{
-				Server: "dns-remote",
-				Detour: "proxy",
+				Server: "dns-direct",
 			},
 		},
 	}, nil
@@ -156,8 +155,6 @@ func parseHysteria2(u *url.URL) (*OutboundConfig, error) {
 		Type: "hysteria2", Tag: "proxy",
 		Server: host, ServerPort: port,
 		Password: u.User.Username(),
-		UpMbps:   50,
-		DownMbps: 200,
 	}
 	q := u.Query()
 	if sni := q.Get("sni"); sni != "" {

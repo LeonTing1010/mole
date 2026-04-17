@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/LeonTing1010/mole/core"
+	"github.com/LeonTing1010/mole/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -16,11 +17,12 @@ var downCmd = &cobra.Command{
 
 func runDown(cmd *cobra.Command, args []string) error {
 	fmt.Println("🛑 Stopping VPN...")
-	
+
+	utils.RestoreDNS()
 	if err := core.Stop(); err != nil {
 		return fmt.Errorf("failed to stop VPN: %w", err)
 	}
-	
+
 	fmt.Println("✅ VPN stopped")
 	return nil
 }
