@@ -1,17 +1,23 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/LeonTing1010/mole/config"
 	"github.com/LeonTing1010/mole/core"
 	"github.com/LeonTing1010/mole/utils"
 	"github.com/spf13/cobra"
 )
+
+var internalDaemon bool
 
 // maskURI replaces the user:password portion of a URI with "***" for logging.
 func maskURI(s string) string {
@@ -25,13 +31,33 @@ func maskURI(s string) string {
 
 var upCmd = &cobra.Command{
 	Use:   "up",
-	Short: "Start the VPN with the active server",
+	Short: "Start the VPN with the active server (runs in background)",
 	RunE:  runUp,
 }
 
+func init() {
+	upCmd.Flags().BoolVar(&internalDaemon, "internal-daemon", false, "")
+	_ = upCmd.Flags().MarkHidden("internal-daemon")
+}
+
 func runUp(_ *cobra.Command, _ []string) error {
+	if internalDaemon {
+		return runDaemon()
+	}
+	return runParent()
+}
+
+// runParent prepares config in the foreground, daemonizes the daemon child,
+// and prints user-facing status before exiting.
+func runParent() error {
 	if err := utils.CheckAlreadyRunning(); err != nil {
 		return err
+	}
+
+	// TUN needs root. Re-exec through sudo so the daemon child inherits root
+	// and can launch sing-box directly (no sudo prompt in the detached child).
+	if (runtime.GOOS == "darwin" || runtime.GOOS == "linux") && os.Geteuid() != 0 {
+		return reExecViaSudo()
 	}
 
 	srv, err := ActiveServer()
@@ -57,33 +83,111 @@ func runUp(_ *cobra.Command, _ []string) error {
 		fmt.Printf("🌍 %s — %s, %s\n", srv.Name, info.Country, info.City)
 	}
 
+	fmt.Println("🚀 Starting VPN...")
+
+	// Truncate previous log so the user sees a fresh run.
+	if f, err := os.OpenFile(utils.LogPath(), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644); err == nil {
+		f.Close()
+	}
+
+	pid, err := utils.Daemonize("--internal-daemon")
+	if err != nil {
+		return fmt.Errorf("daemonize: %w", err)
+	}
+
+	// Wait for the daemon to write its state (indicates sing-box came up).
+	if err := waitForDaemonReady(pid, 10*time.Second); err != nil {
+		return fmt.Errorf("daemon did not come up: %w (see %s)", err, utils.LogPath())
+	}
+
+	fmt.Printf("✅ Running in background (pid %d)\n", pid)
+	fmt.Printf("📄 Logs:   %s\n", utils.LogPath())
+	fmt.Printf("📊 Status: mole status\n")
+	fmt.Printf("🛑 Stop:   mole down\n")
+	return nil
+}
+
+// runDaemon is the detached child: it takes over DNS, starts sing-box, and
+// runs the supervisor until SIGTERM/SIGINT.
+func runDaemon() error {
 	if err := utils.WritePID(); err != nil {
 		return fmt.Errorf("write pid: %w", err)
 	}
 	defer utils.RemovePID()
+	defer utils.RemoveState()
 
-	fmt.Println("🚀 Starting VPN...")
-	if err := core.Start(cfgPath); err != nil {
-		return fmt.Errorf("start vpn: %w", err)
+	srv, err := ActiveServer()
+	if err != nil {
+		return err
 	}
-	core.SetServerAddress(srv.IP)
 
+	cfgPath := utils.SingboxConfigPath()
+
+	// TUN needs DNS takeover on macOS. Defer restore so any clean exit path resets it.
 	if err := utils.TakeOverDNS(); err != nil {
-		fmt.Printf("⚠️  DNS takeover failed (may still work): %v\n", err)
+		fmt.Printf("⚠️  DNS takeover failed: %v\n", err)
 	}
 	defer utils.RestoreDNS()
 
-	fmt.Println("✅ Connected. Ctrl+C to stop.")
-	fmt.Printf("📄 Logs: %s\n", utils.LogPath())
+	core.SetServerAddress(srv.IP)
+
+	sup := core.NewSupervisor(cfgPath, srv.Name, core.SupervisorOpts{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
 
-	fmt.Println("\n🛑 Stopping...")
-	if err := core.Stop(); err != nil {
-		return fmt.Errorf("stop vpn: %w", err)
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- sup.Run(ctx)
+	}()
+
+	select {
+	case sig := <-sigChan:
+		fmt.Printf("received %s, stopping\n", sig)
+	case err := <-runErr:
+		if err != nil {
+			return err
+		}
+		return nil
 	}
-	fmt.Println("✅ Stopped.")
+
+	sup.Stop()
+	cancel()
+	select {
+	case <-sup.Done():
+	case <-time.After(10 * time.Second):
+	}
 	return nil
+}
+
+func reExecViaSudo() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate executable: %w", err)
+	}
+	args := append([]string{exe}, os.Args[1:]...)
+	c := exec.Command("sudo", args...)
+	c.Stdin = os.Stdin
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	return c.Run()
+}
+
+func waitForDaemonReady(pid int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if !utils.IsRunning(pid) {
+			return fmt.Errorf("daemon exited early")
+		}
+		if st, err := utils.ReadState(); err == nil && st.PID == pid {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }

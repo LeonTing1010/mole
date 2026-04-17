@@ -34,3 +34,6 @@ func PIDPath() string { return filepath.Join(MoleDir(), "mole.pid") }
 
 // LogPath is where sing-box output is captured.
 func LogPath() string { return filepath.Join(MoleDir(), "mole.log") }
+
+// StatePath is where the running supervisor writes its health state.
+func StatePath() string { return filepath.Join(MoleDir(), "state.json") }

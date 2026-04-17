@@ -2,11 +2,23 @@ package config
 
 // SingboxConfig is the JSON layout sing-box consumes.
 type SingboxConfig struct {
-	Log       LogConfig        `json:"log"`
-	DNS       DNSConfig        `json:"dns"`
-	Inbounds  []InboundConfig  `json:"inbounds"`
-	Outbounds []OutboundConfig `json:"outbounds"`
-	Route     RouteConfig      `json:"route"`
+	Log          LogConfig           `json:"log"`
+	DNS          DNSConfig           `json:"dns"`
+	Inbounds     []InboundConfig     `json:"inbounds"`
+	Outbounds    []OutboundConfig    `json:"outbounds"`
+	Route        RouteConfig         `json:"route"`
+	Experimental *ExperimentalConfig `json:"experimental,omitempty"`
+}
+
+// ExperimentalConfig exposes the Clash-compatible API so mole can
+// flip a selector outbound at runtime.
+type ExperimentalConfig struct {
+	ClashAPI *ClashAPIConfig `json:"clash_api,omitempty"`
+}
+
+type ClashAPIConfig struct {
+	ExternalController string `json:"external_controller"`
+	Secret             string `json:"secret,omitempty"`
 }
 
 type LogConfig struct {
@@ -53,6 +65,9 @@ type OutboundConfig struct {
 	Password   string           `json:"password,omitempty"`
 	Flow       string           `json:"flow,omitempty"`
 	Network    string           `json:"network,omitempty"`
+	Version    string           `json:"version,omitempty"`
+	Outbounds  []string         `json:"outbounds,omitempty"`
+	Default    string           `json:"default,omitempty"`
 	TLS        *TLSConfig       `json:"tls,omitempty"`
 	Transport  *TransportConfig `json:"transport,omitempty"`
 }

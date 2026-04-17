@@ -15,22 +15,25 @@ import (
 
 var (
 	currentProcess *exec.Cmd
-	processExit    chan error
+	exitCh         chan struct{}
+	exitErr        error
 	processMutex   sync.Mutex
 	serverAddress  string
 )
 
 // Start launches sing-box with the given configuration.
+// It returns once the process has stayed alive for 2 seconds (basic config smoke test).
 func Start(configPath string) error {
 	processMutex.Lock()
-	defer processMutex.Unlock()
 
 	if currentProcess != nil {
+		processMutex.Unlock()
 		return fmt.Errorf("VPN is already running")
 	}
 
 	singboxPath, err := findSingbox()
 	if err != nil {
+		processMutex.Unlock()
 		return err
 	}
 
@@ -40,15 +43,17 @@ func Start(configPath string) error {
 	}
 
 	var cmd *exec.Cmd
-	if runtime.GOOS == "darwin" {
-		// TUN requires root on macOS.
+	// TUN requires root. If we're already root (daemon re-execed via sudo),
+	// skip wrapping with sudo — would fail in a detached context with no TTY.
+	if (runtime.GOOS == "darwin" || runtime.GOOS == "linux") && os.Geteuid() != 0 {
 		cmd = exec.Command("sudo", singboxPath, "run", "-c", configPath)
 	} else {
 		cmd = exec.Command(singboxPath, "run", "-c", configPath)
 	}
 	fmt.Printf("🔧 exec: %s\n", strings.Join(cmd.Args, " "))
-	logFile, err := os.OpenFile(utils.LogPath(), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	logFile, err := os.OpenFile(utils.LogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
+		processMutex.Unlock()
 		return fmt.Errorf("open log file: %w", err)
 	}
 	cmd.Stdout = logFile
@@ -59,18 +64,29 @@ func Start(configPath string) error {
 	)
 
 	if err := cmd.Start(); err != nil {
+		processMutex.Unlock()
 		return fmt.Errorf("failed to start sing-box: %w", err)
 	}
 	currentProcess = cmd
-	processExit = make(chan error, 1)
-	go func(c *exec.Cmd, ch chan<- error) {
-		ch <- c.Wait()
-	}(cmd, processExit)
+	exitCh = make(chan struct{})
+	exitErr = nil
+	currentExitCh := exitCh
+	processMutex.Unlock()
 
+	go func(c *exec.Cmd, done chan struct{}) {
+		err := c.Wait()
+		processMutex.Lock()
+		exitErr = err
+		if currentProcess == c {
+			currentProcess = nil
+		}
+		close(done)
+		processMutex.Unlock()
+	}(cmd, currentExitCh)
+
+	// Early-exit guard: fail fast if config is invalid.
 	select {
-	case <-processExit:
-		currentProcess = nil
-		processExit = nil
+	case <-currentExitCh:
 		return fmt.Errorf("sing-box exited unexpectedly (see %s)", utils.LogPath())
 	case <-time.After(2 * time.Second):
 	}
@@ -80,28 +96,43 @@ func Start(configPath string) error {
 // Stop terminates the running sing-box process.
 func Stop() error {
 	processMutex.Lock()
-	defer processMutex.Unlock()
-
 	if currentProcess == nil {
+		processMutex.Unlock()
 		killExistingSingbox()
 		return nil
 	}
+	proc := currentProcess.Process
+	done := exitCh
+	processMutex.Unlock()
 
-	if err := currentProcess.Process.Signal(os.Interrupt); err != nil {
-		if err := currentProcess.Process.Kill(); err != nil {
+	if err := proc.Signal(os.Interrupt); err != nil {
+		if err := proc.Kill(); err != nil {
 			return fmt.Errorf("failed to stop sing-box: %w", err)
 		}
 	}
 
 	select {
-	case <-processExit:
+	case <-done:
 	case <-time.After(5 * time.Second):
-		currentProcess.Process.Kill()
-		<-processExit
+		proc.Kill()
+		<-done
 	}
-	currentProcess = nil
-	processExit = nil
 	return nil
+}
+
+// ExitChan returns a channel that closes when the current sing-box process exits.
+// Returns nil if nothing is running.
+func ExitChan() <-chan struct{} {
+	processMutex.Lock()
+	defer processMutex.Unlock()
+	return exitCh
+}
+
+// ExitError returns the last exit error (valid after ExitChan closes).
+func ExitError() error {
+	processMutex.Lock()
+	defer processMutex.Unlock()
+	return exitErr
 }
 
 // SetServerAddress records which server is currently active (for diagnostics).

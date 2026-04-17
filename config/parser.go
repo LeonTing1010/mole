@@ -41,6 +41,9 @@ func Build(serverURI string) (*SingboxConfig, error) {
 		{Action: "sniff"},
 		{Protocol: "dns", Action: "hijack-dns"},
 		{Protocol: "quic", Action: "reject"},
+		// Keep DNS resolvers reachable even when VPS is down so that
+		// blocked requests fail fast with ERR_CONNECTION_REFUSED instead of DNS timeouts.
+		{IPCIDR: []string{"1.1.1.1/32", "223.5.5.5/32"}, Outbound: "direct"},
 		{IPCIDR: []string{"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "127.0.0.0/8"}, Outbound: "direct"},
 		{RuleSet: []string{"geosite-cn"}, Outbound: "direct"},
 		{RuleSet: []string{"geoip-cn"}, Outbound: "direct"},
@@ -65,15 +68,25 @@ func Build(serverURI string) (*SingboxConfig, error) {
 		Outbounds: []OutboundConfig{
 			*outbound,
 			{Type: "direct", Tag: "direct"},
+			// "block" is a black-hole socks outbound pointing at an unroutable
+			// local port — connections fail immediately, giving us fail-closed
+			// behavior via the selector below when the VPS is unreachable.
+			{Type: "socks", Tag: "block", Server: "127.0.0.1", ServerPort: 1, Version: "5"},
+			// "auto" is flipped between "proxy" and "block" at runtime through
+			// the Clash API based on VPS health.
+			{Type: "selector", Tag: "auto", Outbounds: []string{"proxy", "block"}, Default: "proxy"},
 		},
 		Route: RouteConfig{
 			Rules:               routeRules,
 			RuleSet:             ruleSets,
 			AutoDetectInterface: true,
-			Final:               "proxy",
+			Final:               "auto",
 			DefaultDomainResolver: &DefaultDomainResolver{
 				Server: "dns-direct",
 			},
+		},
+		Experimental: &ExperimentalConfig{
+			ClashAPI: &ClashAPIConfig{ExternalController: "127.0.0.1:9090"},
 		},
 	}, nil
 }

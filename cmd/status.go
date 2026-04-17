@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/LeonTing1010/mole/utils"
 	"github.com/spf13/cobra"
@@ -9,7 +10,7 @@ import (
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show VPN status and current exit IP",
+	Short: "Show VPN status, current mode, and exit IP",
 	RunE:  runStatus,
 }
 
@@ -36,6 +37,7 @@ func runStatus(_ *cobra.Command, _ []string) error {
 	}
 
 	if running {
+		printSupervisorState()
 		if info, err := utils.GetMyIPInfo(); err == nil {
 			fmt.Printf("   Exit IP: %s — %s, %s\n", info.IP, info.Country, info.City)
 		} else {
@@ -45,4 +47,42 @@ func runStatus(_ *cobra.Command, _ []string) error {
 		fmt.Println("   Run `mole up` to connect.")
 	}
 	return nil
+}
+
+func printSupervisorState() {
+	st, err := utils.ReadState()
+	if err != nil {
+		fmt.Println("   Mode:    (supervisor state unavailable)")
+		return
+	}
+	switch st.Mode {
+	case utils.ModeProxy:
+		if st.LastLatencyMs > 0 {
+			fmt.Printf("   Mode:    🟢 proxy — VPS healthy (%dms)\n", st.LastLatencyMs)
+		} else {
+			fmt.Println("   Mode:    🟢 proxy — VPS healthy")
+		}
+	case utils.ModeBlock:
+		reason := st.LastProbeError
+		if reason == "" {
+			reason = "VPS unreachable"
+		}
+		fmt.Printf("   Mode:    🔴 block — %s\n", reason)
+	default:
+		fmt.Printf("   Mode:    %s\n", st.Mode)
+	}
+	if !st.LastProbeAt.IsZero() {
+		fmt.Printf("   Probed:  %s ago\n", humanize(time.Since(st.LastProbeAt)))
+	}
+}
+
+func humanize(d time.Duration) string {
+	d = d.Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 }
