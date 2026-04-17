@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/LeonTing1010/mole/mole-go/cmd"
+	"github.com/LeonTing1010/mole/cmd"
 )
 
 func main() {

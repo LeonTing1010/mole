@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LeonTing1010/mole/mole-go/utils"
+	"github.com/LeonTing1010/mole/utils"
 	"github.com/spf13/cobra"
 )
 

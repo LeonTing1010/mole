@@ -1,4 +1,4 @@
-module github.com/LeonTing1010/mole/mole-go
+module github.com/LeonTing1010/mole
 
 go 1.21.6
 

@@ -3,5 +3,5 @@
 .claude/skills
 .mcp.json
 CLAUDE.md
-mole-go/mole
-mole-go/*.dSYM/
+/mole
+/*.dSYM/

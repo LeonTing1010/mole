@@ -11,9 +11,9 @@ Built on [sing-box](https://sing-box.sagernet.org/) with CN-direct routing baked
 brew install sing-box
 
 # mole itself — pick one:
-go install github.com/LeonTing1010/mole/mole-go@latest        # Go toolchain
+go install github.com/LeonTing1010/mole@latest                # Go toolchain
 # — or —
-git clone https://github.com/LeonTing1010/mole && cd mole/mole-go && sudo make install
+git clone https://github.com/LeonTing1010/mole && cd mole && sudo make install
 ```
 
 ## Usage

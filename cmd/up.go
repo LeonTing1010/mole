@@ -6,9 +6,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/LeonTing1010/mole/mole-go/config"
-	"github.com/LeonTing1010/mole/mole-go/core"
-	"github.com/LeonTing1010/mole/mole-go/utils"
+	"github.com/LeonTing1010/mole/config"
+	"github.com/LeonTing1010/mole/core"
+	"github.com/LeonTing1010/mole/utils"
 	"github.com/spf13/cobra"
 )
 

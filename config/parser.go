@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/LeonTing1010/mole/mole-go/utils"
+	"github.com/LeonTing1010/mole/utils"
 )
 
 // Build assembles a sing-box config from a server URI (vless://, hy2://).
