@@ -13,81 +13,56 @@ import (
 )
 
 var upCmd = &cobra.Command{
-	Use:   "up [config-file]",
-	Short: "Start the VPN connection",
-	Long:  `Start the VPN connection using the specified configuration file or default configuration.`,
+	Use:   "up",
+	Short: "Start the VPN with the active server",
 	RunE:  runUp,
 }
 
-func runUp(cmd *cobra.Command, args []string) error {
-	// Check if already running
+func runUp(_ *cobra.Command, _ []string) error {
 	if err := utils.CheckAlreadyRunning(); err != nil {
 		return err
 	}
 
-	configPath := ""
-	if len(args) > 0 {
-		configPath = args[0]
-	}
-
-	// Parse mole configuration
-	moleConfig, err := config.Load(configPath)
+	srv, err := ActiveServer()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return err
 	}
 
-	// Convert to Hiddify format
-	hiddifyConfig, err := config.ConvertToHiddify(moleConfig)
+	uri := srv.URI()
+	cfg, err := config.Build(uri)
 	if err != nil {
-		return fmt.Errorf("failed to convert config: %w", err)
+		return fmt.Errorf("build config: %w", err)
 	}
 
-	// Save Hiddify config to ~/.mole/
-	hiddifyConfigPath := utils.HiddifyConfigPath()
-	if err := config.SaveHiddifyConfig(hiddifyConfig, hiddifyConfigPath); err != nil {
-		return fmt.Errorf("failed to save hiddify config: %w", err)
+	cfgPath := utils.SingboxConfigPath()
+	if err := config.Save(cfg, cfgPath); err != nil {
+		return fmt.Errorf("save config: %w", err)
 	}
 
-	// Show server IP info
-	if moleConfig.Server != "" {
-		fmt.Println("🔍 Checking server info...")
-		info, err := utils.GetIPInfo(moleConfig.Server)
-		if err == nil {
-			fmt.Printf("🌍 Server: %s (%s, %s)\n", info.IP, info.Country, info.City)
-		}
+	if info, err := utils.GetIPInfo(srv.IP); err == nil {
+		fmt.Printf("🌍 %s — %s, %s\n", srv.Name, info.Country, info.City)
 	}
 
-	// Write PID file
 	if err := utils.WritePID(); err != nil {
-		return fmt.Errorf("failed to write PID file: %w", err)
+		return fmt.Errorf("write pid: %w", err)
 	}
 	defer utils.RemovePID()
 
-	// Start Hiddify-core
-	fmt.Println("🚀 Starting VPN connection...")
-	utils.MoleLogInfo("Starting VPN connection")
-	if err := core.Start(hiddifyConfigPath); err != nil {
-		utils.MoleLogError(fmt.Sprintf("Failed to start VPN: %v", err))
-		return fmt.Errorf("failed to start VPN: %w", err)
+	fmt.Println("🚀 Starting VPN...")
+	if err := core.Start(cfgPath); err != nil {
+		return fmt.Errorf("start vpn: %w", err)
 	}
+	core.SetServerAddress(srv.IP)
+	fmt.Println("✅ Connected. Ctrl+C to stop.")
 
-	fmt.Println("✅ VPN connection established!")
-	utils.MoleLogInfo("VPN connection established")
-	fmt.Println("Press Ctrl+C to stop")
-
-	// Wait for interrupt signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	fmt.Println("\n🛑 Stopping VPN...")
-	utils.MoleLogInfo("Stopping VPN")
+	fmt.Println("\n🛑 Stopping...")
 	if err := core.Stop(); err != nil {
-		utils.MoleLogError(fmt.Sprintf("Failed to stop VPN: %v", err))
-		return fmt.Errorf("failed to stop VPN: %w", err)
+		return fmt.Errorf("stop vpn: %w", err)
 	}
-
-	fmt.Println("✅ VPN stopped")
-	utils.MoleLogInfo("VPN stopped")
+	fmt.Println("✅ Stopped.")
 	return nil
 }

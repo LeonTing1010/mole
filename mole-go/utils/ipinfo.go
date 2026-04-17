@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -20,6 +21,14 @@ type IPInfo struct {
 
 // GetIPInfo retrieves geolocation information for a server address
 func GetIPInfo(server string) (IPInfo, error) {
+	// Parse URI if it looks like one
+	if strings.Contains(server, "://") {
+		u, err := url.Parse(server)
+		if err == nil && u.Host != "" {
+			server = u.Host
+		}
+	}
+
 	// Extract IP from server address (host:port)
 	host, _, err := net.SplitHostPort(server)
 	if err != nil {

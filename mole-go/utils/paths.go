@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 )
 
-// MoleDir returns the mole configuration directory (~/.mole)
+// MoleDir returns the mole directory (~/.mole).
 func MoleDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -16,39 +16,18 @@ func MoleDir() string {
 	return dir
 }
 
-// BinDir returns the mole bin directory (~/.mole/bin)
+// BinDir returns the mole bin directory (~/.mole/bin).
 func BinDir() string {
 	dir := filepath.Join(MoleDir(), "bin")
 	os.MkdirAll(dir, 0755)
 	return dir
 }
 
-// ConfigPath returns the mole config path (~/.mole/config.yaml)
-func ConfigPath() string {
-	return filepath.Join(MoleDir(), "config.yaml")
-}
+// ServersPath is the JSON file storing deployed VPS metadata.
+func ServersPath() string { return filepath.Join(MoleDir(), "servers.json") }
 
-// HiddifyConfigPath returns the Hiddify config path (~/.mole/hiddify-config.json)
-func HiddifyConfigPath() string {
-	return filepath.Join(MoleDir(), "hiddify-config.json")
-}
+// SingboxConfigPath is where the generated sing-box config is written.
+func SingboxConfigPath() string { return filepath.Join(MoleDir(), "sing-box-config.json") }
 
-// PIDPath returns the PID file path (~/.mole/mole.pid)
-func PIDPath() string {
-	return filepath.Join(MoleDir(), "mole.pid")
-}
-
-// LogPath returns the mole log path (~/.mole/mole.log)
-func LogPath() string {
-	return filepath.Join(MoleDir(), "mole.log")
-}
-
-// HiddifyLogPath returns the Hiddify log path (~/.mole/hiddify.log)
-func HiddifyLogPath() string {
-	return filepath.Join(MoleDir(), "hiddify.log")
-}
-
-// HiddifyCliPath returns the HiddifyCli binary path (~/.mole/bin/HiddifyCli)
-func HiddifyCliPath() string {
-	return filepath.Join(BinDir(), "HiddifyCli")
-}
+// PIDPath is the running mole process pid file.
+func PIDPath() string { return filepath.Join(MoleDir(), "mole.pid") }

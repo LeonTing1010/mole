@@ -113,7 +113,7 @@ fi
 echo -e "${BLUE}🔨 Building mole-go...${NC}"
 if command -v go &> /dev/null; then
     cd "$(dirname "$0")"
-    go build -ldflags="-s -w" -o "$BIN_DIR/mole" .
+    CGO_ENABLED=0 GOARCH="$ARCH" go build -ldflags="-s -w" -o "$BIN_DIR/mole" .
     echo -e "${GREEN}✅ mole-go built successfully${NC}"
 else
     echo -e "${RED}❌ Go not found. Please install Go 1.21+${NC}"
