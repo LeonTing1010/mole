@@ -52,7 +52,7 @@ func Build(serverURI string) (*SingboxConfig, error) {
 	}
 
 	return &SingboxConfig{
-		Log: LogConfig{Level: "info"},
+		Log: LogConfig{Level: "debug", Timestamp: true},
 		DNS: DNSConfig{Servers: dnsServers, Rules: dnsRules, Strategy: "prefer_ipv4"},
 		Inbounds: []InboundConfig{{
 			Type: "tun", Tag: "tun-in",

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,6 +12,16 @@ import (
 	"github.com/LeonTing1010/mole/utils"
 	"github.com/spf13/cobra"
 )
+
+// maskURI replaces the user:password portion of a URI with "***" for logging.
+func maskURI(s string) string {
+	u, err := url.Parse(s)
+	if err != nil || u.User == nil {
+		return s
+	}
+	u.User = url.User("***")
+	return u.String()
+}
 
 var upCmd = &cobra.Command{
 	Use:   "up",
@@ -29,6 +40,8 @@ func runUp(_ *cobra.Command, _ []string) error {
 	}
 
 	uri := srv.URI()
+	fmt.Printf("🔗 URI: %s\n", maskURI(uri))
+
 	cfg, err := config.Build(uri)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)
@@ -38,6 +51,7 @@ func runUp(_ *cobra.Command, _ []string) error {
 	if err := config.Save(cfg, cfgPath); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
+	fmt.Printf("📋 Config: %s\n", cfgPath)
 
 	if info, err := utils.GetIPInfo(srv.IP); err == nil {
 		fmt.Printf("🌍 %s — %s, %s\n", srv.Name, info.Country, info.City)

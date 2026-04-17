@@ -10,8 +10,9 @@ type SingboxConfig struct {
 }
 
 type LogConfig struct {
-	Level  string `json:"level"`
-	Output string `json:"output,omitempty"`
+	Level     string `json:"level"`
+	Output    string `json:"output,omitempty"`
+	Timestamp bool   `json:"timestamp,omitempty"`
 }
 
 type DNSConfig struct {

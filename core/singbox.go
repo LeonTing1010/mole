@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +34,11 @@ func Start(configPath string) error {
 		return err
 	}
 
+	fmt.Printf("🔧 sing-box: %s\n", singboxPath)
+	if out, err := exec.Command(singboxPath, "version").Output(); err == nil {
+		fmt.Printf("   %s\n", strings.SplitN(string(out), "\n", 2)[0])
+	}
+
 	var cmd *exec.Cmd
 	if runtime.GOOS == "darwin" {
 		// TUN requires root on macOS.
@@ -40,6 +46,7 @@ func Start(configPath string) error {
 	} else {
 		cmd = exec.Command(singboxPath, "run", "-c", configPath)
 	}
+	fmt.Printf("🔧 exec: %s\n", strings.Join(cmd.Args, " "))
 	logFile, err := os.OpenFile(utils.LogPath(), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("open log file: %w", err)
