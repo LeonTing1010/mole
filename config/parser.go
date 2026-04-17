@@ -23,7 +23,7 @@ func Build(serverURI string) (*SingboxConfig, error) {
 
 	dnsServers := []DNSServer{
 		{Type: "tls", Server: "1.1.1.1", Tag: "dns-remote", Detour: "proxy"},
-		{Type: "udp", Server: "223.5.5.5", Tag: "dns-direct"},
+		{Type: "udp", Server: "223.5.5.5", Tag: "dns-direct", Detour: "direct"},
 	}
 
 	dnsRules := []DNSRule{}
@@ -41,9 +41,9 @@ func Build(serverURI string) (*SingboxConfig, error) {
 	routeRules := []RouteRule{
 		{Action: "sniff"},
 		{Protocol: "dns", Action: "hijack-dns"},
-		{IPCIDR: []string{"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "127.0.0.0/8"}, Action: "direct"},
-		{RuleSet: []string{"geosite-cn"}, Action: "direct"},
-		{RuleSet: []string{"geoip-cn"}, Action: "direct"},
+		{IPCIDR: []string{"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "127.0.0.0/8"}, Outbound: "direct"},
+		{RuleSet: []string{"geosite-cn"}, Outbound: "direct"},
+		{RuleSet: []string{"geoip-cn"}, Outbound: "direct"},
 	}
 
 	ruleSets := []RuleSet{
@@ -57,11 +57,14 @@ func Build(serverURI string) (*SingboxConfig, error) {
 		Inbounds: []InboundConfig{{
 			Type: "tun", Tag: "tun-in",
 			Address:   []string{"172.19.0.1/30", "fdfe:dcba:9876::1/126"},
-			MTU:       1500,
+			MTU:       1400,
 			AutoRoute: true,
 			Stack:     "mixed",
 		}},
-		Outbounds: []OutboundConfig{*outbound},
+		Outbounds: []OutboundConfig{
+			*outbound,
+			{Type: "direct", Tag: "direct"},
+		},
 		Route: RouteConfig{
 			Rules:               routeRules,
 			RuleSet:             ruleSets,
