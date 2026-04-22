@@ -112,5 +112,6 @@ type RouteRule struct {
 	Protocol string   `json:"protocol,omitempty"`
 	IPCIDR   []string `json:"ip_cidr,omitempty"`
 	RuleSet  []string `json:"rule_set,omitempty"`
+	Invert   bool     `json:"invert,omitempty"`
 	Outbound string   `json:"outbound,omitempty"`
 }

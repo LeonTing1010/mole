@@ -32,9 +32,11 @@ func Build(serverURI string) (*SingboxConfig, error) {
 			Server: "dns-direct",
 		})
 	}
+	// Non-CN domains resolve through the proxy so GFW-poisoned A records
+	// never reach the client. Everything else falls through to dns-direct.
 	dnsRules = append(dnsRules, DNSRule{
-		RuleSet: []string{"geosite-cn"},
-		Server:  "dns-direct",
+		RuleSet: []string{"geosite-geolocation-!cn"},
+		Server:  "dns-remote",
 	})
 
 	routeRules := []RouteRule{
@@ -45,12 +47,14 @@ func Build(serverURI string) (*SingboxConfig, error) {
 		// blocked requests fail fast with ERR_CONNECTION_REFUSED instead of DNS timeouts.
 		{IPCIDR: []string{"1.1.1.1/32", "223.5.5.5/32"}, Outbound: "direct"},
 		{IPCIDR: []string{"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "127.0.0.0/8"}, Outbound: "direct"},
-		{RuleSet: []string{"geosite-cn"}, Outbound: "direct"},
-		{RuleSet: []string{"geoip-cn"}, Outbound: "direct"},
+		// Non-CN by domain, then non-CN by IP as a fallback for IP-literal
+		// connections that never surface a hostname.
+		{RuleSet: []string{"geosite-geolocation-!cn"}, Outbound: "auto"},
+		{RuleSet: []string{"geoip-cn"}, Invert: true, Outbound: "auto"},
 	}
 
 	ruleSets := []RuleSet{
-		buildRuleSet("geosite-cn", "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"),
+		buildRuleSet("geosite-geolocation-!cn", "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.srs"),
 		buildRuleSet("geoip-cn", "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"),
 	}
 
@@ -80,7 +84,7 @@ func Build(serverURI string) (*SingboxConfig, error) {
 			Rules:               routeRules,
 			RuleSet:             ruleSets,
 			AutoDetectInterface: true,
-			Final:               "auto",
+			Final:               "direct",
 			DefaultDomainResolver: &DefaultDomainResolver{
 				Server: "dns-direct",
 			},

@@ -4,8 +4,12 @@ BINARY := mole
 PREFIX ?= /usr/local
 BINDIR := $(PREFIX)/bin
 
+ARCH := $(shell uname -m)
+GOARCH := $(shell if [ "$(ARCH)" = "x86_64" ]; then echo "amd64"; else echo "arm64"; fi)
+
 build:
-	go build -trimpath -ldflags="-s -w" -o $(BINARY) .
+	GOARCH=$(GOARCH) go build -trimpath -ldflags="-s -w" -o $(BINARY) .
+	@echo "built $(BINARY) for $$(GOARCH)"
 
 install: build
 	install -m 755 $(BINARY) $(BINDIR)/$(BINARY)

@@ -184,13 +184,22 @@ func reExecViaSudo() error {
 
 func waitForDaemonReady(pid int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+
 	for {
-		if !utils.IsRunning(pid) {
-			return fmt.Errorf("daemon exited early")
-		}
+		// Check state file first (indicates sing-box started successfully)
 		if st, err := utils.ReadState(); err == nil && st.PID == pid {
 			return nil
 		}
+
+		// Check if PID file exists with our PID
+		pidFromFile, err := utils.ReadPID()
+		if err == nil && pidFromFile != pid {
+			// PID file exists but has different PID - another instance is running
+			return fmt.Errorf("daemon exited early")
+		}
+		// If PID file doesn't exist yet (err != nil) or matches our PID,
+		// continue waiting for the state file
+
 		if time.Now().After(deadline) {
 			return fmt.Errorf("timed out")
 		}

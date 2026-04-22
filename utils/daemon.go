@@ -42,10 +42,13 @@ func Daemonize(extraArg string) (int, error) {
 		return 0, fmt.Errorf("spawn daemon: %w", err)
 	}
 
+	// Save PID before Release, as Process may become invalid after Release
+	pid := cmd.Process.Pid
+
 	// Parent releases the child; Release avoids a zombie if the child
 	// outlives the short-lived parent.
 	if err := cmd.Process.Release(); err != nil {
-		return cmd.Process.Pid, fmt.Errorf("release daemon: %w", err)
+		return pid, fmt.Errorf("release daemon: %w", err)
 	}
-	return cmd.Process.Pid, nil
+	return pid, nil
 }
