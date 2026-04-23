@@ -4,14 +4,18 @@ BINARY := mole
 PREFIX ?= /usr/local
 BINDIR := $(PREFIX)/bin
 
-ARCH := $(shell uname -m)
-GOARCH := $(shell if [ "$(ARCH)" = "x86_64" ]; then echo "amd64"; else echo "arm64"; fi)
+GOOS   ?= $(shell go env GOOS)
+GOARCH ?= $(shell go env GOARCH)
 
 build:
-	GOARCH=$(GOARCH) go build -trimpath -ldflags="-s -w" -o $(BINARY) .
-	@echo "built $(BINARY) for $$(GOARCH)"
+	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -trimpath -ldflags="-s -w" -o $(BINARY) .
+	@echo "built $(BINARY) for $(GOOS)/$(GOARCH)"
 
 install: build
+	@if [ ! -w "$(BINDIR)" ]; then \
+		echo "$(BINDIR) is not writable — re-run with: sudo make install"; \
+		exit 1; \
+	fi
 	install -m 755 $(BINARY) $(BINDIR)/$(BINARY)
 	@echo "installed to $(BINDIR)/$(BINARY)"
 	@command -v sing-box >/dev/null || echo "note: sing-box not found in PATH — run: brew install sing-box"
