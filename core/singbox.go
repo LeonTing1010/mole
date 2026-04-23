@@ -93,12 +93,27 @@ func Start(configPath string) error {
 	return nil
 }
 
-// Stop terminates the running sing-box process.
+// SingboxPID returns the pid of the sing-box child process, or 0 if none is
+// currently tracked. The supervisor stamps this into state.json so that the
+// `mole down` parent (a different process) can kill the right sing-box on the
+// SIGKILL escalation path instead of carpet-bombing the system with `pkill`.
+func SingboxPID() int {
+	processMutex.Lock()
+	defer processMutex.Unlock()
+	if currentProcess == nil || currentProcess.Process == nil {
+		return 0
+	}
+	return currentProcess.Process.Pid
+}
+
+// Stop terminates the running sing-box process. Only meaningful in the
+// process that called Start (the daemon). Calling it from a different process
+// is a no-op — use the SingboxPID recorded in state.json to kill the child
+// directly instead.
 func Stop() error {
 	processMutex.Lock()
 	if currentProcess == nil {
 		processMutex.Unlock()
-		killExistingSingbox()
 		return nil
 	}
 	proc := currentProcess.Process
@@ -157,11 +172,3 @@ func findSingbox() (string, error) {
 	return "", fmt.Errorf("sing-box not found — reinstall mole")
 }
 
-func killExistingSingbox() {
-	switch runtime.GOOS {
-	case "darwin", "linux":
-		exec.Command("pkill", "-f", "sing-box").Run()
-	case "windows":
-		exec.Command("taskkill", "/F", "/IM", "sing-box.exe").Run()
-	}
-}

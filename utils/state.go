@@ -19,6 +19,7 @@ const (
 type State struct {
 	Mode             Mode      `json:"mode"`
 	PID              int       `json:"pid"`
+	SingboxPID       int       `json:"singbox_pid,omitempty"`
 	Server           string    `json:"server,omitempty"`
 	StartedAt        time.Time `json:"started_at"`
 	LastProbeAt      time.Time `json:"last_probe_at,omitempty"`

@@ -162,6 +162,7 @@ func (s *Supervisor) runLifecycle(ctx context.Context) {
 				log.Printf("restart failed: %v", err)
 				continue // backoff already grew; retry
 			}
+			_ = utils.WriteState(s.snapshot())
 			log.Printf("sing-box restarted")
 		}
 	}
@@ -271,6 +272,7 @@ func (s *Supervisor) snapshot() *utils.State {
 
 func (s *Supervisor) stateSnapshotLocked() *utils.State {
 	cp := *s.state
+	cp.SingboxPID = SingboxPID()
 	return &cp
 }
 
