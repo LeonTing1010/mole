@@ -137,7 +137,12 @@ func runDaemon() error {
 
 	core.SetServerAddress(srv.IP)
 
-	sup := core.NewSupervisor(cfgPath, srv.Name, core.SupervisorOpts{})
+	sup := core.NewSupervisor(cfgPath, srv.Name, core.SupervisorOpts{
+		// Direct UDP probe to the VPS hy2 endpoint — avoids the DNS-loop bug
+		// where DoT-to-1.1.1.1 hiccups got misread as VPS death and chopped
+		// the user's traffic into pieces.
+		ProbeAddr: fmt.Sprintf("%s:%d", srv.IP, srv.Port),
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

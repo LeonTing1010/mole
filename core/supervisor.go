@@ -17,7 +17,8 @@ import (
 type Supervisor struct {
 	configPath  string
 	clashAddr   string
-	probeURL    string
+	probeAddr   string // "host:port" — direct UDP probe target (takes precedence)
+	probeURL    string // fallback URL probe via Clash API (legacy path)
 	probeEvery  time.Duration
 	probeTimeMs int
 	failThresh  int
@@ -35,7 +36,8 @@ type Supervisor struct {
 // SupervisorOpts controls the supervisor's probe cadence. Zero values get sane defaults.
 type SupervisorOpts struct {
 	ClashAddr   string
-	ProbeURL    string
+	ProbeAddr   string // VPS hy2 endpoint "ip:port" for direct UDP probe (recommended)
+	ProbeURL    string // fallback URL probe through Clash API; only used when ProbeAddr is empty
 	ProbeEvery  time.Duration
 	ProbeTimeMs int
 	FailThresh  int
@@ -50,14 +52,18 @@ func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervis
 	if opts.ProbeURL == "" {
 		opts.ProbeURL = "https://www.gstatic.com/generate_204"
 	}
+	// Defaults tuned for "tolerate transient network hiccups, not paranoid":
+	// older 5s/3-fail/3s-timeout window flipped modes on any 15-second blip
+	// and routinely chopped real traffic to pieces. New defaults require ~60s
+	// of sustained badness before failing closed.
 	if opts.ProbeEvery == 0 {
-		opts.ProbeEvery = 5 * time.Second
+		opts.ProbeEvery = 10 * time.Second
 	}
 	if opts.ProbeTimeMs == 0 {
-		opts.ProbeTimeMs = 3000
+		opts.ProbeTimeMs = 5000
 	}
 	if opts.FailThresh == 0 {
-		opts.FailThresh = 3
+		opts.FailThresh = 6
 	}
 	if opts.OkThresh == 0 {
 		opts.OkThresh = 3
@@ -65,6 +71,7 @@ func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervis
 	return &Supervisor{
 		configPath:  configPath,
 		clashAddr:   opts.ClashAddr,
+		probeAddr:   opts.ProbeAddr,
 		probeURL:    opts.ProbeURL,
 		probeEvery:  opts.ProbeEvery,
 		probeTimeMs: opts.ProbeTimeMs,
@@ -199,7 +206,19 @@ func (s *Supervisor) runProbe(ctx context.Context) {
 }
 
 func (s *Supervisor) probeOnce() {
-	delay, err := s.clash.TestDelay("proxy", s.probeURL, s.probeTimeMs)
+	var (
+		delay int
+		err   error
+	)
+	if s.probeAddr != "" {
+		// Direct UDP probe to the VPS hy2 endpoint — bypasses sing-box DNS
+		// (which is the historical false-positive source on bad ISPs).
+		rtt, perr := ProbeHy2UDP(s.probeAddr, time.Duration(s.probeTimeMs)*time.Millisecond)
+		delay = int(rtt / time.Millisecond)
+		err = perr
+	} else {
+		delay, err = s.clash.TestDelay("proxy", s.probeURL, s.probeTimeMs)
+	}
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
 
