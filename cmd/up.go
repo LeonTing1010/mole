@@ -53,6 +53,12 @@ func runParent() error {
 	if err := utils.CheckAlreadyRunning(); err != nil {
 		return err
 	}
+	// CheckAlreadyRunning passed → no live mole daemon. But a previous daemon
+	// may have been SIGKILL'd / OOM'd, leaving its sing-box child orphaned and
+	// still holding TUN + the Clash API port. The new daemon would then fail
+	// to start. Read state.json for the recorded sing-box pid and clean it up
+	// before we daemonize.
+	killOrphanedSingboxFromState()
 
 	// TUN needs root. Re-exec through sudo so the daemon child inherits root
 	// and can launch sing-box directly (no sudo prompt in the detached child).

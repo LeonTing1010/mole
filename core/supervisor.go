@@ -95,6 +95,17 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	if err := Start(s.configPath); err != nil {
 		return fmt.Errorf("initial sing-box start: %w", err)
 	}
+	// Belt-and-suspenders: ensure sing-box never outlives Run, regardless of
+	// how Run unwinds. Catches two real leak paths:
+	//  1. Both supervisor goroutines panic — recoverPanic decrements wg but
+	//     no one calls Stop, so the caller's runDaemon path returns without
+	//     killing sing-box.
+	//  2. Stop()/Start() race — Stop sees currentProcess == nil (during
+	//     restart backoff) and returns; runLifecycle then launches a fresh
+	//     sing-box before observing stopCh; Run returns leaving it orphaned.
+	// core.Stop is idempotent so the happy SIGTERM path (where Stop was
+	// already called) just no-ops here.
+	defer Stop()
 	_ = utils.WriteState(s.snapshot())
 
 	var wg sync.WaitGroup
