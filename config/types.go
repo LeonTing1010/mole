@@ -30,6 +30,7 @@ type LogConfig struct {
 type DNSConfig struct {
 	Servers  []DNSServer `json:"servers"`
 	Rules    []DNSRule   `json:"rules,omitempty"`
+	Final    string      `json:"final,omitempty"`
 	Strategy string      `json:"strategy,omitempty"`
 }
 

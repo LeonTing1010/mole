@@ -60,7 +60,7 @@ func Build(serverURI string) (*SingboxConfig, error) {
 
 	return &SingboxConfig{
 		Log: LogConfig{Level: "info"},
-		DNS: DNSConfig{Servers: dnsServers, Rules: dnsRules, Strategy: "ipv4_only"},
+		DNS: DNSConfig{Servers: dnsServers, Rules: dnsRules, Final: "dns-direct", Strategy: "ipv4_only"},
 		Inbounds: []InboundConfig{{
 			Type: "tun", Tag: "tun-in",
 			Address:     []string{"172.19.0.1/28"},
