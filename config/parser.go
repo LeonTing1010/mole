@@ -21,7 +21,7 @@ func Build(serverURI string) (*SingboxConfig, error) {
 	}
 
 	dnsServers := []DNSServer{
-		{Type: "tls", Server: "1.1.1.1", Tag: "dns-remote"},
+		{Type: "tls", Server: "1.1.1.1", Tag: "dns-remote", Detour: "proxy"},
 		{Type: "udp", Server: "223.5.5.5", Tag: "dns-direct"},
 	}
 
