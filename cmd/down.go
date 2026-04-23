@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/LeonTing1010/mole/core"
 	"github.com/LeonTing1010/mole/utils"
 	"github.com/spf13/cobra"
 )
@@ -24,8 +25,9 @@ func runDown(cmd *cobra.Command, args []string) error {
 	pid, err := utils.ReadPID()
 	if err != nil || !utils.IsRunning(pid) {
 		// Daemon is gone — but a previous unclean exit may have left sing-box,
-		// DNS, and UDP buffer tweaks behind. Reconcile from state.json.
-		killOrphanedSingboxFromState()
+		// DNS, and UDP buffer tweaks behind. Sweep state.json + ps for any
+		// orphaned sing-box and reset host state.
+		core.KillOrphanedSingboxes(utils.SingboxConfigPath())
 		utils.RestoreDNS()
 		utils.RestoreUDPBuffers()
 		utils.RemovePID()
@@ -56,47 +58,21 @@ func runDown(cmd *cobra.Command, args []string) error {
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	// Escalate: SIGKILL the daemon, then directly kill the sing-box pid the
-	// daemon recorded in state.json (its own deferred Stop won't run after
-	// SIGKILL). Restore DNS + UDP buffers since the daemon's defers won't
-	// either.
+	// Escalate: SIGKILL the daemon, then sweep for orphaned sing-box (its own
+	// deferred Stop won't run after SIGKILL). Restore DNS + UDP buffers since
+	// the daemon's defers won't either.
 	fmt.Println("   daemon did not exit cleanly; forcing")
 	_ = proc.Signal(syscall.SIGKILL)
 	for i := 0; i < 30 && utils.IsAlive(pid); i++ {
 		time.Sleep(100 * time.Millisecond)
 	}
-	killOrphanedSingboxFromState()
+	core.KillOrphanedSingboxes(utils.SingboxConfigPath())
 	utils.RestoreDNS()
 	utils.RestoreUDPBuffers()
 	utils.RemovePID()
 	utils.RemoveState()
 	fmt.Println("✅ VPN stopped")
 	return nil
-}
-
-// killOrphanedSingboxFromState reads state.json for the recorded sing-box pid
-// and kills it directly if still alive. Avoids the old `pkill -f sing-box`
-// sledgehammer, which would also kill unrelated sing-box instances on the
-// same machine.
-func killOrphanedSingboxFromState() {
-	st, err := utils.ReadState()
-	if err != nil || st.SingboxPID == 0 {
-		return
-	}
-	if !utils.IsAlive(st.SingboxPID) {
-		return
-	}
-	p, err := os.FindProcess(st.SingboxPID)
-	if err != nil {
-		return
-	}
-	_ = p.Signal(syscall.SIGTERM)
-	for i := 0; i < 30 && utils.IsAlive(st.SingboxPID); i++ {
-		time.Sleep(100 * time.Millisecond)
-	}
-	if utils.IsAlive(st.SingboxPID) {
-		_ = p.Signal(syscall.SIGKILL)
-	}
 }
 
 func reExecDownViaSudo() error {

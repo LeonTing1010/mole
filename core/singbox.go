@@ -6,8 +6,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/LeonTing1010/mole/utils"
@@ -155,6 +157,96 @@ func SetServerAddress(addr string) { serverAddress = addr }
 
 // ServerAddress returns the last set server address.
 func ServerAddress() string { return serverAddress }
+
+// KillOrphanedSingboxes finds and kills sing-box processes that mole started
+// but no longer owns. Two-stage:
+//  1. The pid recorded in state.json (fast, exact — handles the common case
+//     where the previous daemon got SIGKILL'd before its defers ran).
+//  2. A ps(1) sweep for sing-box processes whose command line contains our
+//     config path AND whose parent pid is 1 (orphaned). Catches the cases
+//     state.json misses: corrupt/missing state, never-written state from a
+//     very-early crash, or accumulated leakage across multiple incidents.
+//
+// Identification is deliberately conservative: only kill sing-box instances
+// running our specific config path, and only when reparented to init/launchd.
+// This avoids stomping on unrelated sing-box deployments the user may have
+// running with a different config.
+//
+// MUST only be called when no live mole daemon exists — otherwise we risk
+// killing a healthy daemon's child. Callers gate on CheckAlreadyRunning.
+func KillOrphanedSingboxes(configPath string) {
+	killed := map[int]bool{}
+
+	if st, err := utils.ReadState(); err == nil && st.SingboxPID > 0 {
+		if killSingboxPID(st.SingboxPID) {
+			killed[st.SingboxPID] = true
+		}
+	}
+
+	for _, pid := range findOrphanSingboxesByPS(configPath) {
+		if killed[pid] {
+			continue
+		}
+		killSingboxPID(pid)
+	}
+}
+
+// killSingboxPID best-effort terminates pid: SIGTERM, wait up to 3s, then
+// SIGKILL. Returns true if a live process was found at the start.
+func killSingboxPID(pid int) bool {
+	if !utils.IsAlive(pid) {
+		return false
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	_ = p.Signal(syscall.SIGTERM)
+	for i := 0; i < 30 && utils.IsAlive(pid); i++ {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if utils.IsAlive(pid) {
+		_ = p.Signal(syscall.SIGKILL)
+	}
+	return true
+}
+
+// findOrphanSingboxesByPS returns pids of sing-box processes that match our
+// config path and have been reparented to init (ppid == 1).
+func findOrphanSingboxesByPS(configPath string) []int {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	out, err := exec.Command("ps", "-axo", "pid=,ppid=,command=").Output()
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	self := os.Getpid()
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 3 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil || pid == self {
+			continue
+		}
+		ppid, err := strconv.Atoi(fields[1])
+		if err != nil || ppid != 1 {
+			continue
+		}
+		cmd := strings.Join(fields[2:], " ")
+		if !strings.Contains(cmd, "sing-box") {
+			continue
+		}
+		if !strings.Contains(cmd, configPath) {
+			continue
+		}
+		pids = append(pids, pid)
+	}
+	return pids
+}
 
 func findSingbox() (string, error) {
 	moleSingbox := filepath.Join(utils.BinDir(), "sing-box")
