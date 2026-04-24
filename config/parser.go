@@ -32,6 +32,11 @@ func Build(serverURI string) (*SingboxConfig, error) {
 			Server: "dns-direct",
 		})
 	}
+	// Apple services should use remote DNS to get correct CDN endpoints
+	dnsRules = append(dnsRules, DNSRule{
+		Domain: []string{"apple.com", "icloud.com", "akamaiedge.net", "akadns.net", "edgekey.net"},
+		Server: "dns-remote",
+	})
 	// Non-CN domains resolve through the proxy so GFW-poisoned A records
 	// never reach the client. Everything else falls through to dns-direct.
 	dnsRules = append(dnsRules, DNSRule{
