@@ -15,9 +15,8 @@ import (
 // single biggest knob for hy2 performance on macOS. Values match the
 // tuning recommended by the Hysteria project.
 var udpTuning = map[string]string{
-	"net.inet.udp.recvspace": "7168000",
+	"net.inet.udp.recvspace": "7864320",
 	"net.inet.udp.maxdgram":  "65535",
-	"kern.ipc.maxsockbuf":    "33554432",
 }
 
 func sysctlBackupPath() string { return filepath.Join(MoleDir(), "sysctl-backup.json") }
