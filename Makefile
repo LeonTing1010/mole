@@ -8,7 +8,11 @@ GOOS   ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
 
 build:
+ifeq ($(GOOS),darwin)
+	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -trimpath -ldflags="-s -w -linkmode external" -o $(BINARY) .
+else
 	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -trimpath -ldflags="-s -w" -o $(BINARY) .
+endif
 	@echo "built $(BINARY) for $(GOOS)/$(GOARCH)"
 
 install: build

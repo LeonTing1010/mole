@@ -10,13 +10,16 @@ import (
 	"strings"
 )
 
-// macOS' default UDP socket buffers are tiny (recvspace≈42KB) which caps
-// hy2/QUIC single-flow throughput around 50 Mbps. Raising them is the
-// single biggest knob for hy2 performance on macOS. Values match the
-// tuning recommended by the Hysteria project.
-var udpTuning = map[string]string{
-	"net.inet.udp.recvspace": "7864320",
-	"net.inet.udp.maxdgram":  "65535",
+// macOS' default UDP socket buffers are tiny (≈42KB) which caps hy2/QUIC
+// throughput and causes ENOBUFS ("no buffer space available") on large
+// uploads. Order matters: kern.ipc.maxsockbuf is the per-direction
+// ceiling for recv/sendspace, so it must be raised first or the
+// subsequent writes get silently clamped.
+var udpTuning = []struct{ Key, Value string }{
+	{"kern.ipc.maxsockbuf", "8388608"},
+	{"net.inet.udp.recvspace", "7168000"},
+	{"net.inet.udp.sendspace", "7168000"},
+	{"net.inet.udp.maxdgram", "65535"},
 }
 
 func sysctlBackupPath() string { return filepath.Join(MoleDir(), "sysctl-backup.json") }
@@ -29,18 +32,18 @@ func TuneUDPBuffers() error {
 		return nil
 	}
 	backup := make(map[string]string, len(udpTuning))
-	for k := range udpTuning {
-		if v, err := readSysctl(k); err == nil {
-			backup[k] = v
+	for _, kv := range udpTuning {
+		if v, err := readSysctl(kv.Key); err == nil {
+			backup[kv.Key] = v
 		}
 	}
 	data, _ := json.MarshalIndent(backup, "", "  ")
 	_ = os.WriteFile(sysctlBackupPath(), data, 0644)
 
 	var failed []string
-	for k, v := range udpTuning {
-		if err := writeSysctl(k, v); err != nil {
-			failed = append(failed, fmt.Sprintf("%s: %v", k, err))
+	for _, kv := range udpTuning {
+		if err := writeSysctl(kv.Key, kv.Value); err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", kv.Key, err))
 		}
 	}
 	if len(failed) > 0 {

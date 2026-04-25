@@ -676,6 +676,16 @@ openssl ecparam -genkey -name prime256v1 -out /etc/hysteria/server.key
 openssl req -new -x509 -key /etc/hysteria/server.key -out /etc/hysteria/server.crt -subj /CN=bing.com -days 36500
 chown hysteria:hysteria /etc/hysteria/server.{key,crt} 2>/dev/null || true
 
+# Linux defaults cap UDP socket buffers at 208KB which causes ENOBUFS
+# under hy2/QUIC's high packet rates. Hysteria docs recommend 16MB.
+cat > /etc/sysctl.d/99-hysteria.conf <<'SYSCTL'
+net.core.rmem_max=16777216
+net.core.wmem_max=16777216
+net.core.rmem_default=2097152
+net.core.wmem_default=2097152
+SYSCTL
+sysctl -p /etc/sysctl.d/99-hysteria.conf
+
 cat > /etc/hysteria/config.yaml <<EOF
 listen: :%d
 tls:
@@ -684,6 +694,12 @@ tls:
 auth:
   type: password
   password: %s
+quic:
+  initStreamReceiveWindow:     16777216
+  maxStreamReceiveWindow:      16777216
+  initConnectionReceiveWindow: 33554432
+  maxConnectionReceiveWindow:  33554432
+  maxIdleTimeout:              60s
 masquerade:
   type: proxy
   proxy:
