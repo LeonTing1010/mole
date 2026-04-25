@@ -32,16 +32,16 @@ func Build(serverURI string) (*SingboxConfig, error) {
 			Server: "dns-direct",
 		})
 	}
-	// Apple services should use remote DNS to get correct CDN endpoints
-	dnsRules = append(dnsRules, DNSRule{
-		Domain: []string{"apple.com", "icloud.com", "apple-dns.net", "akamaiedge.net", "akadns.net", "edgekey.net", "fastly.net"},
-		Server: "dns-remote",
-	})
 	// Non-CN domains resolve through the proxy so GFW-poisoned A records
-	// never reach the client. Everything else falls through to dns-direct.
+	// never reach the client.
 	dnsRules = append(dnsRules, DNSRule{
 		RuleSet: []string{"geosite-geolocation-!cn"},
 		Server:  "dns-remote",
+	})
+	// Chinese domains use direct DNS for better performance
+	dnsRules = append(dnsRules, DNSRule{
+		RuleSet: []string{"geosite-cn"},
+		Server:  "dns-direct",
 	})
 
 	routeRules := []RouteRule{
@@ -60,12 +60,13 @@ func Build(serverURI string) (*SingboxConfig, error) {
 
 	ruleSets := []RuleSet{
 		buildRuleSet("geosite-geolocation-!cn", "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.srs"),
+		buildRuleSet("geosite-cn", "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"),
 		buildRuleSet("geoip-cn", "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"),
 	}
 
 	return &SingboxConfig{
 		Log: LogConfig{Level: "info"},
-		DNS: DNSConfig{Servers: dnsServers, Rules: dnsRules, Final: "dns-direct", Strategy: "ipv4_only"},
+		DNS: DNSConfig{Servers: dnsServers, Rules: dnsRules, Final: "dns-remote", Strategy: "ipv4_only"},
 		Inbounds: []InboundConfig{{
 			Type: "tun", Tag: "tun-in",
 			Address:     []string{"172.19.0.1/28"},
