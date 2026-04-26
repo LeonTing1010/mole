@@ -73,6 +73,12 @@ func runParent() error {
 	uri := srv.URI()
 	fmt.Printf("🔗 URI: %s\n", maskURI(uri))
 
+	// Pre-cache geo rule-sets locally so sing-box can start even if the VPS
+	// is unreachable. Without this, a dead VPS becomes a hard startup failure
+	// (rule-sets routed through the proxy outbound) instead of a soft
+	// supervisor-detected outage.
+	utils.EnsureRuleSets()
+
 	cfg, err := config.Build(uri)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)
@@ -90,10 +96,10 @@ func runParent() error {
 
 	fmt.Println("🚀 Starting VPN...")
 
-	// Truncate previous log so the user sees a fresh run.
-	if f, err := os.OpenFile(utils.LogPath(), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644); err == nil {
-		f.Close()
-	}
+	// Rotate previous log to a timestamped backup so a failed run's evidence
+	// survives the next `mole up` retry. Keep the newest 5; older ones are
+	// rarely useful and just consume disk.
+	_ = utils.RotateLog(5)
 
 	pid, err := utils.Daemonize("--internal-daemon")
 	if err != nil {

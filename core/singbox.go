@@ -214,6 +214,19 @@ func killSingboxPID(pid int) bool {
 // findOrphanSingboxesByPS returns pids of sing-box processes that match our
 // config path and have been reparented to init (ppid == 1).
 func findOrphanSingboxesByPS(configPath string) []int {
+	return scanSingboxByPS(configPath, true)
+}
+
+// FindAllSingboxesByConfig returns pids of every sing-box process running with
+// our config path, regardless of parent. Used by `mole down` after the daemon
+// is dead, when there is no risk of stomping on a healthy daemon's child:
+// anything still pointing at our config is leftover and must die for the next
+// `mole up` to reclaim TUN/UDP/the Clash API port cleanly.
+func FindAllSingboxesByConfig(configPath string) []int {
+	return scanSingboxByPS(configPath, false)
+}
+
+func scanSingboxByPS(configPath string, orphansOnly bool) []int {
 	if runtime.GOOS == "windows" {
 		return nil
 	}
@@ -233,7 +246,10 @@ func findOrphanSingboxesByPS(configPath string) []int {
 			continue
 		}
 		ppid, err := strconv.Atoi(fields[1])
-		if err != nil || ppid != 1 {
+		if err != nil {
+			continue
+		}
+		if orphansOnly && ppid != 1 {
 			continue
 		}
 		cmd := strings.Join(fields[2:], " ")
@@ -247,6 +263,11 @@ func findOrphanSingboxesByPS(configPath string) []int {
 	}
 	return pids
 }
+
+// KillSingboxPID is the exported best-effort SIGTERM-then-SIGKILL helper used
+// by `mole down` to clean up sing-boxes still bound to our config after the
+// daemon is gone.
+func KillSingboxPID(pid int) bool { return killSingboxPID(pid) }
 
 func findSingbox() (string, error) {
 	moleSingbox := filepath.Join(utils.BinDir(), "sing-box")

@@ -113,9 +113,10 @@ func processMatchesExe(pid int, expectedExe string) bool {
 		return true
 	}
 	want := filepath.Base(expectedExe)
-	// `ps comm=` may give the basename or a longer path; substring match on
-	// either side is enough to rule out a clearly-different process.
-	return strings.Contains(actual, want) || strings.Contains(actual, "mole")
+	// `ps comm=` may give the basename or a longer path. Match by basename on
+	// either side; deliberately do NOT fall back to a generic "mole" substring,
+	// which lit up unrelated processes containing "mole" after PID reuse.
+	return strings.Contains(actual, want) || filepath.Base(actual) == want
 }
 
 // CheckAlreadyRunning checks if another mole instance is running.

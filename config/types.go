@@ -55,6 +55,8 @@ type InboundConfig struct {
 	AutoRoute   bool     `json:"auto_route,omitempty"`
 	StrictRoute bool     `json:"strict_route,omitempty"`
 	Stack       string   `json:"stack,omitempty"`
+	Listen      string   `json:"listen,omitempty"`
+	ListenPort  int      `json:"listen_port,omitempty"`
 }
 
 type OutboundConfig struct {

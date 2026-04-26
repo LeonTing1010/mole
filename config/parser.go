@@ -67,14 +67,23 @@ func Build(serverURI string) (*SingboxConfig, error) {
 	return &SingboxConfig{
 		Log: LogConfig{Level: "info"},
 		DNS: DNSConfig{Servers: dnsServers, Rules: dnsRules, Final: "dns-remote", Strategy: "ipv4_only"},
-		Inbounds: []InboundConfig{{
-			Type: "tun", Tag: "tun-in",
-			Address:     []string{"172.19.0.1/28"},
-			MTU:         9000,
-			AutoRoute:   true,
-			StrictRoute: true,
-			Stack:       "gvisor",
-		}},
+		Inbounds: []InboundConfig{
+			{
+				Type:        "tun",
+				Tag:         "tun-in",
+				Address:     []string{"172.19.0.1/28"},
+				MTU:         9000,
+				AutoRoute:   true,
+				StrictRoute: true,
+				Stack:       "gvisor",
+			},
+			{
+				Type:       "direct",
+				Tag:        "dns-in",
+				Listen:     "172.19.0.1",
+				ListenPort: 53,
+			},
+		},
 		Outbounds: []OutboundConfig{
 			*outbound,
 			{Type: "direct", Tag: "direct"},
@@ -115,12 +124,16 @@ func buildRuleSet(tag, url string) RuleSet {
 	if _, err := os.Stat(localPath); err == nil {
 		return RuleSet{Type: "local", Tag: tag, Format: "binary", Path: localPath}
 	}
+	// Fallback: prefetch failed AND no cached file. Route through "direct" —
+	// not "proxy" — because using the proxy here is a deadlock when the VPS
+	// is the very thing we can't reach. raw.githubusercontent.com isn't
+	// privacy-sensitive enough to justify the round-trip via the VPS.
 	return RuleSet{
 		Type:           "remote",
 		Tag:            tag,
 		Format:         "binary",
 		URL:            url,
-		DownloadDetour: "proxy",
+		DownloadDetour: "direct",
 		UpdateInterval: "168h",
 	}
 }

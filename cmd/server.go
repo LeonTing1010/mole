@@ -710,9 +710,26 @@ EOF
 iptables -I INPUT -p udp --dport %d -j ACCEPT 2>/dev/null || true
 iptables -I INPUT -p tcp --dport %d -j ACCEPT 2>/dev/null || true
 
-systemctl enable hysteria
-systemctl restart hysteria
-`, port, password, port, port)
+systemctl enable hysteria-server
+systemctl restart hysteria-server
+
+# Verify the service actually came up. Without this, a config typo or a
+# rename in upstream's installer (the unit was 'hysteria.service' before
+# being renamed to 'hysteria-server.service' — that quietly broke deploys
+# until anyone noticed) leaves a "successful" Vultr instance with no
+# listener, and the only symptom is a confusing client-side timeout. Dump
+# diagnostics into the install log so the next operator can see exactly
+# what happened from the Vultr console.
+sleep 2
+if ! systemctl is-active --quiet hysteria-server; then
+    echo "ERROR: hysteria-server did not start"
+    systemctl status hysteria-server --no-pager || true
+    journalctl -u hysteria-server -n 100 --no-pager || true
+    exit 1
+fi
+ss -lunp | grep -E ":%d\b" || echo "WARN: no UDP listener on :%d"
+echo "OK: hysteria-server active"
+`, port, password, port, port, port, port)
 }
 
 func randomHex(n int) string {
