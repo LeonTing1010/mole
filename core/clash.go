@@ -1,7 +1,6 @@
 package core
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,27 +21,6 @@ func NewClashClient(addr string) *ClashClient {
 		base: "http://" + addr,
 		http: &http.Client{Timeout: 10 * time.Second},
 	}
-}
-
-// SwitchSelector flips a selector outbound to the named option.
-// Equivalent to: PUT /proxies/{name} {"name": option}.
-func (c *ClashClient) SwitchSelector(name, option string) error {
-	body, _ := json.Marshal(map[string]string{"name": option})
-	req, err := http.NewRequest(http.MethodPut, c.base+"/proxies/"+url.PathEscape(name), bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		msg, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("switch selector %s→%s: %s: %s", name, option, resp.Status, string(msg))
-	}
-	return nil
 }
 
 // TestDelay probes a proxy outbound's end-to-end latency to the given URL.

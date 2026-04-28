@@ -12,17 +12,13 @@ import (
 	"github.com/LeonTing1010/mole/utils"
 )
 
-// Supervisor keeps sing-box alive and toggles the "auto" selector between
-// the VPS proxy outbound and a black-hole "block" outbound based on VPS health.
+// Supervisor keeps sing-box alive and probes VPS health for status reporting.
 type Supervisor struct {
 	configPath  string
-	clashAddr   string
-	probeAddr   string // "host:port" — direct UDP probe target (takes precedence)
-	probeURL    string // fallback URL probe via Clash API (legacy path)
+	probeAddr   string // "host:port" — direct UDP probe target
+	probeURL    string // fallback URL probe via Clash API
 	probeEvery  time.Duration
 	probeTimeMs int
-	failThresh  int
-	okThresh    int
 
 	clash *ClashClient
 
@@ -40,8 +36,6 @@ type SupervisorOpts struct {
 	ProbeURL    string // fallback URL probe through Clash API; only used when ProbeAddr is empty
 	ProbeEvery  time.Duration
 	ProbeTimeMs int
-	FailThresh  int
-	OkThresh    int
 }
 
 // NewSupervisor builds a supervisor ready to start. It does not start sing-box.
@@ -52,31 +46,18 @@ func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervis
 	if opts.ProbeURL == "" {
 		opts.ProbeURL = "https://www.gstatic.com/generate_204"
 	}
-	// Defaults tuned for "tolerate transient network hiccups, not paranoid":
-	// older 5s/3-fail/3s-timeout window flipped modes on any 15-second blip
-	// and routinely chopped real traffic to pieces. New defaults require ~60s
-	// of sustained badness before failing closed.
 	if opts.ProbeEvery == 0 {
 		opts.ProbeEvery = 10 * time.Second
 	}
 	if opts.ProbeTimeMs == 0 {
 		opts.ProbeTimeMs = 5000
 	}
-	if opts.FailThresh == 0 {
-		opts.FailThresh = 6
-	}
-	if opts.OkThresh == 0 {
-		opts.OkThresh = 3
-	}
 	return &Supervisor{
 		configPath:  configPath,
-		clashAddr:   opts.ClashAddr,
 		probeAddr:   opts.ProbeAddr,
 		probeURL:    opts.ProbeURL,
 		probeEvery:  opts.ProbeEvery,
 		probeTimeMs: opts.ProbeTimeMs,
-		failThresh:  opts.FailThresh,
-		okThresh:    opts.OkThresh,
 		clash:       NewClashClient(opts.ClashAddr),
 		state: &utils.State{
 			Mode:      utils.ModeProxy,
@@ -95,16 +76,6 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	if err := Start(s.configPath); err != nil {
 		return fmt.Errorf("initial sing-box start: %w", err)
 	}
-	// Belt-and-suspenders: ensure sing-box never outlives Run, regardless of
-	// how Run unwinds. Catches two real leak paths:
-	//  1. Both supervisor goroutines panic — recoverPanic decrements wg but
-	//     no one calls Stop, so the caller's runDaemon path returns without
-	//     killing sing-box.
-	//  2. Stop()/Start() race — Stop sees currentProcess == nil (during
-	//     restart backoff) and returns; runLifecycle then launches a fresh
-	//     sing-box before observing stopCh; Run returns leaving it orphaned.
-	// core.Stop is idempotent so the happy SIGTERM path (where Stop was
-	// already called) just no-ops here.
 	defer Stop()
 	_ = utils.WriteState(s.snapshot())
 
@@ -118,7 +89,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		s.runLifecycle(ctx)
 	}()
 
-	// Goroutine B: probe VPS health and flip the selector.
+	// Goroutine B: probe VPS health for status reporting.
 	go func() {
 		defer wg.Done()
 		defer recoverPanic("health-probe")
@@ -150,7 +121,6 @@ func (s *Supervisor) runLifecycle(ctx context.Context) {
 		startedAt := time.Now()
 		exit := ExitChan()
 		if exit == nil {
-			// Race: process already gone. Loop to restart path below.
 			exit = closedChan()
 		}
 		select {
@@ -159,10 +129,9 @@ func (s *Supervisor) runLifecycle(ctx context.Context) {
 		case <-s.stopCh:
 			return
 		case <-exit:
-			// sing-box exited unexpectedly.
 			runFor := time.Since(startedAt)
 			if runFor > 30*time.Second {
-				backoff = time.Second // reset if it was stable
+				backoff = time.Second
 			}
 			log.Printf("sing-box exited after %s (err=%v); restarting in %s", runFor, ExitError(), backoff)
 			select {
@@ -178,7 +147,7 @@ func (s *Supervisor) runLifecycle(ctx context.Context) {
 			}
 			if err := Start(s.configPath); err != nil {
 				log.Printf("restart failed: %v", err)
-				continue // backoff already grew; retry
+				continue
 			}
 			_ = utils.WriteState(s.snapshot())
 			log.Printf("sing-box restarted")
@@ -222,8 +191,7 @@ func (s *Supervisor) probeOnce() {
 		err   error
 	)
 	if s.probeAddr != "" {
-		// Direct UDP probe to the VPS hy2 endpoint — bypasses sing-box DNS
-		// (which is the historical false-positive source on bad ISPs).
+		// Direct UDP probe to the VPS hy2 endpoint.
 		rtt, perr := ProbeHy2UDP(s.probeAddr, time.Duration(s.probeTimeMs)*time.Millisecond)
 		delay = int(rtt / time.Millisecond)
 		err = perr
@@ -244,32 +212,6 @@ func (s *Supervisor) probeOnce() {
 		s.state.ConsecutiveFails = 0
 		s.state.LastLatencyMs = delay
 		s.state.LastProbeError = ""
-	}
-
-	// Decide mode switch.
-	target := s.state.Mode
-	switch s.state.Mode {
-	case utils.ModeProxy:
-		if s.state.ConsecutiveFails >= s.failThresh {
-			target = utils.ModeBlock
-		}
-	case utils.ModeBlock:
-		if s.state.ConsecutiveOK >= s.okThresh {
-			target = utils.ModeProxy
-		}
-	}
-
-	if target != s.state.Mode {
-		option := "proxy"
-		if target == utils.ModeBlock {
-			option = "block"
-		}
-		if err := s.clash.SwitchSelector("auto", option); err != nil {
-			log.Printf("switch selector auto→%s failed: %v", option, err)
-		} else {
-			log.Printf("mode: %s → %s (%s)", s.state.Mode, target, reasonFor(target, s.state))
-			s.state.Mode = target
-		}
 	}
 
 	_ = utils.WriteState(s.stateSnapshotLocked())
@@ -304,13 +246,6 @@ func (s *Supervisor) stateSnapshotLocked() *utils.State {
 	cp := *s.state
 	cp.SingboxPID = SingboxPID()
 	return &cp
-}
-
-func reasonFor(target utils.Mode, st *utils.State) string {
-	if target == utils.ModeBlock {
-		return fmt.Sprintf("%d consecutive probe failures", st.ConsecutiveFails)
-	}
-	return fmt.Sprintf("%d consecutive probe successes (%dms)", st.ConsecutiveOK, st.LastLatencyMs)
 }
 
 func recoverPanic(where string) {

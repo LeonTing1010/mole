@@ -15,12 +15,9 @@ type ruleSetSource struct {
 	URL string
 }
 
-// ruleSetSources is the canonical list. Keep in sync with config/parser.go's
-// buildRuleSet calls — duplicating the URLs here is intentional; the config
-// builder owns sing-box-facing names, this layer owns the prefetch.
+// ruleSetSources is the canonical list of rule-sets needed at startup.
+// Only geoip-cn is used now; geosite rules have been replaced with domain-based rules.
 var ruleSetSources = []ruleSetSource{
-	{"geosite-geolocation-!cn", "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.srs"},
-	{"geosite-cn", "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"},
 	{"geoip-cn", "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"},
 }
 
