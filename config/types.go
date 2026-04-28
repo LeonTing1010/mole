@@ -42,9 +42,10 @@ type DNSServer struct {
 }
 
 type DNSRule struct {
-	Domain  []string `json:"domain,omitempty"`
-	RuleSet []string `json:"rule_set,omitempty"`
-	Server  string   `json:"server"`
+	Domain       []string `json:"domain,omitempty"`
+	DomainSuffix []string `json:"domain_suffix,omitempty"`
+	RuleSet      []string `json:"rule_set,omitempty"`
+	Server       string   `json:"server"`
 }
 
 type InboundConfig struct {
@@ -111,10 +112,11 @@ type DefaultDomainResolver struct {
 }
 
 type RouteRule struct {
-	Action   string   `json:"action,omitempty"`
-	Protocol string   `json:"protocol,omitempty"`
-	IPCIDR   []string `json:"ip_cidr,omitempty"`
-	RuleSet  []string `json:"rule_set,omitempty"`
-	Invert   bool     `json:"invert,omitempty"`
-	Outbound string   `json:"outbound,omitempty"`
+	Action       string   `json:"action,omitempty"`
+	Protocol     string   `json:"protocol,omitempty"`
+	IPCIDR       []string `json:"ip_cidr,omitempty"`
+	DomainSuffix []string `json:"domain_suffix,omitempty"`
+	RuleSet      []string `json:"rule_set,omitempty"`
+	Invert       bool     `json:"invert,omitempty"`
+	Outbound     string   `json:"outbound,omitempty"`
 }

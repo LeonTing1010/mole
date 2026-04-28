@@ -21,27 +21,24 @@ func Build(serverURI string) (*SingboxConfig, error) {
 	}
 
 	dnsServers := []DNSServer{
-		{Type: "tls", Server: "1.1.1.1", Tag: "dns-remote", Detour: "proxy"},
+		// Direct DNS for bootstrap and Chinese domains
 		{Type: "udp", Server: "223.5.5.5", Tag: "dns-direct"},
+		// Remote DNS via proxy for foreign domains (avoids DNS poisoning)
+		{Type: "tls", Server: "1.1.1.1", Tag: "dns-remote", Detour: "proxy"},
 	}
 
 	dnsRules := []DNSRule{}
 	if outbound.Server != "" && net.ParseIP(outbound.Server) == nil {
+		// VPS hostname uses direct DNS to avoid circular dependency
 		dnsRules = append(dnsRules, DNSRule{
 			Domain: []string{outbound.Server},
 			Server: "dns-direct",
 		})
 	}
-	// Non-CN domains resolve through the proxy so GFW-poisoned A records
-	// never reach the client.
+	// Chinese domains use direct DNS
 	dnsRules = append(dnsRules, DNSRule{
-		RuleSet: []string{"geosite-geolocation-!cn"},
-		Server:  "dns-remote",
-	})
-	// Chinese domains use direct DNS for better performance
-	dnsRules = append(dnsRules, DNSRule{
-		RuleSet: []string{"geosite-cn"},
-		Server:  "dns-direct",
+		DomainSuffix: []string{".cn", ".com.cn", ".net.cn", ".org.cn", ".gov.cn", ".edu.cn", ".mil.cn", ".中国"},
+		Server:       "dns-direct",
 	})
 
 	routeRules := []RouteRule{
@@ -52,16 +49,22 @@ func Build(serverURI string) (*SingboxConfig, error) {
 		// blocked requests fail fast with ERR_CONNECTION_REFUSED instead of DNS timeouts.
 		{IPCIDR: []string{"1.1.1.1/32", "223.5.5.5/32"}, Outbound: "direct"},
 		{IPCIDR: []string{"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "127.0.0.0/8"}, Outbound: "direct"},
-		// Non-CN by domain, then non-CN by IP as a fallback for IP-literal
-		// connections that never surface a hostname.
-		{RuleSet: []string{"geosite-geolocation-!cn"}, Outbound: "auto"},
-		{RuleSet: []string{"geoip-cn"}, Invert: true, Outbound: "auto"},
+		// Sunlogin (向日葵) remote desktop - direct connection for domestic servers
+		{DomainSuffix: []string{"oray.com", "orayimg.com", "oray.net"}, Outbound: "direct"},
+		// China IP ranges go direct
+		{RuleSet: []string{"geoip-cn"}, Outbound: "direct"},
+		// Everything else goes through proxy
+		{IPCIDR: []string{"0.0.0.0/0"}, Outbound: "proxy"},
 	}
 
+	// Only use local geoip-cn rule-set to avoid download failures on startup
 	ruleSets := []RuleSet{
-		buildRuleSet("geosite-geolocation-!cn", "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.srs"),
-		buildRuleSet("geosite-cn", "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"),
-		buildRuleSet("geoip-cn", "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"),
+		{
+			Type:   "local",
+			Tag:    "geoip-cn",
+			Format: "binary",
+			Path:   filepath.Join(utils.MoleDir(), "geoip-cn.srs"),
+		},
 	}
 
 	return &SingboxConfig{
@@ -87,13 +90,6 @@ func Build(serverURI string) (*SingboxConfig, error) {
 		Outbounds: []OutboundConfig{
 			*outbound,
 			{Type: "direct", Tag: "direct"},
-			// "block" is a black-hole socks outbound pointing at an unroutable
-			// local port — connections fail immediately, giving us fail-closed
-			// behavior via the selector below when the VPS is unreachable.
-			{Type: "socks", Tag: "block", Server: "127.0.0.1", ServerPort: 1, Version: "5"},
-			// "auto" is flipped between "proxy" and "block" at runtime through
-			// the Clash API based on VPS health.
-			{Type: "selector", Tag: "auto", Outbounds: []string{"proxy", "block"}, Default: "proxy"},
 		},
 		Route: RouteConfig{
 			Rules:               routeRules,
@@ -117,25 +113,6 @@ func Save(cfg *SingboxConfig, path string) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
-}
-
-func buildRuleSet(tag, url string) RuleSet {
-	localPath := filepath.Join(utils.MoleDir(), tag+".srs")
-	if _, err := os.Stat(localPath); err == nil {
-		return RuleSet{Type: "local", Tag: tag, Format: "binary", Path: localPath}
-	}
-	// Fallback: prefetch failed AND no cached file. Route through "direct" —
-	// not "proxy" — because using the proxy here is a deadlock when the VPS
-	// is the very thing we can't reach. raw.githubusercontent.com isn't
-	// privacy-sensitive enough to justify the round-trip via the VPS.
-	return RuleSet{
-		Type:           "remote",
-		Tag:            tag,
-		Format:         "binary",
-		URL:            url,
-		DownloadDetour: "direct",
-		UpdateInterval: "168h",
-	}
 }
 
 func parseServerURL(serverURL string) (*OutboundConfig, error) {
