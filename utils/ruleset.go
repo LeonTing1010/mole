@@ -16,7 +16,7 @@ type ruleSetSource struct {
 }
 
 // ruleSetSources is the canonical list of rule-sets needed at startup.
-// Only geoip-cn is used now; geosite rules have been replaced with domain-based rules.
+// geosite rules have been replaced with domain-based rules.
 var ruleSetSources = []ruleSetSource{
 	{"geoip-cn", "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"},
 }

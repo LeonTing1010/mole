@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"os"
@@ -20,9 +21,12 @@ func Build(serverURI string) (*SingboxConfig, error) {
 		return nil, err
 	}
 
+	// Get best DNS server (cached or test to find fastest)
+	bestDNS := utils.GetBestDNS()
+
 	dnsServers := []DNSServer{
-		// Direct DNS for bootstrap and Chinese domains
-		{Type: "udp", Server: "223.5.5.5", Tag: "dns-direct"},
+		// Direct DNS - auto-selected for best performance
+		{Type: "udp", Server: bestDNS, Tag: "dns-direct"},
 		// Remote DNS via proxy for foreign domains (avoids DNS poisoning)
 		{Type: "tls", Server: "1.1.1.1", Tag: "dns-remote", Detour: "proxy"},
 	}
@@ -37,7 +41,7 @@ func Build(serverURI string) (*SingboxConfig, error) {
 	}
 	// Chinese domains use direct DNS
 	dnsRules = append(dnsRules, DNSRule{
-		DomainSuffix: []string{".cn", ".com.cn", ".net.cn", ".org.cn", ".gov.cn", ".edu.cn", ".mil.cn", ".中国"},
+		DomainSuffix: []string{".cn", ".com.cn", ".net.cn", ".org.cn", ".gov.cn", ".edu.cn", ".mil.cn", ".中国", ".qq.com"},
 		Server:       "dns-direct",
 	})
 
@@ -55,6 +59,11 @@ func Build(serverURI string) (*SingboxConfig, error) {
 		{RuleSet: []string{"geoip-cn"}, Outbound: "direct"},
 		// Everything else goes through proxy
 		{IPCIDR: []string{"0.0.0.0/0"}, Outbound: "proxy"},
+	}
+
+	// Load custom rules from ~/.mole/custom-rules.json if exists
+	if customRules := loadCustomRules(); len(customRules) > 0 {
+		routeRules = append(customRules, routeRules...)
 	}
 
 	// Only use local geoip-cn rule-set to avoid download failures on startup
@@ -180,4 +189,20 @@ func parseHysteria2(u *url.URL) (*OutboundConfig, error) {
 		o.TLS.Insecure = true
 	}
 	return o, nil
+}
+
+// loadCustomRules reads user-defined routing rules from ~/.mole/custom-rules.json.
+// The file format: [{"domain_suffix": ["example.com"], "outbound": "direct"}, ...]
+func loadCustomRules() []RouteRule {
+	path := utils.CustomRulesPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var rules []RouteRule
+	if err := json.Unmarshal(data, &rules); err != nil {
+		log.Printf("⚠️  failed to parse custom rules from %s: %v", path, err)
+		return nil
+	}
+	return rules
 }

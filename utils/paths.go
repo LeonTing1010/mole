@@ -37,3 +37,6 @@ func LogPath() string { return filepath.Join(MoleDir(), "mole.log") }
 
 // StatePath is where the running supervisor writes its health state.
 func StatePath() string { return filepath.Join(MoleDir(), "state.json") }
+
+// CustomRulesPath is the optional JSON file for user-defined routing rules.
+func CustomRulesPath() string { return filepath.Join(MoleDir(), "custom-rules.json") }
