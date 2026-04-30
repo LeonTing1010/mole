@@ -206,3 +206,27 @@ func loadCustomRules() []RouteRule {
 	}
 	return rules
 }
+
+// Validate checks that the config doesn't reference missing rule-sets.
+func Validate(cfg *SingboxConfig) error {
+	// Check for remote rule-sets (not allowed - should use local only)
+	for _, rs := range cfg.Route.RuleSet {
+		if rs.Type == "remote" {
+			return fmt.Errorf("config references remote rule-set %s - should use local only", rs.Tag)
+		}
+		if rs.Type == "local" && rs.Path != "" {
+			if _, err := os.Stat(rs.Path); os.IsNotExist(err) {
+				return fmt.Errorf("rule-set %s references non-existent file: %s", rs.Tag, rs.Path)
+			}
+		}
+	}
+
+	// Check DNS rules don't use rule_set (we use domain_suffix instead)
+	for _, rule := range cfg.DNS.Rules {
+		if len(rule.RuleSet) > 0 {
+			return fmt.Errorf("DNS rule references rule_set %v - should use domain_suffix", rule.RuleSet)
+		}
+	}
+
+	return nil
+}

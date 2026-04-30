@@ -84,6 +84,11 @@ func runParent() error {
 		return fmt.Errorf("build config: %w", err)
 	}
 
+	// Validate config doesn't reference missing rule-sets
+	if err := config.Validate(cfg); err != nil {
+		return fmt.Errorf("config validation failed: %w", err)
+	}
+
 	cfgPath := utils.SingboxConfigPath()
 	if err := config.Save(cfg, cfgPath); err != nil {
 		return fmt.Errorf("save config: %w", err)
