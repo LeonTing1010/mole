@@ -28,24 +28,28 @@ type LogConfig struct {
 }
 
 type DNSConfig struct {
-	Servers  []DNSServer `json:"servers"`
-	Rules    []DNSRule   `json:"rules,omitempty"`
-	Final    string      `json:"final,omitempty"`
-	Strategy string      `json:"strategy,omitempty"`
+	Servers          []DNSServer `json:"servers"`
+	Rules            []DNSRule   `json:"rules,omitempty"`
+	Final            string      `json:"final,omitempty"`
+	Strategy         string      `json:"strategy,omitempty"`
+	IndependentCache bool        `json:"independent_cache,omitempty"`
 }
 
 type DNSServer struct {
-	Type   string `json:"type"`
-	Server string `json:"server,omitempty"`
-	Tag    string `json:"tag"`
-	Detour string `json:"detour,omitempty"`
+	Type       string `json:"type"`
+	Server     string `json:"server,omitempty"`
+	Tag        string `json:"tag"`
+	Detour     string `json:"detour,omitempty"`
+	Inet4Range string `json:"inet4_range,omitempty"`
 }
 
 type DNSRule struct {
 	Domain       []string `json:"domain,omitempty"`
 	DomainSuffix []string `json:"domain_suffix,omitempty"`
 	RuleSet      []string `json:"rule_set,omitempty"`
-	Server       string   `json:"server"`
+	QueryType    []string `json:"query_type,omitempty"`
+	Server       string   `json:"server,omitempty"`
+	Action       string   `json:"action,omitempty"`
 }
 
 type InboundConfig struct {

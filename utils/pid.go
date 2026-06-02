@@ -75,7 +75,14 @@ func IsAlive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	return process.Signal(syscall.Signal(0)) == nil
+	// Signal(0) works on the process owner. The daemon runs as root (TUN),
+	// so a non-root status call gets EPERM. Fall back to ps(1) which can
+	// see root processes without special privileges.
+	if process.Signal(syscall.Signal(0)) == nil {
+		return true
+	}
+	_, err = exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "pid=").Output()
+	return err == nil
 }
 
 // IsRunning reports whether the given pid is alive AND looks like the mole

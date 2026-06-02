@@ -27,8 +27,13 @@ func Build(serverURI string) (*SingboxConfig, error) {
 	dnsServers := []DNSServer{
 		// Direct DNS - auto-selected for best performance
 		{Type: "udp", Server: bestDNS, Tag: "dns-direct"},
-		// Remote DNS via proxy for foreign domains (avoids DNS poisoning)
+		// Remote DNS via proxy. Kept as `final` so non-A/AAAA queries
+		// (PTR, TXT, MX, ...) for foreign names don't hit a censored upstream.
 		{Type: "tls", Server: "1.1.1.1", Tag: "dns-remote", Detour: "proxy"},
+		// FakeIP synthesises 198.18.x.x for A queries so foreign-name resolution
+		// never depends on a reachable upstream. The actual IP is recovered from
+		// the sniffed SNI/Host when the client connects.
+		{Type: "fakeip", Tag: "dns-fake", Inet4Range: "198.18.0.0/15"},
 	}
 
 	dnsRules := []DNSRule{}
@@ -39,32 +44,63 @@ func Build(serverURI string) (*SingboxConfig, error) {
 			Server: "dns-direct",
 		})
 	}
-	// Chinese domains use direct DNS
+	// Reject HTTPS/SVCB. FakeIP cannot synthesise these record types, and a
+	// HTTPS RR with `alpn=h3` would otherwise push the browser onto QUIC
+	// (rejected by our route) or ECH paths that bypass SNI sniffing.
+	dnsRules = append(dnsRules, DNSRule{
+		QueryType: []string{"HTTPS", "SVCB"},
+		Action:    "reject",
+	})
+	// Chinese domains use direct DNS so we get real IPs that geoip-cn can route.
 	dnsRules = append(dnsRules, DNSRule{
 		DomainSuffix: []string{".cn", ".com.cn", ".net.cn", ".org.cn", ".gov.cn", ".edu.cn", ".mil.cn", ".中国", ".qq.com"},
 		Server:       "dns-direct",
 	})
+	// Everything else: synthesise a fake IP. The connection itself decides the
+	// outbound, not the DNS answer, so a poisoned/blocked upstream can no
+	// longer prevent foreign sites from loading.
+	dnsRules = append(dnsRules, DNSRule{
+		QueryType: []string{"A", "AAAA"},
+		Server:    "dns-fake",
+	})
 
-	routeRules := []RouteRule{
+	// Base rules that must always come first: sniff, hijack-dns, reject.
+	// These are infrastructure; without sniff first, no later domain rule
+	// can see the SNI of an encrypted connection.
+	baseRules := []RouteRule{
 		{Action: "sniff"},
 		{Protocol: "dns", Action: "hijack-dns"},
 		{Protocol: "quic", Action: "reject"},
+	}
+
+	// System rules: private IPs, DNS resolvers, geoip-cn, catch-all.
+	systemRules := []RouteRule{
 		// Keep DNS resolvers reachable even when VPS is down so that
 		// blocked requests fail fast with ERR_CONNECTION_REFUSED instead of DNS timeouts.
 		{IPCIDR: []string{"1.1.1.1/32", "223.5.5.5/32"}, Outbound: "direct"},
 		{IPCIDR: []string{"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "127.0.0.0/8"}, Outbound: "direct"},
 		// Sunlogin (向日葵) remote desktop - direct connection for domestic servers
 		{DomainSuffix: []string{"oray.com", "orayimg.com", "oray.net"}, Outbound: "direct"},
+		// FakeIP range is foreign-traffic only by construction; send through proxy.
+		// Must come before geoip-cn so the sniffed SNI doesn't accidentally hit
+		// a CN-routed rule via some other heuristic.
+		{IPCIDR: []string{"198.18.0.0/15"}, Outbound: "proxy"},
 		// China IP ranges go direct
 		{RuleSet: []string{"geoip-cn"}, Outbound: "direct"},
 		// Everything else goes through proxy
 		{IPCIDR: []string{"0.0.0.0/0"}, Outbound: "proxy"},
 	}
 
-	// Load custom rules from ~/.mole/custom-rules.json if exists
+	// Load custom rules from ~/.mole/custom-rules.json if exists.
+	// Custom rules sit between base rules (sniff etc.) and system rules
+	// so they can use the sniffed domain while still respecting FakeIP
+	// and geoip-cn fallbacks.
+	var routeRules []RouteRule
+	routeRules = append(routeRules, baseRules...)
 	if customRules := loadCustomRules(); len(customRules) > 0 {
-		routeRules = append(customRules, routeRules...)
+		routeRules = append(routeRules, customRules...)
 	}
+	routeRules = append(routeRules, systemRules...)
 
 	// Only use local geoip-cn rule-set to avoid download failures on startup
 	ruleSets := []RuleSet{
@@ -78,7 +114,7 @@ func Build(serverURI string) (*SingboxConfig, error) {
 
 	return &SingboxConfig{
 		Log: LogConfig{Level: "info"},
-		DNS: DNSConfig{Servers: dnsServers, Rules: dnsRules, Final: "dns-remote", Strategy: "ipv4_only"},
+		DNS: DNSConfig{Servers: dnsServers, Rules: dnsRules, Final: "dns-remote", Strategy: "ipv4_only", IndependentCache: true},
 		Inbounds: []InboundConfig{
 			{
 				Type:        "tun",
@@ -104,7 +140,7 @@ func Build(serverURI string) (*SingboxConfig, error) {
 			Rules:               routeRules,
 			RuleSet:             ruleSets,
 			AutoDetectInterface: true,
-			Final:               "direct",
+			Final:               "proxy",
 			DefaultDomainResolver: &DefaultDomainResolver{
 				Server: "dns-direct",
 			},
