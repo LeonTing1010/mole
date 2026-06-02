@@ -39,8 +39,14 @@ func Daemonize(extraArg string) (int, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := cmd.Start(); err != nil {
+		devNull.Close()
+		logFile.Close()
 		return 0, fmt.Errorf("spawn daemon: %w", err)
 	}
+
+	// Parent can close its copies of the descriptors; the child retains
+	// its own duplicates after fork+exec.
+	devNull.Close()
 
 	// Save PID before Release, as Process may become invalid after Release
 	pid := cmd.Process.Pid

@@ -66,6 +66,7 @@ func Start(configPath string) error {
 	)
 
 	if err := cmd.Start(); err != nil {
+		logFile.Close()
 		processMutex.Unlock()
 		return fmt.Errorf("failed to start sing-box: %w", err)
 	}
@@ -75,8 +76,9 @@ func Start(configPath string) error {
 	currentExitCh := exitCh
 	processMutex.Unlock()
 
-	go func(c *exec.Cmd, done chan struct{}) {
+	go func(c *exec.Cmd, done chan struct{}, lf *os.File) {
 		err := c.Wait()
+		lf.Close()
 		processMutex.Lock()
 		exitErr = err
 		if currentProcess == c {
@@ -84,7 +86,7 @@ func Start(configPath string) error {
 		}
 		close(done)
 		processMutex.Unlock()
-	}(cmd, currentExitCh)
+	}(cmd, currentExitCh, logFile)
 
 	// Early-exit guard: fail fast if config is invalid.
 	select {

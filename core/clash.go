@@ -32,12 +32,24 @@ func (c *ClashClient) TestDelay(proxy, testURL string, timeoutMs int) (int, erro
 	if err != nil {
 		return 0, err
 	}
-	client := &http.Client{Timeout: time.Duration(timeoutMs+2000) * time.Millisecond}
+	// Use a dedicated client with idle-connection timeout so sockets don't
+	// accumulate across repeated probes.
+	client := &http.Client{
+		Timeout: time.Duration(timeoutMs+2000) * time.Millisecond,
+		Transport: &http.Transport{
+			IdleConnTimeout:     5 * time.Second,
+			MaxIdleConnsPerHost: 1,
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		client.CloseIdleConnections()
+	}()
 	if resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(resp.Body)
 		return 0, fmt.Errorf("delay probe %s: %s: %s", proxy, resp.Status, string(msg))

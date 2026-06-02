@@ -36,7 +36,9 @@ func ProbeHy2UDP(addr string, timeout time.Duration) (time.Duration, error) {
 	}
 	defer conn.Close()
 
-	if err := conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+	// Cap the total time this probe can occupy so a stuck socket doesn't
+	// leak goroutines in the caller.
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		return 0, err
 	}
 	if _, err := conn.Write([]byte{0}); err != nil {
