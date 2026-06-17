@@ -224,6 +224,24 @@ func parseHysteria2(u *url.URL) (*OutboundConfig, error) {
 		}
 		o.TLS.Insecure = true
 	}
+
+	// Hysteria2 congestion control: declaring up/down bandwidth switches the
+	// client from loss-sensitive BBR to Brutal, which holds a fixed send rate
+	// straight through packet loss. Without it a lossy international path
+	// collapses throughput to tens of KB/s. These are a ceiling, not a target —
+	// keep them at or below the real link speed, because Brutal floods the path
+	// (and gets slower) if set too high. Defaults suit a ~100Mbit line; override
+	// per-server with ?upmbps=&downmbps= in the URI.
+	upMbps, downMbps := 20, 50
+	if v, err := strconv.Atoi(q.Get("upmbps")); err == nil && v > 0 {
+		upMbps = v
+	}
+	if v, err := strconv.Atoi(q.Get("downmbps")); err == nil && v > 0 {
+		downMbps = v
+	}
+	o.UpMbps = upMbps
+	o.DownMbps = downMbps
+
 	return o, nil
 }
 

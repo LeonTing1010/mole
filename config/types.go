@@ -71,6 +71,8 @@ type OutboundConfig struct {
 	ServerPort int              `json:"server_port,omitempty"`
 	UUID       string           `json:"uuid,omitempty"`
 	Password   string           `json:"password,omitempty"`
+	UpMbps     int              `json:"up_mbps,omitempty"`
+	DownMbps   int              `json:"down_mbps,omitempty"`
 	Flow       string           `json:"flow,omitempty"`
 	Network    string           `json:"network,omitempty"`
 	Version    string           `json:"version,omitempty"`
