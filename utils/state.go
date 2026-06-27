@@ -6,12 +6,13 @@ import (
 	"time"
 )
 
-// Mode is the supervisor's current routing mode.
+// Mode is the supervisor's current routing mode. There is only one mode today:
+// foreign traffic always routes through the VPS. The supervisor probes VPS
+// health for `mole status` reporting but does not reroute on failure.
 type Mode string
 
 const (
 	ModeProxy Mode = "proxy" // foreign traffic → VPS
-	ModeBlock Mode = "block" // foreign traffic → black hole (VPS unreachable)
 )
 
 // State is the supervisor's live view of the connection, persisted so that
@@ -27,6 +28,15 @@ type State struct {
 	LastProbeError   string    `json:"last_probe_error,omitempty"`
 	ConsecutiveFails int       `json:"consecutive_fails"`
 	ConsecutiveOK    int       `json:"consecutive_ok"`
+
+	// Keepalive fields track the in-tunnel keepalive that drives a tiny request
+	// through the proxy outbound to keep the hy2/QUIC session and its NAT
+	// mapping warm. These are informational only — the proxy health verdict
+	// (LastProbe*) comes solely from the direct-UDP probe, which is immune to
+	// the DNS hiccups this in-tunnel path can hit.
+	LastKeepaliveAt    time.Time `json:"last_keepalive_at,omitempty"`
+	LastKeepaliveMs    int       `json:"last_keepalive_ms,omitempty"`
+	LastKeepaliveError string    `json:"last_keepalive_error,omitempty"`
 }
 
 // WriteState atomically persists the state to ~/.mole/state.json.

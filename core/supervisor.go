@@ -14,11 +14,12 @@ import (
 
 // Supervisor keeps sing-box alive and probes VPS health for status reporting.
 type Supervisor struct {
-	configPath  string
-	probeAddr   string // "host:port" — direct UDP probe target
-	probeURL    string // fallback URL probe via Clash API
-	probeEvery  time.Duration
-	probeTimeMs int
+	configPath     string
+	probeAddr      string // "host:port" — direct UDP probe target
+	probeURL       string // URL driven through the proxy for keepalive (and fallback probe)
+	probeEvery     time.Duration
+	keepaliveEvery time.Duration
+	probeTimeMs    int
 
 	clash *ClashClient
 
@@ -31,11 +32,12 @@ type Supervisor struct {
 
 // SupervisorOpts controls the supervisor's probe cadence. Zero values get sane defaults.
 type SupervisorOpts struct {
-	ClashAddr   string
-	ProbeAddr   string // VPS hy2 endpoint "ip:port" for direct UDP probe (recommended)
-	ProbeURL    string // fallback URL probe through Clash API; only used when ProbeAddr is empty
-	ProbeEvery  time.Duration
-	ProbeTimeMs int
+	ClashAddr      string
+	ProbeAddr      string // VPS hy2 endpoint "ip:port" for direct UDP probe (recommended)
+	ProbeURL       string // URL driven through the proxy for keepalive; also the fallback probe when ProbeAddr is empty
+	ProbeEvery     time.Duration
+	KeepaliveEvery time.Duration // in-tunnel keepalive cadence; 0 → default
+	ProbeTimeMs    int
 }
 
 // NewSupervisor builds a supervisor ready to start. It does not start sing-box.
@@ -49,16 +51,25 @@ func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervis
 	if opts.ProbeEvery == 0 {
 		opts.ProbeEvery = 10 * time.Second
 	}
+	if opts.KeepaliveEvery == 0 {
+		// Must beat the shortest thing that kills an idle UDP/QUIC flow — a home
+		// router's UDP NAT mapping (commonly ~30s) or the QUIC idle timeout. 15s
+		// gives two beats per 30s window, so one missed/failed beat still keeps
+		// the mapping alive. The payload is a single generate_204, so the cost is
+		// negligible.
+		opts.KeepaliveEvery = 15 * time.Second
+	}
 	if opts.ProbeTimeMs == 0 {
 		opts.ProbeTimeMs = 5000
 	}
 	return &Supervisor{
-		configPath:  configPath,
-		probeAddr:   opts.ProbeAddr,
-		probeURL:    opts.ProbeURL,
-		probeEvery:  opts.ProbeEvery,
-		probeTimeMs: opts.ProbeTimeMs,
-		clash:       NewClashClient(opts.ClashAddr),
+		configPath:     configPath,
+		probeAddr:      opts.ProbeAddr,
+		probeURL:       opts.ProbeURL,
+		probeEvery:     opts.ProbeEvery,
+		keepaliveEvery: opts.KeepaliveEvery,
+		probeTimeMs:    opts.ProbeTimeMs,
+		clash:          NewClashClient(opts.ClashAddr),
 		state: &utils.State{
 			Mode:      utils.ModeProxy,
 			PID:       os.Getpid(),
@@ -80,7 +91,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	_ = utils.WriteState(s.snapshot())
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 
 	// Goroutine A: keep sing-box alive.
 	go func() {
@@ -94,6 +105,15 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		defer wg.Done()
 		defer recoverPanic("health-probe")
 		s.runProbe(ctx)
+	}()
+
+	// Goroutine C: keep the hy2/QUIC tunnel warm with low-frequency in-tunnel
+	// traffic so it doesn't idle out (the bug where the connection went dead
+	// until `mole status` accidentally revived it by fetching the exit IP).
+	go func() {
+		defer wg.Done()
+		defer recoverPanic("keepalive")
+		s.runKeepalive(ctx)
 	}()
 
 	wg.Wait()
@@ -214,6 +234,67 @@ func (s *Supervisor) probeOnce() {
 		s.state.LastProbeError = ""
 	}
 
+	_ = utils.WriteState(s.stateSnapshotLocked())
+}
+
+// runKeepalive drives low-frequency traffic through the proxy outbound to keep
+// the hy2/QUIC session and its UDP NAT mapping warm. This is the actual fix for
+// the "connection dies until I run mole status" symptom: status only appeared
+// to heal things because GetMyIPInfo sent a request through the tunnel. Now the
+// supervisor does that on a timer, and — because a request through a dead hy2
+// outbound makes sing-box re-dial — it both prevents idle death and re-
+// establishes the session promptly if it dies anyway (e.g. after sleep/wake).
+func (s *Supervisor) runKeepalive(ctx context.Context) {
+	// Keepalive rides the Clash API (it drives the proxy outbound), so wait for
+	// the API the same way the probe does.
+	if err := s.waitClashReady(ctx, 10*time.Second); err != nil {
+		log.Printf("clash api not ready for keepalive: %v (will keep trying)", err)
+	}
+
+	// Offset from the health probe so the two loops don't fire in lockstep.
+	jitter := time.Duration(rand.Int63n(int64(s.keepaliveEvery)))
+	select {
+	case <-ctx.Done():
+		return
+	case <-s.stopCh:
+		return
+	case <-time.After(jitter):
+	}
+
+	t := time.NewTicker(s.keepaliveEvery)
+	defer t.Stop()
+	for {
+		s.keepaliveOnce()
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.stopCh:
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// keepaliveOnce sends one request through the proxy outbound and records the
+// result. The result is informational only: this path runs through sing-box's
+// DNS engine, so a DNS hiccup here must not flip the proxy health verdict —
+// that stays the exclusive job of the direct-UDP probe in probeOnce.
+func (s *Supervisor) keepaliveOnce() {
+	delay, err := s.clash.TestDelay("proxy", s.probeURL, s.probeTimeMs)
+
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.state.LastKeepaliveAt = time.Now()
+	if err != nil {
+		s.state.LastKeepaliveMs = 0
+		s.state.LastKeepaliveError = err.Error()
+		// Log but don't touch the health counters; the direct-UDP probe decides
+		// whether the VPS is actually down.
+		log.Printf("tunnel keepalive failed: %v", err)
+	} else {
+		s.state.LastKeepaliveMs = delay
+		s.state.LastKeepaliveError = ""
+	}
 	_ = utils.WriteState(s.stateSnapshotLocked())
 }
 
