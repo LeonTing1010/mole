@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -29,6 +30,16 @@ type Server struct {
 	Password   string `json:"password"`
 	CreatedAt  string `json:"created_at"`
 	Active     bool   `json:"active,omitempty"`
+	// Optional per-server tuning. All opt-in: zero values reproduce the previous
+	// URI byte-for-byte. Obfs/ObfsPassword turn on hysteria2 salamander
+	// obfuscation (must match the server, or the tunnel goes dark). UpMbps/DownMbps
+	// pin Brutal congestion control to a measured ceiling instead of the built-in
+	// 20/50 default — set them to ~80% of a real speed test, or to -1 to disable
+	// Brutal and let hysteria2 use adaptive BBR (best for time-varying links).
+	Obfs         string `json:"obfs,omitempty"`
+	ObfsPassword string `json:"obfs_password,omitempty"`
+	UpMbps       int    `json:"up_mbps,omitempty"`
+	DownMbps     int    `json:"down_mbps,omitempty"`
 }
 
 // Ready reports whether the server is fully provisioned (has an IP). Servers
@@ -36,14 +47,31 @@ type Server struct {
 // `waitForIP` succeeds.
 func (s *Server) Ready() bool { return s.IP != "" }
 
-// URI returns the hy2:// URI sing-box consumes.
+// URI returns the hy2:// URI sing-box consumes. Optional obfs/bandwidth query
+// params are appended only when set, so an untuned server yields the exact same
+// URI as before.
 func (s *Server) URI() string {
 	host := s.IP
 	if strings.Contains(host, ":") && host[0] != '[' {
 		host = "[" + host + "]"
 	}
-	return fmt.Sprintf("hy2://%s@%s:%d?insecure=1&sni=bing.com#%s",
-		s.Password, host, s.Port, s.Name)
+	q := "insecure=1&sni=bing.com"
+	if s.Obfs != "" {
+		q += "&obfs=" + url.QueryEscape(s.Obfs)
+		if s.ObfsPassword != "" {
+			q += "&obfs-password=" + url.QueryEscape(s.ObfsPassword)
+		}
+	}
+	// Non-zero passes through, including a negative sentinel (-1) that the parser
+	// reads as "disable Brutal, use BBR". Zero stays absent so an untuned server
+	// yields the byte-for-byte same URI as before.
+	if s.UpMbps != 0 {
+		q += fmt.Sprintf("&upmbps=%d", s.UpMbps)
+	}
+	if s.DownMbps != 0 {
+		q += fmt.Sprintf("&downmbps=%d", s.DownMbps)
+	}
+	return fmt.Sprintf("hy2://%s@%s:%d?%s#%s", s.Password, host, s.Port, q, s.Name)
 }
 
 // ── Commands ──────────────────────────────────────────────────

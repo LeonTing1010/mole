@@ -141,6 +141,52 @@ func TestRouteRulesValid(t *testing.T) {
 	}
 }
 
+// TestDNSResolverBypassBeforeHijack pins the invariant whose absence made
+// `mole status` exit-IP lookups fail: DNS queries to our direct resolvers
+// (223.5.5.5 / 1.1.1.1) must be routed `direct` by a rule that comes BEFORE
+// the catch-all `hijack-dns` rule. Without it, the CLI's own direct DNS
+// queries get hijacked by the TUN DNS and answered with FakeIP (198.18.x.x),
+// so the exit-IP probe connects to a dead 198.18 address.
+func TestDNSResolverBypassBeforeHijack(t *testing.T) {
+	uri := "hy2://test@example.com:443?sni=bing.com&insecure=1#test-server"
+
+	cfg, err := Build(uri)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	bypassIdx, hijackIdx := -1, -1
+	for i, rule := range cfg.Route.Rules {
+		if rule.Action == "hijack-dns" {
+			hijackIdx = i
+		}
+		if rule.Protocol == "dns" && rule.Outbound == "direct" {
+			hasAli, hasCF := false, false
+			for _, c := range rule.IPCIDR {
+				if c == "223.5.5.5/32" {
+					hasAli = true
+				}
+				if c == "1.1.1.1/32" {
+					hasCF = true
+				}
+			}
+			if hasAli && hasCF {
+				bypassIdx = i
+			}
+		}
+	}
+
+	if bypassIdx == -1 {
+		t.Fatal("missing dns-resolver bypass rule (protocol:dns, ip_cidr 223.5.5.5/1.1.1.1 → direct)")
+	}
+	if hijackIdx == -1 {
+		t.Fatal("missing hijack-dns route rule")
+	}
+	if bypassIdx > hijackIdx {
+		t.Errorf("dns-resolver bypass rule (idx %d) must come before hijack-dns (idx %d)", bypassIdx, hijackIdx)
+	}
+}
+
 // TestConfigDoesNotUseGeosite tests that config doesn't use geosite rule-sets.
 func TestConfigDoesNotUseGeosite(t *testing.T) {
 	uri := "hy2://test@example.com:443?sni=bing.com&insecure=1#test-server"
@@ -165,6 +211,56 @@ func TestConfigDoesNotUseGeosite(t *testing.T) {
 			t.Errorf("Config includes geosite rule-set: %s", rs.Tag)
 		}
 	}
+}
+
+// TestHysteria2CongestionControl pins the three bandwidth paths: absent params
+// keep the Brutal default, positive params override it, and a negative sentinel
+// disables Brutal so the fields are omitted and hysteria2 falls back to BBR.
+func TestHysteria2CongestionControl(t *testing.T) {
+	proxyOut := func(t *testing.T, uri string) *OutboundConfig {
+		t.Helper()
+		cfg, err := Build(uri)
+		if err != nil {
+			t.Fatalf("Build failed: %v", err)
+		}
+		for i := range cfg.Outbounds {
+			if cfg.Outbounds[i].Tag == "proxy" {
+				return &cfg.Outbounds[i]
+			}
+		}
+		t.Fatal("no proxy outbound in config")
+		return nil
+	}
+
+	t.Run("default is Brutal 20/50", func(t *testing.T) {
+		o := proxyOut(t, "hy2://p@example.com:443?sni=bing.com&insecure=1#s")
+		if o.UpMbps != 20 || o.DownMbps != 50 {
+			t.Errorf("got up=%d down=%d, want 20/50", o.UpMbps, o.DownMbps)
+		}
+	})
+
+	t.Run("positive params pin Brutal ceiling", func(t *testing.T) {
+		o := proxyOut(t, "hy2://p@example.com:443?sni=bing.com&insecure=1&upmbps=4&downmbps=8#s")
+		if o.UpMbps != 4 || o.DownMbps != 8 {
+			t.Errorf("got up=%d down=%d, want 4/8", o.UpMbps, o.DownMbps)
+		}
+	})
+
+	t.Run("negative sentinel disables Brutal (BBR)", func(t *testing.T) {
+		o := proxyOut(t, "hy2://p@example.com:443?sni=bing.com&insecure=1&upmbps=-1&downmbps=-1#s")
+		if o.UpMbps != 0 || o.DownMbps != 0 {
+			t.Errorf("got up=%d down=%d, want 0/0 (omitted → BBR)", o.UpMbps, o.DownMbps)
+		}
+		// 0 with omitempty must drop the fields from the serialized outbound,
+		// otherwise sing-box still sees Brutal=0 rather than no Brutal at all.
+		b, err := json.Marshal(o)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if s := string(b); containsHelper(s, "up_mbps") || containsHelper(s, "down_mbps") {
+			t.Errorf("BBR outbound must omit bandwidth fields, got: %s", s)
+		}
+	})
 }
 
 func contains(s, substr string) bool {

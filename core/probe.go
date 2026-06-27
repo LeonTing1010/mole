@@ -14,11 +14,10 @@ import (
 //
 // Why not just hit a URL through the proxy? Because that path runs through
 // sing-box's DNS engine, and DoT to 1.1.1.1 — the configured upstream — is
-// unreliable on many ISPs. A DNS hiccup would be misread as VPS death,
-// flipping the supervisor into block mode and breaking the user's traffic
-// while the VPS is in fact perfectly healthy. Probing the VPS endpoint
-// directly removes DNS and Clash from the failure path; we measure exactly
-// the thing we care about.
+// unreliable on many ISPs. A DNS hiccup would be misread as VPS death and
+// reported as a down VPS in `mole status` while the VPS is in fact perfectly
+// healthy. Probing the VPS endpoint directly removes DNS and Clash from the
+// failure path; we measure exactly the thing we care about.
 //
 // Failure modes that DO surface here (correctly):
 //   - net unreachable / no route                → caller's network is down

@@ -36,6 +36,13 @@ func Build(serverURI string) (*SingboxConfig, error) {
 		{Type: "fakeip", Tag: "dns-fake", Inet4Range: "198.18.0.0/15"},
 	}
 
+	// Custom rules drive BOTH route and DNS. A domain flagged outbound:direct
+	// must resolve to its REAL IP — not a fake-ip — or clients behind a NAT that
+	// can't take part in fake-ip reverse-mapping (e.g. an emulator) get a dead
+	// 198.18.x.x and hang. So direct domain suffixes are pulled into a dns-direct
+	// rule below as well. Single source of truth: custom-rules.json.
+	customRules := loadCustomRules()
+
 	dnsRules := []DNSRule{}
 	if outbound.Server != "" && net.ParseIP(outbound.Server) == nil {
 		// VPS hostname uses direct DNS to avoid circular dependency
@@ -51,11 +58,29 @@ func Build(serverURI string) (*SingboxConfig, error) {
 		QueryType: []string{"HTTPS", "SVCB"},
 		Action:    "reject",
 	})
+	// Reverse-DNS (PTR) lookups must never ride the proxy. mDNS/Bonjour floods
+	// *.in-addr.arpa for LAN addresses (192.168/172.16/10.x); these don't match
+	// the A/AAAA fakeip rule, so without this they fall to `final: dns-remote`
+	// (DoT over the tunnel) and each blocks ~20s when the link is congested —
+	// the single biggest source of "everything feels frozen". Direct resolver
+	// answers real PTRs fast and returns a quick NXDOMAIN for private ones.
+	dnsRules = append(dnsRules, DNSRule{
+		DomainSuffix: []string{".in-addr.arpa", ".ip6.arpa"},
+		Server:       "dns-direct",
+	})
 	// Chinese domains use direct DNS so we get real IPs that geoip-cn can route.
 	dnsRules = append(dnsRules, DNSRule{
 		DomainSuffix: []string{".cn", ".com.cn", ".net.cn", ".org.cn", ".gov.cn", ".edu.cn", ".mil.cn", ".中国", ".qq.com"},
 		Server:       "dns-direct",
 	})
+	// Custom direct domains resolve to real IPs too (see note above) so they
+	// route via geoip-cn / explicit ip_cidr rules instead of dying on fake-ip.
+	if suffixes := directDomainSuffixes(customRules); len(suffixes) > 0 {
+		dnsRules = append(dnsRules, DNSRule{
+			DomainSuffix: suffixes,
+			Server:       "dns-direct",
+		})
+	}
 	// Everything else: synthesise a fake IP. The connection itself decides the
 	// outbound, not the DNS answer, so a poisoned/blocked upstream can no
 	// longer prevent foreign sites from loading.
@@ -67,16 +92,21 @@ func Build(serverURI string) (*SingboxConfig, error) {
 	// Base rules that must always come first: sniff, hijack-dns, reject.
 	// These are infrastructure; without sniff first, no later domain rule
 	// can see the SNI of an encrypted connection.
+	//
+	// DNS queries to our direct resolvers must bypass hijack-dns so that
+	// mole's own CLI commands (status, etc.) can resolve foreign domains
+	// without getting fake-IP (198.18.x.x) answers from the TUN DNS.
 	baseRules := []RouteRule{
 		{Action: "sniff"},
+		{Protocol: "dns", IPCIDR: []string{"223.5.5.5/32", "1.1.1.1/32"}, Outbound: "direct"},
 		{Protocol: "dns", Action: "hijack-dns"},
 		{Protocol: "quic", Action: "reject"},
 	}
 
 	// System rules: private IPs, DNS resolvers, geoip-cn, catch-all.
 	systemRules := []RouteRule{
-		// Keep DNS resolvers reachable even when VPS is down so that
-		// blocked requests fail fast with ERR_CONNECTION_REFUSED instead of DNS timeouts.
+		// Keep the public DNS resolvers reachable directly so DNS resolution
+		// itself never depends on the VPS being up.
 		{IPCIDR: []string{"1.1.1.1/32", "223.5.5.5/32"}, Outbound: "direct"},
 		{IPCIDR: []string{"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "127.0.0.0/8"}, Outbound: "direct"},
 		// Sunlogin (向日葵) remote desktop - direct connection for domestic servers
@@ -97,7 +127,7 @@ func Build(serverURI string) (*SingboxConfig, error) {
 	// and geoip-cn fallbacks.
 	var routeRules []RouteRule
 	routeRules = append(routeRules, baseRules...)
-	if customRules := loadCustomRules(); len(customRules) > 0 {
+	if len(customRules) > 0 {
 		routeRules = append(routeRules, customRules...)
 	}
 	routeRules = append(routeRules, systemRules...)
@@ -113,7 +143,7 @@ func Build(serverURI string) (*SingboxConfig, error) {
 	}
 
 	return &SingboxConfig{
-		Log: LogConfig{Level: "info"},
+		Log: LogConfig{Level: "warn"},
 		DNS: DNSConfig{Servers: dnsServers, Rules: dnsRules, Final: "dns-remote", Strategy: "ipv4_only", IndependentCache: true},
 		Inbounds: []InboundConfig{
 			{
@@ -232,15 +262,38 @@ func parseHysteria2(u *url.URL) (*OutboundConfig, error) {
 	// keep them at or below the real link speed, because Brutal floods the path
 	// (and gets slower) if set too high. Defaults suit a ~100Mbit line; override
 	// per-server with ?upmbps=&downmbps= in the URI.
+	//
+	// A negative value (?upmbps=-1) disables Brutal and falls back to the adaptive
+	// BBR-style control. That's the right call when the link speed swings by time
+	// of day (e.g. a cross-border path that does 30Mbit off-peak but 2.5Mbit at
+	// night) — no single fixed Brutal rate fits, and a too-high one floods the
+	// path into repeated collapse-to-zero. Leaving up/down at 0 omits the fields
+	// from the outbound, so sing-box uses BBR.
 	upMbps, downMbps := 20, 50
-	if v, err := strconv.Atoi(q.Get("upmbps")); err == nil && v > 0 {
-		upMbps = v
-	}
-	if v, err := strconv.Atoi(q.Get("downmbps")); err == nil && v > 0 {
-		downMbps = v
+	up, _ := strconv.Atoi(q.Get("upmbps"))
+	down, _ := strconv.Atoi(q.Get("downmbps"))
+	switch {
+	case up < 0 || down < 0:
+		upMbps, downMbps = 0, 0 // disable Brutal → BBR
+	default:
+		if up > 0 {
+			upMbps = up
+		}
+		if down > 0 {
+			downMbps = down
+		}
 	}
 	o.UpMbps = upMbps
 	o.DownMbps = downMbps
+
+	// Salamander obfuscation. Raw QUIC/443 to a foreign IP is easily
+	// fingerprinted and throttled by the GFW; obfs wraps it so the path stays
+	// stable at peak hours. Inert unless the URI carries ?obfs= AND the server
+	// is configured with the same type/password. Enable per-server via
+	// ?obfs=salamander&obfs-password=xxx in the URI.
+	if obfsType := q.Get("obfs"); obfsType != "" {
+		o.Obfs = &Hy2Obfs{Type: obfsType, Password: q.Get("obfs-password")}
+	}
 
 	return o, nil
 }
@@ -259,6 +312,26 @@ func loadCustomRules() []RouteRule {
 		return nil
 	}
 	return rules
+}
+
+// directDomainSuffixes collects every domain_suffix from custom rules whose
+// outbound is "direct", de-duplicated. These resolve via dns-direct (real IPs)
+// so direct routing works for NAT'd clients that can't use fake-ip.
+func directDomainSuffixes(rules []RouteRule) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range rules {
+		if r.Outbound != "direct" {
+			continue
+		}
+		for _, s := range r.DomainSuffix {
+			if !seen[s] {
+				seen[s] = true
+				out = append(out, s)
+			}
+		}
+	}
+	return out
 }
 
 // Validate checks that the config doesn't reference missing rule-sets.

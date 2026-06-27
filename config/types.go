@@ -73,6 +73,7 @@ type OutboundConfig struct {
 	Password   string           `json:"password,omitempty"`
 	UpMbps     int              `json:"up_mbps,omitempty"`
 	DownMbps   int              `json:"down_mbps,omitempty"`
+	Obfs       *Hy2Obfs         `json:"obfs,omitempty"`
 	Flow       string           `json:"flow,omitempty"`
 	Network    string           `json:"network,omitempty"`
 	Version    string           `json:"version,omitempty"`
@@ -80,6 +81,15 @@ type OutboundConfig struct {
 	Default    string           `json:"default,omitempty"`
 	TLS        *TLSConfig       `json:"tls,omitempty"`
 	Transport  *TransportConfig `json:"transport,omitempty"`
+}
+
+// Hy2Obfs enables hysteria2 salamander obfuscation. Without it the raw QUIC
+// flow on UDP/443 is trivially fingerprinted and QoS-throttled by the GFW,
+// which shows up as bursts of "no recent network activity" idle-timeouts and
+// collapsing throughput at peak hours. Must match the server's obfs settings.
+type Hy2Obfs struct {
+	Type     string `json:"type"`
+	Password string `json:"password,omitempty"`
 }
 
 type TLSConfig struct {

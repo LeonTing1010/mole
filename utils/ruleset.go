@@ -3,7 +3,6 @@ package utils
 import (
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -25,9 +24,9 @@ var ruleSetSources = []ruleSetSource{
 // sing-box can start without depending on the hy2 outbound for its own boot
 // resources. The previous design routed rule-set fetches through the
 // "proxy" outbound, which made startup a chicken-and-egg deadlock: when the
-// VPS was down sing-box exited FATAL on rule-set init, supervisor never got a
-// chance to flip into block-mode, and the user just saw an opaque restart
-// loop in mole.log instead of "VPS unreachable".
+// VPS was down sing-box exited FATAL on rule-set init and the supervisor was
+// stuck restarting it in a loop, so the user just saw an opaque restart loop
+// in mole.log instead of sing-box coming up cleanly.
 //
 // Best-effort: a failed download prints a warning but does not block startup.
 // In that case the config builder falls back to remote-with-direct-detour so
@@ -48,7 +47,9 @@ func EnsureRuleSets() {
 func downloadRuleSet(url, dst string) error {
 	// Direct fetch — explicitly do NOT route through the proxy. The whole
 	// point is to remove the proxy from the cold-start critical path.
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Use direct HTTP client to avoid DNS takeover issues if called while
+	// the VPN is running.
+	client := newDirectHTTPClient(30 * time.Second)
 	resp, err := client.Get(url)
 	if err != nil {
 		return err

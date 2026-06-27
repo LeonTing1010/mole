@@ -27,27 +27,64 @@ func TakeOverDNS() error {
 	if err != nil {
 		return err
 	}
-	backup := make(map[string][]string, len(services))
-	for _, svc := range services {
-		dns, _ := getDNS(svc)
-		backup[svc] = dns
+	// Only capture a backup when one doesn't already exist. A leftover backup
+	// means a previous run was killed before RestoreDNS could run: the current
+	// system DNS is already the TUN gateway, so re-capturing now would record
+	// 172.19.0.1 as each service's "previous" resolver and a later RestoreDNS
+	// would strand every service on a dead TUN gateway — breaking all DNS until
+	// the user manually resets it. The existing backup still holds the real
+	// pre-takeover values, so leave it untouched.
+	if _, err := os.Stat(dnsBackupPath()); err != nil {
+		backup := make(map[string][]string, len(services))
+		for _, svc := range services {
+			dns, _ := getDNS(svc)
+			// Belt-and-suspenders: never record the TUN gateway itself, even if
+			// the backup file was somehow removed mid-run.
+			backup[svc] = stripTunGateway(dns)
+		}
+		data, _ := json.MarshalIndent(backup, "", "  ")
+		_ = os.WriteFile(dnsBackupPath(), data, 0644)
 	}
-	data, _ := json.MarshalIndent(backup, "", "  ")
-	_ = os.WriteFile(dnsBackupPath(), data, 0644)
 	for _, svc := range services {
 		_ = setDNS(svc, []string{tunGatewayDNS})
 	}
 	return nil
 }
 
+// stripTunGateway drops the TUN gateway from a captured DNS list so that a
+// half-cleaned previous run (system DNS already pointed at the gateway) can't
+// get 172.19.0.1 recorded as a real upstream and later restored as one. An
+// empty result restores as "Empty" (DHCP defaults), which RestoreDNS handles.
+func stripTunGateway(dns []string) []string {
+	out := make([]string, 0, len(dns))
+	for _, d := range dns {
+		if strings.TrimSpace(d) != tunGatewayDNS {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 // RestoreDNS puts every network service's DNS back to what TakeOverDNS
-// recorded. Safe to call even if no backup exists.
+// recorded. If no backup exists (e.g., after an unclean shutdown), it
+// resets every active network service to "Empty" so the system falls back to
+// DHCP-provided DNS instead of leaving the TUN gateway (172.19.0.1) as the
+// sole resolver, which breaks all network access when the TUN is gone.
+// Safe to call even if no backup exists.
 func RestoreDNS() {
 	if runtime.GOOS != "darwin" {
 		return
 	}
 	data, err := os.ReadFile(dnsBackupPath())
 	if err != nil {
+		// No backup — reset all services to DHCP defaults.
+		services, err := listNetworkServices()
+		if err != nil {
+			return
+		}
+		for _, svc := range services {
+			_ = setDNS(svc, []string{"Empty"})
+		}
 		return
 	}
 	var backup map[string][]string

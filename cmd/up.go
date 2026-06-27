@@ -155,8 +155,8 @@ func runDaemon() error {
 
 	sup := core.NewSupervisor(cfgPath, srv.Name, core.SupervisorOpts{
 		// Direct UDP probe to the VPS hy2 endpoint — avoids the DNS-loop bug
-		// where DoT-to-1.1.1.1 hiccups got misread as VPS death and chopped
-		// the user's traffic into pieces.
+		// where DoT-to-1.1.1.1 hiccups got misread as VPS death and reported a
+		// healthy VPS as down in `mole status`.
 		ProbeAddr: fmt.Sprintf("%s:%d", srv.IP, srv.Port),
 	})
 

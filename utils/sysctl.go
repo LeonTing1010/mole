@@ -31,14 +31,20 @@ func TuneUDPBuffers() error {
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
-	backup := make(map[string]string, len(udpTuning))
-	for _, kv := range udpTuning {
-		if v, err := readSysctl(kv.Key); err == nil {
-			backup[kv.Key] = v
+	// Only capture a backup when none exists. A leftover backup from a killed
+	// run holds the true pre-tuning values; re-reading now would record the
+	// already-raised limits as the "original" and a later RestoreUDPBuffers
+	// would be a no-op that leaves the buffers permanently enlarged.
+	if _, err := os.Stat(sysctlBackupPath()); err != nil {
+		backup := make(map[string]string, len(udpTuning))
+		for _, kv := range udpTuning {
+			if v, err := readSysctl(kv.Key); err == nil {
+				backup[kv.Key] = v
+			}
 		}
+		data, _ := json.MarshalIndent(backup, "", "  ")
+		_ = os.WriteFile(sysctlBackupPath(), data, 0644)
 	}
-	data, _ := json.MarshalIndent(backup, "", "  ")
-	_ = os.WriteFile(sysctlBackupPath(), data, 0644)
 
 	var failed []string
 	for _, kv := range udpTuning {
