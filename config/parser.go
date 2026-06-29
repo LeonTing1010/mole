@@ -21,11 +21,12 @@ func Build(serverURI string) (*SingboxConfig, error) {
 		return nil, err
 	}
 
-	// Get best DNS server (cached or test to find fastest)
-	bestDNS := utils.GetBestDNS()
+	// Direct (China) DNS resolver, pinned to AliDNS for best CDN-edge
+	// localization (NOT lowest query latency — see PreferredDirectDNS).
+	bestDNS := utils.PreferredDirectDNS()
 
 	dnsServers := []DNSServer{
-		// Direct DNS - auto-selected for best performance
+		// Direct DNS - AliDNS, chosen for best CDN-edge localization (not latency)
 		{Type: "udp", Server: bestDNS, Tag: "dns-direct"},
 		// Remote DNS via proxy. Kept as `final` so non-A/AAAA queries
 		// (PTR, TXT, MX, ...) for foreign names don't hit a censored upstream.

@@ -14,6 +14,20 @@ const tunGatewayDNS = "172.19.0.1"
 
 func dnsBackupPath() string { return filepath.Join(MoleDir(), "dns-backup.json") }
 
+// PreferredDirectDNS returns the resolver used for direct (China) domains.
+//
+// Pinned to AliDNS 223.5.5.5. We deliberately do NOT pick by query latency:
+// that optimizes for how fast a resolver answers, which is unrelated to — and
+// often worse for — CDN-edge proximity. In practice the latency race always
+// picked Baidu 180.76.76.76 (it answers baidu.com fastest), and Baidu handed
+// back far/congested Tencent edges: mp.weixin.qq.com loaded at ~15 KB/s
+// (TTFB ~1-3s) vs ~300 KB/s (TTFB ~0.15s) on the AliDNS edge — a ~15x
+// difference. AliDNS returns well-localized edges and is already the resolver
+// the rest of mole assumes (see directResolver in ipinfo.go, route bypass rules).
+func PreferredDirectDNS() string {
+	return "223.5.5.5"
+}
+
 // TakeOverDNS points every active macOS network service at the TUN gateway,
 // after backing up the previous settings. Needed because unprivileged
 // sing-box TUN doesn't rewrite system DNS config, so macOS' native resolvers
