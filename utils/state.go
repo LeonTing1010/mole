@@ -37,6 +37,11 @@ type State struct {
 	LastKeepaliveAt    time.Time `json:"last_keepalive_at,omitempty"`
 	LastKeepaliveMs    int       `json:"last_keepalive_ms,omitempty"`
 	LastKeepaliveError string    `json:"last_keepalive_error,omitempty"`
+
+	// Time-of-day bandwidth scheduler: which Brutal ceiling is currently selected.
+	// Empty when the active server has no peak profile configured.
+	BandwidthProfile  string `json:"bandwidth_profile,omitempty"`
+	BandwidthDownMbps int    `json:"bandwidth_down_mbps,omitempty"`
 }
 
 // WriteState atomically persists the state to ~/.mole/state.json.

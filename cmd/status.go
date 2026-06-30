@@ -72,6 +72,10 @@ func printSupervisorState() {
 	default:
 		fmt.Printf("   Mode:    %s\n", st.Mode)
 	}
+	// Time-of-day Brutal ceiling, when the active server has a peak profile.
+	if st.BandwidthProfile != "" {
+		fmt.Printf("   Profile: %s (Brutal ↓%d Mbps)\n", st.BandwidthProfile, st.BandwidthDownMbps)
+	}
 	if !st.LastProbeAt.IsZero() {
 		fmt.Printf("   Probed:  %s ago\n", humanize(time.Since(st.LastProbeAt)))
 	}

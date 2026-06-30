@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LeonTing1010/mole/core"
 	"github.com/LeonTing1010/mole/utils"
 	"github.com/spf13/cobra"
 )
@@ -40,6 +41,41 @@ type Server struct {
 	ObfsPassword string `json:"obfs_password,omitempty"`
 	UpMbps       int    `json:"up_mbps,omitempty"`
 	DownMbps     int    `json:"down_mbps,omitempty"`
+
+	// Time-of-day Brutal ceiling. When PeakDownMbps>0, `mole up` emits a
+	// peak/off-peak selector and the supervisor flips it on the local clock with
+	// no reconnect — UpMbps/DownMbps become the OFF-peak ceiling and these the
+	// peak one (set to ~the worst-case peak link speed so Brutal stops flooding).
+	// Hours are local 24h; leaving both at 0 uses the default 12:00–02:00 window.
+	PeakUpMbps    int `json:"peak_up_mbps,omitempty"`
+	PeakDownMbps  int `json:"peak_down_mbps,omitempty"`
+	PeakStartHour int `json:"peak_start_hour,omitempty"`
+	PeakEndHour   int `json:"peak_end_hour,omitempty"`
+}
+
+// Default peak window (local 24h) when a server sets a peak ceiling but no hours.
+const (
+	defaultPeakStartHour = 12
+	defaultPeakEndHour   = 2
+)
+
+// peakWindow resolves the peak window, applying the default when start==end.
+func (s *Server) peakWindow() (start, end int) {
+	if s.PeakStartHour == s.PeakEndHour {
+		return defaultPeakStartHour, defaultPeakEndHour
+	}
+	return s.PeakStartHour, s.PeakEndHour
+}
+
+// Schedule builds the supervisor's time-of-day bandwidth schedule for this
+// server. Enabled() is false (inert) unless PeakDownMbps>0.
+func (s *Server) Schedule() core.BandwidthSchedule {
+	start, end := s.peakWindow()
+	return core.BandwidthSchedule{
+		OffUp: s.UpMbps, OffDown: s.DownMbps,
+		PeakUp: s.PeakUpMbps, PeakDown: s.PeakDownMbps,
+		StartHour: start, EndHour: end,
+	}
 }
 
 // Ready reports whether the server is fully provisioned (has an IP). Servers
@@ -70,6 +106,16 @@ func (s *Server) URI() string {
 	}
 	if s.DownMbps != 0 {
 		q += fmt.Sprintf("&downmbps=%d", s.DownMbps)
+	}
+	// Peak profile params drive the time-of-day selector in config.Build. Emitted
+	// only when a peak ceiling is set, so an untuned server's URI is unchanged.
+	if s.PeakDownMbps > 0 {
+		start, end := s.peakWindow()
+		q += fmt.Sprintf("&peakdownmbps=%d", s.PeakDownMbps)
+		if s.PeakUpMbps > 0 {
+			q += fmt.Sprintf("&peakupmbps=%d", s.PeakUpMbps)
+		}
+		q += fmt.Sprintf("&peakstart=%d&peakend=%d", start, end)
 	}
 	return fmt.Sprintf("hy2://%s@%s:%d?%s#%s", s.Password, host, s.Port, q, s.Name)
 }

@@ -48,6 +48,13 @@ func TuneUDPBuffers() error {
 
 	var failed []string
 	for _, kv := range udpTuning {
+		// Skip OIDs that don't exist on this kernel. net.inet.udp.sendspace is
+		// FreeBSD-only and absent on modern macOS (the UDP send buffer is bounded
+		// by kern.ipc.maxsockbuf, already raised above), so trying to set it just
+		// produced a misleading "UDP buffer tuning failed" warning on every up.
+		if _, err := readSysctl(kv.Key); err != nil {
+			continue
+		}
 		if err := writeSysctl(kv.Key, kv.Value); err != nil {
 			failed = append(failed, fmt.Sprintf("%s: %v", kv.Key, err))
 		}

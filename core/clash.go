@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -61,6 +62,30 @@ func (c *ClashClient) TestDelay(proxy, testURL string, timeoutMs int) (int, erro
 		return 0, err
 	}
 	return out.Delay, nil
+}
+
+// SelectProxy points a selector outbound at one of its members. This is how the
+// bandwidth scheduler switches between the peak/off-peak hy2 outbounds without
+// restarting sing-box: the TUN and existing connections are untouched, and new
+// connections route through the newly selected member.
+func (c *ClashClient) SelectProxy(selector, member string) error {
+	body, _ := json.Marshal(map[string]string{"name": member})
+	u := fmt.Sprintf("%s/proxies/%s", c.base, url.PathEscape(selector))
+	req, err := http.NewRequest(http.MethodPut, u, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		msg, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("select %s→%s: %s: %s", selector, member, resp.Status, string(msg))
+	}
+	return nil
 }
 
 // Ping returns nil once the Clash API is reachable (used to wait for sing-box startup).

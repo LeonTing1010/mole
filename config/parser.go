@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/LeonTing1010/mole/core"
 	"github.com/LeonTing1010/mole/utils"
 )
 
@@ -163,10 +165,8 @@ func Build(serverURI string) (*SingboxConfig, error) {
 				ListenPort: 53,
 			},
 		},
-		Outbounds: []OutboundConfig{
-			*outbound,
-			{Type: "direct", Tag: "direct"},
-		},
+		Outbounds: append(buildProxyOutbounds(serverURI, outbound),
+			OutboundConfig{Type: "direct", Tag: "direct"}),
 		Route: RouteConfig{
 			Rules:               routeRules,
 			RuleSet:             ruleSets,
@@ -189,6 +189,58 @@ func Save(cfg *SingboxConfig, path string) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
+}
+
+// buildProxyOutbounds returns the proxy outbound(s) for the route to target.
+//
+// With no peak profile it returns a single outbound tagged `proxy` — identical
+// to the historical layout. When the hy2 URI carries peak bandwidth params
+// (?peakdownmbps=…), it returns a `proxy` selector over two otherwise-identical
+// hy2 outbounds that differ only in their Brutal ceiling: `proxy-offpeak` and
+// `proxy-peak`. The supervisor flips the selector by the clock at runtime, so a
+// single fixed ceiling never has to fit both peak and off-peak. The selector's
+// default member is whichever profile is current at build time, so the tunnel
+// comes up on the right ceiling even before the supervisor's first tick.
+func buildProxyOutbounds(serverURI string, outbound *OutboundConfig) []OutboundConfig {
+	single := func() []OutboundConfig {
+		outbound.Tag = core.ProxySelectorTag
+		return []OutboundConfig{*outbound}
+	}
+	if outbound.Type != "hysteria2" {
+		return single()
+	}
+	u, err := url.Parse(serverURI)
+	if err != nil {
+		return single()
+	}
+	q := u.Query()
+	peakDown, _ := strconv.Atoi(q.Get("peakdownmbps"))
+	if peakDown <= 0 {
+		return single()
+	}
+	peakUp, _ := strconv.Atoi(q.Get("peakupmbps"))
+	start, _ := strconv.Atoi(q.Get("peakstart"))
+	end, _ := strconv.Atoi(q.Get("peakend"))
+
+	offpeak := *outbound
+	offpeak.Tag = core.ProxyOffpeakTag
+	peak := *outbound
+	peak.Tag = core.ProxyPeakTag
+	peak.UpMbps = peakUp
+	peak.DownMbps = peakDown
+
+	sched := core.BandwidthSchedule{
+		OffUp: outbound.UpMbps, OffDown: outbound.DownMbps,
+		PeakUp: peakUp, PeakDown: peakDown,
+		StartHour: start, EndHour: end,
+	}
+	selector := OutboundConfig{
+		Type:      "selector",
+		Tag:       core.ProxySelectorTag,
+		Outbounds: []string{core.ProxyOffpeakTag, core.ProxyPeakTag},
+		Default:   sched.Member(time.Now()),
+	}
+	return []OutboundConfig{selector, offpeak, peak}
 }
 
 func parseServerURL(serverURL string) (*OutboundConfig, error) {

@@ -23,6 +23,13 @@ type Supervisor struct {
 
 	clash *ClashClient
 
+	// Time-of-day Brutal ceiling. Inert unless a peak profile is configured.
+	// When enabled, the config carries two hy2 outbounds (peak/off-peak) behind
+	// a selector, and runBandwidthScheduler flips the selector via the Clash API
+	// at each window boundary — no sing-box restart, so the TUN and existing
+	// connections are never torn down.
+	schedule BandwidthSchedule
+
 	stateMu sync.Mutex
 	state   *utils.State
 
@@ -38,6 +45,12 @@ type SupervisorOpts struct {
 	ProbeEvery     time.Duration
 	KeepaliveEvery time.Duration // in-tunnel keepalive cadence; 0 → default
 	ProbeTimeMs    int
+
+	// Schedule enables the time-of-day Brutal ceiling. Gated by Schedule.Enabled()
+	// (a peak profile must be configured); the config must also carry the
+	// peak/off-peak selector that config.Build emits for the same server. Leave
+	// it zero to keep a plain fixed-bandwidth server.
+	Schedule BandwidthSchedule
 }
 
 // NewSupervisor builds a supervisor ready to start. It does not start sing-box.
@@ -69,6 +82,7 @@ func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervis
 		probeEvery:     opts.ProbeEvery,
 		keepaliveEvery: opts.KeepaliveEvery,
 		probeTimeMs:    opts.ProbeTimeMs,
+		schedule:       opts.Schedule,
 		clash:          NewClashClient(opts.ClashAddr),
 		state: &utils.State{
 			Mode:      utils.ModeProxy,
@@ -90,8 +104,14 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	defer Stop()
 	_ = utils.WriteState(s.snapshot())
 
+	scheduleOn := s.schedule.Enabled()
+
 	var wg sync.WaitGroup
-	wg.Add(3)
+	n := 3
+	if scheduleOn {
+		n = 4
+	}
+	wg.Add(n)
 
 	// Goroutine A: keep sing-box alive.
 	go func() {
@@ -115,6 +135,17 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		defer recoverPanic("keepalive")
 		s.runKeepalive(ctx)
 	}()
+
+	// Goroutine D (optional): switch the Brutal ceiling between peak/off-peak
+	// profiles on the local clock so a single fixed rate can't flood the path at
+	// peak or throttle it off-peak.
+	if scheduleOn {
+		go func() {
+			defer wg.Done()
+			defer recoverPanic("bandwidth-scheduler")
+			s.runBandwidthScheduler(ctx)
+		}()
+	}
 
 	wg.Wait()
 	close(s.doneCh)
@@ -296,6 +327,62 @@ func (s *Supervisor) keepaliveOnce() {
 		s.state.LastKeepaliveError = ""
 	}
 	_ = utils.WriteState(s.stateSnapshotLocked())
+}
+
+// runBandwidthScheduler flips the `proxy` selector between the peak and off-peak
+// hy2 outbounds on the local clock. It never restarts sing-box: the switch is a
+// single Clash-API call, so the TUN and in-flight connections survive untouched.
+// Before each flip it pre-warms the target outbound (a delay probe re-dials its
+// QUIC session) so the first connection after the switch is instant, not a fresh
+// handshake.
+func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
+	// Selector flips ride the Clash API; wait for it like the probe/keepalive do.
+	if err := s.waitClashReady(ctx, 10*time.Second); err != nil {
+		log.Printf("clash api not ready for bandwidth scheduler: %v (will keep trying)", err)
+	}
+
+	applied := ""
+	apply := func() {
+		now := time.Now()
+		member := s.schedule.Member(now)
+		name, _, down := s.schedule.Profile(now)
+		if member == applied {
+			return
+		}
+		// Pre-warm the target so it has a live QUIC session before we route real
+		// traffic onto it. Best-effort: a cold target just costs one handshake on
+		// the first connection.
+		if _, err := s.clash.TestDelay(member, s.probeURL, s.probeTimeMs); err != nil {
+			log.Printf("bandwidth scheduler: pre-warm %s failed: %v", member, err)
+		}
+		if err := s.clash.SelectProxy(ProxySelectorTag, member); err != nil {
+			log.Printf("bandwidth scheduler: select %s failed: %v", member, err)
+			return
+		}
+		applied = member
+
+		s.stateMu.Lock()
+		s.state.BandwidthProfile = name
+		s.state.BandwidthDownMbps = down
+		s.stateMu.Unlock()
+		_ = utils.WriteState(s.snapshot())
+		log.Printf("bandwidth profile → %s (↓%d Mbps) via %s", name, down, member)
+	}
+
+	apply()
+
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.stopCh:
+			return
+		case <-t.C:
+			apply()
+		}
+	}
 }
 
 func (s *Supervisor) waitClashReady(ctx context.Context, timeout time.Duration) error {

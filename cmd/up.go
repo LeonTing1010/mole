@@ -158,6 +158,10 @@ func runDaemon() error {
 		// where DoT-to-1.1.1.1 hiccups got misread as VPS death and reported a
 		// healthy VPS as down in `mole status`.
 		ProbeAddr: fmt.Sprintf("%s:%d", srv.IP, srv.Port),
+		// Time-of-day Brutal ceiling. Inert unless the server sets a peak profile;
+		// when set, the config (built from the same server URI) carries the
+		// peak/off-peak selector and the supervisor flips it by the clock.
+		Schedule: srv.Schedule(),
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
