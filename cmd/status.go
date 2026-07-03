@@ -55,19 +55,32 @@ func printSupervisorState() {
 		fmt.Println("   Mode:    (supervisor state unavailable)")
 		return
 	}
-	// The supervisor only reports health; it never reroutes. Surface a probe
-	// failure inline so a dead VPS is visible, but be honest that traffic is
-	// still pointed at the proxy (foreign connections will time out, not
-	// fail-fast).
+	// The supervisor only reports health; it never reroutes. Surface failures
+	// inline so a dead VPS or a blackholed path is visible, but be honest that
+	// traffic is still pointed at the proxy (foreign connections will time out,
+	// not fail-fast).
 	switch st.Mode {
 	case utils.ModeProxy:
-		switch {
-		case st.LastProbeError != "":
-			fmt.Printf("   Mode:    🔴 proxy — VPS probe failing: %s\n", st.LastProbeError)
-		case st.LastLatencyMs > 0:
-			fmt.Printf("   Mode:    🟢 proxy — VPS healthy (%dms)\n", st.LastLatencyMs)
+		switch st.Health() {
+		case utils.HealthVPSDown:
+			// ICMP port unreachable round-tripped: path fine, nothing listening.
+			fmt.Printf("   Mode:    🔴 proxy — hy2 process down on VPS (probe refused): %s\n", st.LastProbeError)
+		case utils.HealthPathDead:
+			// Two flavors, same advice: restarting won't help, it usually
+			// clears on its own in ~10–15min.
+			if st.ConsecutiveFails >= utils.ProbeSilentThreshold {
+				fmt.Printf("   Mode:    🟡 proxy — UDP path to VPS dark (probe %s ×%d); wait it out or `mole down`, restarting won't help\n",
+					st.LastProbeVerdict, st.ConsecutiveFails)
+			} else {
+				fmt.Printf("   Mode:    🟡 proxy — VPS reachable but tunnel dark for %s (keepalive ×%d); wait it out or `mole down`, restarting won't help\n",
+					humanize(time.Since(st.KeepaliveFailingSince)), st.KeepaliveFails)
+			}
 		default:
-			fmt.Println("   Mode:    🟢 proxy — VPS healthy")
+			if st.LastLatencyMs > 0 {
+				fmt.Printf("   Mode:    🟢 proxy — VPS healthy (%dms)\n", st.LastLatencyMs)
+			} else {
+				fmt.Println("   Mode:    🟢 proxy — VPS healthy")
+			}
 		}
 	default:
 		fmt.Printf("   Mode:    %s\n", st.Mode)
@@ -79,13 +92,13 @@ func printSupervisorState() {
 	if !st.LastProbeAt.IsZero() {
 		fmt.Printf("   Probed:  %s ago\n", humanize(time.Since(st.LastProbeAt)))
 	}
-	// In-tunnel keepalive — informational. A failure here does not mean the VPS
-	// is down (that's the probe's verdict above); it means the proxy path itself
-	// (DNS + QUIC) hiccupped on the last beat.
+	// In-tunnel keepalive. One or two failures are a hiccup (DNS + QUIC ride
+	// this path); a streak ≥ threshold already flipped the Mode line above to
+	// path-blackhole. Either way, show the streak so trends are visible.
 	if !st.LastKeepaliveAt.IsZero() {
 		if st.LastKeepaliveError != "" {
-			fmt.Printf("   Tunnel:  ⚠️  keepalive failed %s ago: %s\n",
-				humanize(time.Since(st.LastKeepaliveAt)), st.LastKeepaliveError)
+			fmt.Printf("   Tunnel:  ⚠️  keepalive failing ×%d (last %s ago): %s\n",
+				st.KeepaliveFails, humanize(time.Since(st.LastKeepaliveAt)), st.LastKeepaliveError)
 		} else {
 			fmt.Printf("   Tunnel:  warm (%dms via proxy, %s ago)\n",
 				st.LastKeepaliveMs, humanize(time.Since(st.LastKeepaliveAt)))

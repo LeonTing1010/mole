@@ -32,6 +32,10 @@ type Supervisor struct {
 
 	stateMu sync.Mutex
 	state   *utils.State
+	// lastHealth (guarded by stateMu) is the previously observed synthesized
+	// verdict, kept so flips get one durable log line — state.json is
+	// overwritten in place, so the log is the only history of transitions.
+	lastHealth utils.Health
 
 	stopCh chan struct{}
 	doneCh chan struct{}
@@ -90,6 +94,7 @@ func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervis
 			Server:    serverName,
 			StartedAt: time.Now(),
 		},
+		lastHealth: utils.HealthOK,
 		stopCh: make(chan struct{}),
 		doneCh: make(chan struct{}),
 	}
@@ -238,34 +243,62 @@ func (s *Supervisor) runProbe(ctx context.Context) {
 
 func (s *Supervisor) probeOnce() {
 	var (
-		delay int
-		err   error
+		delay   int
+		verdict utils.ProbeVerdict
+		err     error
 	)
 	if s.probeAddr != "" {
-		// Direct UDP probe to the VPS hy2 endpoint.
-		rtt, perr := ProbeHy2UDP(s.probeAddr, time.Duration(s.probeTimeMs)*time.Millisecond)
+		// Direct (interface-bound, outside-the-tunnel) probe to the VPS hy2
+		// endpoint; see ProbeHy2UDP for why both properties matter.
+		rtt, v, perr := ProbeHy2UDP(s.probeAddr, time.Duration(s.probeTimeMs)*time.Millisecond)
 		delay = int(rtt / time.Millisecond)
+		verdict = v
 		err = perr
 	} else {
 		delay, err = s.clash.TestDelay("proxy", s.probeURL, s.probeTimeMs)
+		if err != nil {
+			verdict = utils.ProbeError
+		} else {
+			verdict = utils.ProbeAlive
+		}
 	}
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
 
 	s.state.LastProbeAt = time.Now()
+	s.state.LastProbeVerdict = verdict
 	if err != nil {
 		s.state.ConsecutiveFails++
 		s.state.ConsecutiveOK = 0
 		s.state.LastLatencyMs = 0
 		s.state.LastProbeError = err.Error()
+		log.Printf("direct probe %s (×%d): %v", verdict, s.state.ConsecutiveFails, err)
 	} else {
 		s.state.ConsecutiveOK++
 		s.state.ConsecutiveFails = 0
 		s.state.LastLatencyMs = delay
 		s.state.LastProbeError = ""
 	}
+	s.noteHealthLocked()
 
 	_ = utils.WriteState(s.stateSnapshotLocked())
+}
+
+// noteHealthLocked logs one line whenever the synthesized health verdict
+// flips. Callers must hold stateMu. This log (in ~/.mole/mole.log, which
+// rotates) is the only durable record of when the connection went dark and
+// when it recovered — state.json can't provide that, it's overwritten in
+// place on every probe.
+func (s *Supervisor) noteHealthLocked() {
+	h := s.state.Health()
+	if h == s.lastHealth {
+		return
+	}
+	log.Printf("health: %s → %s (probe %s fails=%d err=%q; keepalive fails=%d err=%q)",
+		s.lastHealth, h,
+		s.state.LastProbeVerdict, s.state.ConsecutiveFails, s.state.LastProbeError,
+		s.state.KeepaliveFails, s.state.LastKeepaliveError)
+	s.lastHealth = h
 }
 
 // runKeepalive drives low-frequency traffic through the proxy outbound to keep
@@ -307,9 +340,12 @@ func (s *Supervisor) runKeepalive(ctx context.Context) {
 }
 
 // keepaliveOnce sends one request through the proxy outbound and records the
-// result. The result is informational only: this path runs through sing-box's
-// DNS engine, so a DNS hiccup here must not flip the proxy health verdict —
-// that stays the exclusive job of the direct-UDP probe in probeOnce.
+// result. A single failure stays informational — this path runs through
+// sing-box's DNS engine, so one hiccup must not flip the verdict. But a streak
+// of failures while the direct-UDP probe stays green is exactly the path-
+// blackhole signature (probe proves the VPS process answers; keepalive proves
+// the path passes traffic), so consecutive failures feed State.Health via
+// KeepaliveFails. The vps-down verdict remains the probe's exclusive call.
 func (s *Supervisor) keepaliveOnce() {
 	delay, err := s.clash.TestDelay("proxy", s.probeURL, s.probeTimeMs)
 
@@ -317,15 +353,20 @@ func (s *Supervisor) keepaliveOnce() {
 	defer s.stateMu.Unlock()
 	s.state.LastKeepaliveAt = time.Now()
 	if err != nil {
+		s.state.KeepaliveFails++
+		if s.state.KeepaliveFails == 1 {
+			s.state.KeepaliveFailingSince = time.Now()
+		}
 		s.state.LastKeepaliveMs = 0
 		s.state.LastKeepaliveError = err.Error()
-		// Log but don't touch the health counters; the direct-UDP probe decides
-		// whether the VPS is actually down.
-		log.Printf("tunnel keepalive failed: %v", err)
+		log.Printf("tunnel keepalive failed (×%d): %v", s.state.KeepaliveFails, err)
 	} else {
+		s.state.KeepaliveFails = 0
+		s.state.KeepaliveFailingSince = time.Time{}
 		s.state.LastKeepaliveMs = delay
 		s.state.LastKeepaliveError = ""
 	}
+	s.noteHealthLocked()
 	_ = utils.WriteState(s.stateSnapshotLocked())
 }
 
