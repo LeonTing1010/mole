@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"embed"
 	"fmt"
 	"log"
 	"net"
@@ -46,6 +47,16 @@ func Build(serverURI string) (*SingboxConfig, error) {
 	// rule below as well. Single source of truth: custom-rules.json.
 	customRules := loadCustomRules()
 
+	// Built-in curated direct rules (e.g. Sunlogin/向日葵) ship with mole as
+	// DATA (builtin-rules.json), not as Go literals, so the list of domestic
+	// services that should route direct can change without recompiling. Same
+	// schema as custom-rules.json; custom rules are inserted AFTER builtin so a
+	// user can override any built-in entry.
+	builtinRules := loadBuiltinRules()
+
+	// Combined direct-domain sources for DNS resolution (built-in + user).
+	directSources := append(append([]RouteRule{}, builtinRules...), customRules...)
+
 	dnsRules := []DNSRule{}
 	if outbound.Server != "" && net.ParseIP(outbound.Server) == nil {
 		// VPS hostname uses direct DNS to avoid circular dependency
@@ -71,14 +82,16 @@ func Build(serverURI string) (*SingboxConfig, error) {
 		DomainSuffix: []string{".in-addr.arpa", ".ip6.arpa"},
 		Server:       "dns-direct",
 	})
-	// Chinese domains use direct DNS so we get real IPs that geoip-cn can route.
+	// Chinese TLDs use direct DNS so we get real IPs that geoip-cn can route.
+	// (Service domains like qq.com are no longer hardcoded here — they live in
+	// builtin-rules.json and flow in via directDomainSuffixes, same as oray.)
 	dnsRules = append(dnsRules, DNSRule{
-		DomainSuffix: []string{".cn", ".com.cn", ".net.cn", ".org.cn", ".gov.cn", ".edu.cn", ".mil.cn", ".中国", ".qq.com"},
+		DomainSuffix: []string{".cn", ".com.cn", ".net.cn", ".org.cn", ".gov.cn", ".edu.cn", ".mil.cn", ".中国"},
 		Server:       "dns-direct",
 	})
 	// Custom direct domains resolve to real IPs too (see note above) so they
 	// route via geoip-cn / explicit ip_cidr rules instead of dying on fake-ip.
-	if suffixes := directDomainSuffixes(customRules); len(suffixes) > 0 {
+	if suffixes := directDomainSuffixes(directSources); len(suffixes) > 0 {
 		dnsRules = append(dnsRules, DNSRule{
 			DomainSuffix: suffixes,
 			Server:       "dns-direct",
@@ -107,13 +120,13 @@ func Build(serverURI string) (*SingboxConfig, error) {
 	}
 
 	// System rules: private IPs, DNS resolvers, geoip-cn, catch-all.
+	// (Curated domestic-service direct rules like Sunlogin/向日葵 live in
+	// builtin-rules.json, not here — see loadBuiltinRules.)
 	systemRules := []RouteRule{
 		// Keep the public DNS resolvers reachable directly so DNS resolution
 		// itself never depends on the VPS being up.
 		{IPCIDR: []string{"1.1.1.1/32", "223.5.5.5/32"}, Outbound: "direct"},
 		{IPCIDR: []string{"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "127.0.0.0/8"}, Outbound: "direct"},
-		// Sunlogin (向日葵) remote desktop - direct connection for domestic servers
-		{DomainSuffix: []string{"oray.com", "orayimg.com", "oray.net"}, Outbound: "direct"},
 		// FakeIP range is foreign-traffic only by construction; send through proxy.
 		// Must come before geoip-cn so the sniffed SNI doesn't accidentally hit
 		// a CN-routed rule via some other heuristic.
@@ -130,9 +143,8 @@ func Build(serverURI string) (*SingboxConfig, error) {
 	// and geoip-cn fallbacks.
 	var routeRules []RouteRule
 	routeRules = append(routeRules, baseRules...)
-	if len(customRules) > 0 {
-		routeRules = append(routeRules, customRules...)
-	}
+	routeRules = append(routeRules, builtinRules...)
+	routeRules = append(routeRules, customRules...)
 	routeRules = append(routeRules, systemRules...)
 
 	// Only use local geoip-cn rule-set to avoid download failures on startup
@@ -349,6 +361,46 @@ func parseHysteria2(u *url.URL) (*OutboundConfig, error) {
 	}
 
 	return o, nil
+}
+
+//go:embed builtin-rules.json
+var builtinRulesFS embed.FS
+
+// builtinRulesCachePath is where utils.EnsureBuiltinRules caches the fetched
+// list (~/.mole/builtin-rules.json).
+func builtinRulesCachePath() string {
+	return filepath.Join(utils.MoleDir(), "builtin-rules.json")
+}
+
+// loadBuiltinRules reads the curated, version-stable direct-domain list that
+// ships with mole (e.g. Sunlogin/向日葵, Tencent/WeChat). Keeping these out of
+// parser.go means adding/removing a "domestic service that should route direct"
+// is a data edit, not a recompile. Schema is identical to custom-rules.json.
+//
+// Precedence: the startup prefetch (utils.EnsureBuiltinRules) caches the latest
+// list from the source repo to ~/.mole/builtin-rules.json; we prefer that cached
+// copy so upstream updates land without recompiling. If it's missing or invalid
+// we fall back to the embedded copy shipped in the binary, so a fetch failure
+// never breaks startup.
+func loadBuiltinRules() []RouteRule {
+	if data, err := os.ReadFile(builtinRulesCachePath()); err == nil {
+		var rules []RouteRule
+		if err := json.Unmarshal(data, &rules); err == nil {
+			return rules
+		}
+		log.Printf("⚠️  cached builtin-rules.json invalid, falling back to embedded copy")
+	}
+	data, err := builtinRulesFS.ReadFile("builtin-rules.json")
+	if err != nil {
+		log.Printf("⚠️  failed to read embedded builtin-rules.json: %v", err)
+		return nil
+	}
+	var rules []RouteRule
+	if err := json.Unmarshal(data, &rules); err != nil {
+		log.Printf("⚠️  failed to parse embedded builtin-rules.json: %v", err)
+		return nil
+	}
+	return rules
 }
 
 // loadCustomRules reads user-defined routing rules from ~/.mole/custom-rules.json.

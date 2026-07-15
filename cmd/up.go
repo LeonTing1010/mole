@@ -79,6 +79,11 @@ func runParent() error {
 	// supervisor-detected outage.
 	utils.EnsureRuleSets()
 
+	// Pre-cache the curated direct-domain list (oray/qq.com/…) from the source
+	// repo, so it can update without recompiling. Falls back to the embedded
+	// copy if the fetch fails; never blocks startup.
+	utils.EnsureBuiltinRules()
+
 	cfg, err := config.Build(uri)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)

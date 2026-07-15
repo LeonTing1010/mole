@@ -1,0 +1,12 @@
+[
+  {
+    "_comment": "Sunlogin (向日葵) remote desktop - direct connection for domestic servers. Curated built-in direct list; edit this DATA file (not parser.go) to add/remove domestic services that should route direct.",
+    "domain_suffix": ["oray.com", "orayimg.com", "oray.net"],
+    "outbound": "direct"
+  },
+  {
+    "_comment": "Tencent / WeChat (qq.com) - domestic service; route direct + resolve via direct DNS. Was previously hardcoded in parser.go's Chinese-TLD DNS list.",
+    "domain_suffix": ["qq.com"],
+    "outbound": "direct"
+  }
+]

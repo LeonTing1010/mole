@@ -20,6 +20,17 @@ var ruleSetSources = []ruleSetSource{
 	{"geoip-cn", "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"},
 }
 
+// builtinRulesURL is the canonical curated direct-domain list (same schema as
+// custom-rules.json). Pulled at startup and cached locally so the list of
+// "domestic services that should route direct" can update WITHOUT recompiling
+// the binary. Mirrors the rule-set prefetch pattern below.
+const builtinRulesURL = "https://raw.githubusercontent.com/LeonTing1010/mole/master/config/builtin-rules.json"
+
+// builtinRulesMaxAge is how stale the cached copy may be before we re-fetch.
+// Keeps the list fresh for frequently-changing entries while staying
+// offline-safe and avoiding a network hit on every startup.
+const builtinRulesMaxAge = 7 * 24 * time.Hour
+
 // EnsureRuleSets pre-downloads any missing .srs file into ~/.mole/ so that
 // sing-box can start without depending on the hy2 outbound for its own boot
 // resources. The previous design routed rule-set fetches through the
@@ -73,4 +84,23 @@ func downloadRuleSet(url, dst string) error {
 		return err
 	}
 	return os.Rename(tmp, dst)
+}
+
+// EnsureBuiltinRules pre-downloads the curated direct-domain list into
+// ~/.mole/builtin-rules.json, mirroring EnsureRuleSets. The list of "domestic
+// services that should route direct" (oray, qq.com, …) changes over time, so
+// pulling it lets the list update WITHOUT recompiling the binary.
+//
+// Fetched only when the cache is missing or older than builtinRulesMaxAge, so a
+// dead network never blocks startup and we don't hit the source on every
+// `mole up`. Best-effort: a failed download prints a warning but does not block
+// startup — loadBuiltinRules() falls back to the embedded copy.
+func EnsureBuiltinRules() {
+	path := filepath.Join(MoleDir(), "builtin-rules.json")
+	if st, err := os.Stat(path); err == nil && time.Since(st.ModTime()) < builtinRulesMaxAge {
+		return
+	}
+	if err := downloadRuleSet(builtinRulesURL, path); err != nil {
+		fmt.Printf("⚠️  builtin-rules prefetch failed: %v (using embedded copy)\n", err)
+	}
 }

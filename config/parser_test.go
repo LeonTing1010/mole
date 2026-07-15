@@ -64,11 +64,12 @@ func TestDNSRulesValid(t *testing.T) {
 		t.Fatalf("Build failed: %v", err)
 	}
 
-	// Must have at least one DNS rule for Chinese domains
+	// Must have at least one DNS rule for Chinese domains. .cn stays hardcoded
+	// in parser.go; qq.com now arrives via builtin-rules.json (no leading dot).
 	hasChineseDomainRule := false
 	for _, rule := range cfg.DNS.Rules {
 		for _, suffix := range rule.DomainSuffix {
-			if suffix == ".cn" || suffix == ".qq.com" {
+			if suffix == ".cn" || suffix == "qq.com" {
 				hasChineseDomainRule = true
 				break
 			}
@@ -76,7 +77,7 @@ func TestDNSRulesValid(t *testing.T) {
 	}
 
 	if !hasChineseDomainRule {
-		t.Error("DNS rules missing Chinese domain suffixes (.cn, .qq.com, etc.)")
+		t.Error("DNS rules missing Chinese domain suffixes (.cn, qq.com, etc.)")
 	}
 
 	// Must have both dns-direct and dns-remote servers
