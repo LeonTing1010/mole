@@ -97,6 +97,25 @@ func Build(serverURI string) (*SingboxConfig, error) {
 			Server:       "dns-direct",
 		})
 	}
+	// Known-Chinese domains resolve for real, whatever their TLD. The suffix and
+	// allowlist rules above only catch .cn and hand-curated names, so domestic
+	// sites on .com (baidu, bilibili, xiaohongshu, aliyun, …) used to fall
+	// through to fakeip and get routed abroad — 13× slower and burning the
+	// cross-border tunnel, and for sites that geo-police their traffic (the
+	// jd.com risk_handler incident) outright broken. geoip-cn cannot save them:
+	// by the time routing sees a fake IP the real one was never looked up. This
+	// has to be decided at the DNS layer, which is what geosite-cn is for.
+	//
+	// Skipped entirely when the rule-set isn't on disk, so a failed prefetch
+	// degrades to the previous suffix+allowlist behaviour rather than a config
+	// sing-box rejects at startup.
+	geositeCN := geositeCNPath()
+	if geositeCN != "" {
+		dnsRules = append(dnsRules, DNSRule{
+			RuleSet: []string{"geosite-cn"},
+			Server:  "dns-direct",
+		})
+	}
 	// Everything else: synthesise a fake IP. The connection itself decides the
 	// outbound, not the DNS answer, so a poisoned/blocked upstream can no
 	// longer prevent foreign sites from loading.
@@ -147,7 +166,9 @@ func Build(serverURI string) (*SingboxConfig, error) {
 	routeRules = append(routeRules, customRules...)
 	routeRules = append(routeRules, systemRules...)
 
-	// Only use local geoip-cn rule-set to avoid download failures on startup
+	// Rule-sets are referenced from local files only — never fetched by sing-box
+	// itself, which would put a download on the cold-start critical path.
+	// utils.EnsureRuleSets prefetches them at `mole up`.
 	ruleSets := []RuleSet{
 		{
 			Type:   "local",
@@ -155,6 +176,17 @@ func Build(serverURI string) (*SingboxConfig, error) {
 			Format: "binary",
 			Path:   filepath.Join(utils.MoleDir(), "geoip-cn.srs"),
 		},
+	}
+	// Declared only when the file exists, matching the DNS rule above: sing-box
+	// FATALs on a rule-set whose path is missing, so an absent geosite-cn must
+	// leave no trace in the config at all rather than half of one.
+	if geositeCN != "" {
+		ruleSets = append(ruleSets, RuleSet{
+			Type:   "local",
+			Tag:    "geosite-cn",
+			Format: "binary",
+			Path:   geositeCN,
+		})
 	}
 
 	return &SingboxConfig{
@@ -205,14 +237,22 @@ func Save(cfg *SingboxConfig, path string) error {
 
 // buildProxyOutbounds returns the proxy outbound(s) for the route to target.
 //
-// With no peak profile it returns a single outbound tagged `proxy` — identical
-// to the historical layout. When the hy2 URI carries peak bandwidth params
-// (?peakdownmbps=…), it returns a `proxy` selector over two otherwise-identical
-// hy2 outbounds that differ only in their Brutal ceiling: `proxy-offpeak` and
-// `proxy-peak`. The supervisor flips the selector by the clock at runtime, so a
-// single fixed ceiling never has to fit both peak and off-peak. The selector's
-// default member is whichever profile is current at build time, so the tunnel
-// comes up on the right ceiling even before the supervisor's first tick.
+// Whenever a Brutal ceiling is in play, it returns a `proxy` selector over a
+// LADDER of otherwise-identical hy2 outbounds differing only in their declared
+// bandwidth — `proxy-bw-2`, `proxy-bw-5`, … The ladder exists because sing-box
+// bakes up_mbps/down_mbps in at config load and the Clash API cannot mutate them;
+// pre-materializing each ceiling is the only way to change one without restarting
+// sing-box (which would rebuild the TUN = a real outage). Two things ride it:
+// the supervisor's clock-driven peak/off-peak flip, and a manual `mole ceiling`
+// pin. Both are one Clash API call.
+//
+// The selector's default member is whichever ceiling applies at build time, so
+// the tunnel comes up correct even before the supervisor's first tick. Members
+// are lazily dialed, so unselected rungs cost nothing at runtime.
+//
+// Falls back to a single outbound tagged `proxy` — the historical layout — for
+// non-hy2 protocols and for BBR mode (down_mbps<=0), where there is no ceiling
+// to ladder. The route always targets `proxy` either way.
 func buildProxyOutbounds(serverURI string, outbound *OutboundConfig) []OutboundConfig {
 	single := func() []OutboundConfig {
 		outbound.Tag = core.ProxySelectorTag
@@ -227,32 +267,39 @@ func buildProxyOutbounds(serverURI string, outbound *OutboundConfig) []OutboundC
 	}
 	q := u.Query()
 	peakDown, _ := strconv.Atoi(q.Get("peakdownmbps"))
-	if peakDown <= 0 {
-		return single()
-	}
 	peakUp, _ := strconv.Atoi(q.Get("peakupmbps"))
 	start, _ := strconv.Atoi(q.Get("peakstart"))
 	end, _ := strconv.Atoi(q.Get("peakend"))
-
-	offpeak := *outbound
-	offpeak.Tag = core.ProxyOffpeakTag
-	peak := *outbound
-	peak.Tag = core.ProxyPeakTag
-	peak.UpMbps = peakUp
-	peak.DownMbps = peakDown
 
 	sched := core.BandwidthSchedule{
 		OffUp: outbound.UpMbps, OffDown: outbound.DownMbps,
 		PeakUp: peakUp, PeakDown: peakDown,
 		StartHour: start, EndHour: end,
 	}
-	selector := OutboundConfig{
+	rungs := sched.Rungs()
+	if len(rungs) < 2 {
+		// No ceiling configured, or the ceiling is so low the ladder collapses to
+		// one rung — nothing to switch between, so keep the simpler shape.
+		return single()
+	}
+
+	members := make([]string, 0, len(rungs))
+	out := make([]OutboundConfig, 1, len(rungs)+1)
+	for _, down := range rungs {
+		rung := *outbound
+		rung.Tag = core.BandwidthRungTag(down)
+		rung.UpMbps = sched.RungUp(down)
+		rung.DownMbps = down
+		members = append(members, rung.Tag)
+		out = append(out, rung)
+	}
+	out[0] = OutboundConfig{
 		Type:      "selector",
 		Tag:       core.ProxySelectorTag,
-		Outbounds: []string{core.ProxyOffpeakTag, core.ProxyPeakTag},
+		Outbounds: members,
 		Default:   sched.Member(time.Now()),
 	}
-	return []OutboundConfig{selector, offpeak, peak}
+	return out
 }
 
 func parseServerURL(serverURL string) (*OutboundConfig, error) {
@@ -363,6 +410,24 @@ func parseHysteria2(u *url.URL) (*OutboundConfig, error) {
 	return o, nil
 }
 
+// geositeCNPath returns the on-disk geosite-cn rule-set, or "" when it isn't
+// usable. Callers must emit NOTHING geosite-related when it returns "": sing-box
+// treats a missing rule-set path as fatal, so referencing one we don't have
+// would turn a best-effort prefetch failure into a tunnel that won't start.
+//
+// This is the guard that makes re-adding geosite-cn safe after it was dropped in
+// 2e9a278 "to avoid download failures" — the capability is back, the failure
+// mode isn't. Size is checked, not just existence, because downloadRuleSet
+// writes to a .tmp and renames, but an interrupted earlier version could leave a
+// zero-byte file behind.
+func geositeCNPath() string {
+	path := filepath.Join(utils.MoleDir(), "geosite-cn.srs")
+	if st, err := os.Stat(path); err != nil || st.Size() == 0 {
+		return ""
+	}
+	return path
+}
+
 //go:embed builtin-rules.json
 var builtinRulesFS embed.FS
 
@@ -439,24 +504,47 @@ func directDomainSuffixes(rules []RouteRule) []string {
 	return out
 }
 
-// Validate checks that the config doesn't reference missing rule-sets.
+// Validate checks that every rule-set referenced by a route or DNS rule is a
+// declared, local, present file — never fetched by sing-box on the cold-start
+// critical path.
+//
+// DNS rules MAY reference rule_set (e.g. geosite-cn routes known-Chinese
+// domains to dns-direct): that is what enables real-IP resolution for domestic
+// sites on .com TLDs, which no hand-curated domain_suffix list can cover. What
+// must hold is that the referenced rule-set is declared and on disk, so a
+// missing file degrades gracefully rather than becoming a fatal sing-box
+// startup error (sing-box treats a dangling rule-set as fatal).
 func Validate(cfg *SingboxConfig) error {
-	// Check for remote rule-sets (not allowed - should use local only)
+	// Declared rule-sets must be local and present on disk.
+	declared := map[string]bool{}
 	for _, rs := range cfg.Route.RuleSet {
 		if rs.Type == "remote" {
 			return fmt.Errorf("config references remote rule-set %s - should use local only", rs.Tag)
 		}
 		if rs.Type == "local" && rs.Path != "" {
-			if _, err := os.Stat(rs.Path); os.IsNotExist(err) {
-				return fmt.Errorf("rule-set %s references non-existent file: %s", rs.Tag, rs.Path)
+			st, err := os.Stat(rs.Path)
+			if err != nil || st.Size() == 0 {
+				return fmt.Errorf("rule-set %s references non-existent or empty file: %s", rs.Tag, rs.Path)
+			}
+		}
+		declared[rs.Tag] = true
+	}
+
+	// Every rule_set a DNS rule references must be a declared rule-set.
+	for _, rule := range cfg.DNS.Rules {
+		for _, rs := range rule.RuleSet {
+			if !declared[rs] {
+				return fmt.Errorf("DNS rule references undeclared rule-set %s", rs)
 			}
 		}
 	}
 
-	// Check DNS rules don't use rule_set (we use domain_suffix instead)
-	for _, rule := range cfg.DNS.Rules {
-		if len(rule.RuleSet) > 0 {
-			return fmt.Errorf("DNS rule references rule_set %v - should use domain_suffix", rule.RuleSet)
+	// Every rule_set a route rule references must be a declared rule-set.
+	for _, rule := range cfg.Route.Rules {
+		for _, rs := range rule.RuleSet {
+			if !declared[rs] {
+				return fmt.Errorf("route rule references undeclared rule-set %s", rs)
+			}
 		}
 	}
 

@@ -109,7 +109,10 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	defer Stop()
 	_ = utils.WriteState(s.snapshot())
 
-	scheduleOn := s.schedule.Enabled()
+	// The scheduler runs whenever the config carries a ladder — not just when a
+	// peak window is configured. Without a peak profile it has no clock work to
+	// do, but it is still the thing that applies a manual `mole ceiling` pin.
+	scheduleOn := len(s.schedule.Rungs()) >= 2
 
 	var wg sync.WaitGroup
 	n := 3
@@ -141,9 +144,9 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		s.runKeepalive(ctx)
 	}()
 
-	// Goroutine D (optional): switch the Brutal ceiling between peak/off-peak
-	// profiles on the local clock so a single fixed rate can't flood the path at
-	// peak or throttle it off-peak.
+	// Goroutine D (optional): drive the Brutal ceiling — follow the local clock
+	// between peak/off-peak profiles so a single fixed rate can't flood the path
+	// at peak or throttle it off-peak, unless a manual pin overrides it.
 	if scheduleOn {
 		go func() {
 			defer wg.Done()
@@ -370,12 +373,21 @@ func (s *Supervisor) keepaliveOnce() {
 	_ = utils.WriteState(s.stateSnapshotLocked())
 }
 
-// runBandwidthScheduler flips the `proxy` selector between the peak and off-peak
-// hy2 outbounds on the local clock. It never restarts sing-box: the switch is a
-// single Clash-API call, so the TUN and in-flight connections survive untouched.
+// runBandwidthScheduler points the `proxy` selector at the ladder rung carrying
+// the ceiling that should be in force. It never restarts sing-box: the switch is
+// a single Clash-API call, so the TUN and in-flight connections survive untouched.
 // Before each flip it pre-warms the target outbound (a delay probe re-dials its
 // QUIC session) so the first connection after the switch is instant, not a fresh
 // handshake.
+//
+// Two inputs decide the rung, in priority order:
+//  1. a manual pin from `mole ceiling <n>` (~/.mole/ceiling), which wins outright
+//  2. otherwise the local clock's peak/off-peak profile
+//
+// The pin is re-read every tick rather than latched at startup, so `mole ceiling`
+// takes effect on a running daemon without signalling it. The CLI also fires its
+// own Clash call so the change is immediate instead of up to a tick late; this
+// loop is what makes it *stick* against the clock.
 func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 	// Selector flips ride the Clash API; wait for it like the probe/keepalive do.
 	if err := s.waitClashReady(ctx, 10*time.Second); err != nil {
@@ -383,10 +395,23 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 	}
 
 	applied := ""
+	warnedPin := 0 // last bad pin we complained about, so we complain once per value
 	apply := func() {
 		now := time.Now()
 		member := s.schedule.Member(now)
 		name, _, down := s.schedule.Profile(now)
+		// A pin only counts if the config actually carries that rung — otherwise
+		// we would select a member sing-box has never heard of and the call would
+		// fail every tick. An out-of-range pin degrades to clock control.
+		if pin := utils.ReadCeiling(); pin > 0 {
+			if s.schedule.HasRung(pin) {
+				member, name, down = BandwidthRungTag(pin), "pinned", pin
+				warnedPin = 0
+			} else if warnedPin != pin {
+				warnedPin = pin
+				log.Printf("bandwidth scheduler: pinned ceiling %d Mbps has no rung in this config (available: %v) — following the clock", pin, s.schedule.Rungs())
+			}
+		}
 		if member == applied {
 			return
 		}

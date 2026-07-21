@@ -40,3 +40,10 @@ func StatePath() string { return filepath.Join(MoleDir(), "state.json") }
 
 // CustomRulesPath is the optional JSON file for user-defined routing rules.
 func CustomRulesPath() string { return filepath.Join(MoleDir(), "custom-rules.json") }
+
+// CeilingPath holds a manual Brutal-ceiling pin (`mole ceiling <n>`). Its
+// presence overrides the supervisor's clock-driven profile; absent means auto.
+// It is deliberately a file of its own rather than a field in state.json:
+// state.json has a single writer (the daemon), and the ceiling CLI runs as a
+// separate process, so sharing that file would race.
+func CeilingPath() string { return filepath.Join(MoleDir(), "ceiling") }
