@@ -1,6 +1,6 @@
 # mole
 
-A tiny CLI that deploys a VPS and runs a VPN through it — 5 commands, nothing else.
+A tiny CLI that deploys a VPS and spins up a CN-direct VPN through it — deploy, connect, done.
 
 Built on [sing-box](https://sing-box.sagernet.org/) with CN-direct routing baked in.
 
