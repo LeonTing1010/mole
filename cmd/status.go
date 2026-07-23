@@ -36,6 +36,14 @@ func runStatus(_ *cobra.Command, _ []string) error {
 		fmt.Println("   Active:  none — run `mole server deploy`")
 	}
 
+	if utils.KillSwitchLoaded() {
+		if running {
+			fmt.Println("   Shield:  🛡️ kill switch armed — foreign egress locked to tunnel, CN direct")
+		} else {
+			fmt.Println("   Shield:  🛡️ kill switch STILL armed from an unclean exit — foreign is blocked; `mole up` or `mole down` to resolve")
+		}
+	}
+
 	if running {
 		printSupervisorState()
 		if info, err := utils.GetMyIPInfo(); err == nil {

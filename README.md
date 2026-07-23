@@ -80,6 +80,21 @@ Rule-sets (`geoip-cn`, `geosite-cn`) and the curated direct-domain list are
 (mole still starts; that classification is just skipped) rather than refusing to
 start, so a dead VPS never becomes a hard startup failure.
 
+## Kill switch (macOS)
+
+sing-box's TUN routes only protect while sing-box is alive — if it dies, its
+routes vanish and foreign connections silently fall back to the physical
+interface. `mole up` therefore arms a PF anchor (`com.apple/mole`) **before**
+starting sing-box: physical-interface egress is blocked except for the VPS
+endpoint, China IPv4 space (kept in sync weekly, embedded fallback), the LAN,
+and DHCP. Domestic traffic stays direct and unrestricted at all times; foreign
+traffic can only exist inside the tunnel — a dead sing-box means foreign is
+*blocked*, not leaked (fail-closed).
+
+`mole down` disarms it. If the daemon is SIGKILL'd the anchor deliberately
+stays armed (that's the point); `mole status` calls this out, and the next
+`mole up`/`mole down` resolves it. Opt out with `mole up --no-killswitch`.
+
 ## Requirements
 
 - macOS or Linux (TUN requires root; `mole up` invokes `sudo sing-box`)

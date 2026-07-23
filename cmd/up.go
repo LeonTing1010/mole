@@ -18,6 +18,7 @@ import (
 )
 
 var internalDaemon bool
+var noKillSwitch bool
 
 // maskURI replaces the user:password portion of a URI with "***" for logging.
 func maskURI(s string) string {
@@ -38,6 +39,7 @@ var upCmd = &cobra.Command{
 func init() {
 	upCmd.Flags().BoolVar(&internalDaemon, "internal-daemon", false, "")
 	_ = upCmd.Flags().MarkHidden("internal-daemon")
+	upCmd.Flags().BoolVar(&noKillSwitch, "no-killswitch", false, "skip the PF kill switch (foreign traffic may leak to the physical interface if sing-box dies)")
 }
 
 func runUp(_ *cobra.Command, _ []string) error {
@@ -83,6 +85,12 @@ func runParent() error {
 	// repo, so it can update without recompiling. Falls back to the embedded
 	// copy if the fetch fails; never blocks startup.
 	utils.EnsureBuiltinRules()
+
+	// Pre-cache the China IPv4 CIDR list the kill-switch PF table loads from.
+	// Same best-effort contract; the daemon falls back to the embedded copy.
+	if !noKillSwitch {
+		utils.EnsureCNCIDRs()
+	}
 
 	cfg, err := config.Build(uri)
 	if err != nil {
@@ -155,6 +163,22 @@ func runDaemon() error {
 		fmt.Printf("⚠️  UDP buffer tuning failed: %v\n", err)
 	}
 	defer utils.RestoreUDPBuffers()
+
+	// Arm the PF kill switch BEFORE sing-box starts: foreign egress is only
+	// allowed through the tunnel, so there is no window — not even during
+	// startup — where a foreign connection can leak out of the physical
+	// interface. Domestic (CN) traffic stays direct and unrestricted.
+	// Deliberately NOT unloaded on daemon death by any supervisor: if this
+	// process is SIGKILL'd the anchor stays armed and foreign stays blocked
+	// (fail-closed) until the next `mole up`/`mole down`.
+	if runtime.GOOS == "darwin" && !noKillSwitch {
+		if err := utils.LoadKillSwitch(srv.IP); err != nil {
+			fmt.Printf("⚠️  kill switch failed to arm: %v — foreign traffic will LEAK direct if sing-box dies\n", err)
+		} else {
+			fmt.Println("🛡️  kill switch armed: foreign egress locked to the tunnel, CN direct unrestricted")
+			defer utils.UnloadKillSwitch()
+		}
+	}
 
 	core.SetServerAddress(srv.IP)
 

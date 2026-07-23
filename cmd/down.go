@@ -45,7 +45,12 @@ func runDown(cmd *cobra.Command, args []string) error {
 
 	if len(daemons) == 0 && len(singboxes) == 0 {
 		// Nothing alive — still tidy up any host state a previous unclean
-		// exit may have left behind.
+		// exit may have left behind. That includes a kill switch armed by a
+		// SIGKILL'd daemon: it is fail-closed by design, and this is exactly
+		// the "next mole down" that disarms it.
+		if utils.KillSwitchLoaded() {
+			utils.UnloadKillSwitch()
+		}
 		utils.RestoreDNS()
 		utils.RestoreUDPBuffers()
 		utils.RemovePID()
@@ -87,6 +92,10 @@ func runDown(cmd *cobra.Command, args []string) error {
 	// changed between runs.
 	core.KillOrphanedSingboxes(utils.SingboxConfigPath())
 
+	// The daemon's own deferred unload only runs on orderly exit; after a
+	// SIGKILL path the anchor is still armed. Unload is idempotent, so just
+	// always disarm here.
+	utils.UnloadKillSwitch()
 	utils.RestoreDNS()
 	utils.RestoreUDPBuffers()
 	utils.RemovePID()
