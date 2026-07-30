@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -87,7 +89,10 @@ func (s *Server) Ready() bool { return s.IP != "" }
 // URI as before.
 func (s *Server) URI() string {
 	host := s.IP
-	if strings.Contains(host, ":") && host[0] != '[' {
+	if host == "" {
+		host = s.IPv6
+	}
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
 		host = "[" + host + "]"
 	}
 	q := "insecure=1&sni=bing.com"
@@ -180,6 +185,13 @@ var useCmd = &cobra.Command{
 	RunE:  runUse,
 }
 
+var serverImportCmd = &cobra.Command{
+	Use:   "import <hysteria2://...>",
+	Short: "Add a server from a subscription URI (no mole-server required)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runImport,
+}
+
 func init() {
 	serverCmd.AddCommand(serverDeployCmd)
 	serverCmd.AddCommand(serverDestroyCmd)
@@ -188,6 +200,7 @@ func init() {
 	serverCmd.AddCommand(serverAdoptCmd)
 	serverCmd.AddCommand(serverStopCmd)
 	serverCmd.AddCommand(serverStartCmd)
+	serverCmd.AddCommand(serverImportCmd)
 
 	serverDeployCmd.Flags().String("region", "nrt", "server region (nrt, sgp, lax, ...)")
 	serverDeployCmd.Flags().String("plan", "vc2-1c-1gb", "server plan")
@@ -199,6 +212,8 @@ func init() {
 	serverAdoptCmd.Flags().String("name", "", "Local name for the adopted server (defaults to the server's label)")
 	serverAdoptCmd.Flags().Int("port", 443, "Hysteria2 port the adopted instance listens on")
 	serverAdoptCmd.Flags().String("password", "", "Hysteria2 password (required — the server does not retain this)")
+
+	serverImportCmd.Flags().String("name", "", "Local name (defaults to the URI's #fragment)")
 }
 
 // ── deploy ─────────────────────────────────────────────────────
@@ -342,7 +357,7 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 			fmt.Printf("ℹ️  Server says %s is already gone — removing local entry\n", target.InstanceID)
 		case forceLocal:
 			fmt.Printf("⚠️  Server DELETE failed: %v\n", err)
-			fmt.Printf("    --force-local set; removing local entry anyway. Verify the remote instance is really gone before forcing removal.\n", target.InstanceID)
+			fmt.Printf("    --force-local set; removing local entry anyway. Verify the remote instance is really gone before forcing removal.\n")
 		default:
 			return fmt.Errorf("server delete failed: %w\n    The local entry was NOT removed. If the instance is really gone on the server, retry with --force-local.", err)
 		}
@@ -528,6 +543,125 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("✅ Adopted %s as %q (%s)\n", instanceID, name, srv.IP)
 	return nil
+}
+
+// runImport adds a server from a subscription URI without contacting
+// mole-server — the inverse of the link mole-server (or any hy2 endpoint) hands
+// out. This is the path that lets mole act as a pure client: paste the URI,
+// connect, no control plane required.
+func runImport(cmd *cobra.Command, args []string) error {
+	uri := args[0]
+	name, _ := cmd.Flags().GetString("name")
+
+	srv, err := serverFromURI(uri)
+	if err != nil {
+		return err
+	}
+	if name != "" {
+		srv.Name = name
+	}
+	if srv.Name == "" {
+		srv.Name = serverHost(*srv)
+		if srv.Name == "" {
+			srv.Name = "imported"
+		}
+	}
+
+	servers, _ := loadServers()
+	if indexByName(servers, srv.Name) >= 0 {
+		return fmt.Errorf("local server %q already exists; pass --name to use a different one", srv.Name)
+	}
+	for _, s := range servers {
+		if serverHost(s) == serverHost(*srv) && s.Port == srv.Port {
+			return fmt.Errorf("a server at %s:%d already exists as %q", serverHost(*srv), srv.Port, s.Name)
+		}
+	}
+	if len(servers) == 0 {
+		srv.Active = true
+	}
+	srv.CreatedAt = time.Now().Format(time.RFC3339)
+	servers = append(servers, *srv)
+	if err := saveServers(servers); err != nil {
+		return err
+	}
+	fmt.Printf("✅ Imported %q (%s:%d)\n", srv.Name, serverHost(*srv), srv.Port)
+	return nil
+}
+
+// serverHost returns the effective connect address (IPv4 preferred, else IPv6)
+// so dedupe and display don't trip over the IP/IPv6 split in the struct.
+func serverHost(s Server) string {
+	if s.IP != "" {
+		return s.IP
+	}
+	return s.IPv6
+}
+
+// serverFromURI is the inverse of Server.URI(): it parses a hysteria2
+// subscription link into a Server entry, round-tripping every field Server.URI
+// emits (password, host, port, obfs, bandwidth ceilings, peak window, name).
+// It never talks to mole-server.
+func serverFromURI(raw string) (*Server, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid URI: %w", err)
+	}
+	if u.Scheme != "hy2" && u.Scheme != "hysteria2" {
+		return nil, fmt.Errorf("unsupported scheme %q: import supports hysteria2:// links only", u.Scheme)
+	}
+	password := u.User.Username()
+	if password == "" {
+		return nil, fmt.Errorf("URI missing password")
+	}
+	// url.Hostname()/Port() correctly strip and split bracketed IPv6
+	// (e.g. [2606:…]:8443); Server.URI() always emits IPv6 bracketed, so the
+	// link mole-server hands out parses back cleanly here.
+	host := u.Hostname()
+	if host == "" {
+		return nil, fmt.Errorf("URI missing host")
+	}
+	port, _ := strconv.Atoi(u.Port())
+	if port == 0 {
+		port = 443
+	}
+	srv := &Server{
+		Password: password,
+		Port:     uint16(port),
+	}
+	// Preserve the address family so the connect path binds the right one and
+	// Server.URI() round-trips byte-for-byte.
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		srv.IPv6 = host
+	} else {
+		srv.IP = host
+	}
+	q := u.Query()
+	if v := q.Get("obfs"); v != "" {
+		srv.Obfs = v
+		srv.ObfsPassword = q.Get("obfs-password")
+	}
+	if v := q.Get("upmbps"); v != "" {
+		srv.UpMbps, _ = strconv.Atoi(v)
+	}
+	if v := q.Get("downmbps"); v != "" {
+		srv.DownMbps, _ = strconv.Atoi(v)
+	}
+	if v := q.Get("peakdownmbps"); v != "" {
+		srv.PeakDownMbps, _ = strconv.Atoi(v)
+	}
+	if v := q.Get("peakupmbps"); v != "" {
+		srv.PeakUpMbps, _ = strconv.Atoi(v)
+	}
+	if v := q.Get("peakstart"); v != "" {
+		srv.PeakStartHour, _ = strconv.Atoi(v)
+	}
+	if v := q.Get("peakend"); v != "" {
+		srv.PeakEndHour, _ = strconv.Atoi(v)
+	}
+	if frag := u.Fragment; frag != "" {
+		srv.Name = frag
+	}
+	return srv, nil
 }
 
 // ── stop ─────────────────────────────────────────────────────
