@@ -89,6 +89,20 @@ func Build(serverURI string) (*SingboxConfig, error) {
 		DomainSuffix: []string{".cn", ".com.cn", ".net.cn", ".org.cn", ".gov.cn", ".edu.cn", ".mil.cn", ".中国"},
 		Server:       "dns-direct",
 	})
+	// Proxy-exception domains: a specific host that must ride the tunnel even
+	// though its parent suffix is direct (e.g. appstoreconnect.apple.com under
+	// apple.com — the CN GSLB hands the domestic path a crippled Kingsoft CDN
+	// console, and idmsa/developer.apple.com get their TLS ClientHello reset on
+	// direct). These must resolve to fake-ip so the connection carries the
+	// DOMAIN to the proxy and is re-resolved abroad; inheriting the parent's
+	// dns-direct rule below would instead pin them to the poisoned domestic IP.
+	// Emitted before directDomainSuffixes so the more-specific fake-ip rule wins.
+	if suffixes := proxyDomainSuffixes(directSources); len(suffixes) > 0 {
+		dnsRules = append(dnsRules, DNSRule{
+			DomainSuffix: suffixes,
+			Server:       "dns-fake",
+		})
+	}
 	// Custom direct domains resolve to real IPs too (see note above) so they
 	// route via geoip-cn / explicit ip_cidr rules instead of dying on fake-ip.
 	if suffixes := directDomainSuffixes(directSources); len(suffixes) > 0 {
@@ -492,6 +506,29 @@ func directDomainSuffixes(rules []RouteRule) []string {
 	var out []string
 	for _, r := range rules {
 		if r.Outbound != "direct" {
+			continue
+		}
+		for _, s := range r.DomainSuffix {
+			if !seen[s] {
+				seen[s] = true
+				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
+
+// proxyDomainSuffixes collects domain suffixes from rules explicitly routed to
+// the proxy. These are the mirror of directDomainSuffixes: a more-specific host
+// (e.g. appstoreconnect.apple.com) that must ride the tunnel despite living
+// under a direct parent suffix. They resolve to fake-ip so the connection
+// carries the domain to the proxy for re-resolution abroad — see the dns-fake
+// rule in Build, emitted before the dns-direct suffix rule so this wins.
+func proxyDomainSuffixes(rules []RouteRule) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range rules {
+		if r.Outbound != "proxy" {
 			continue
 		}
 		for _, s := range r.DomainSuffix {

@@ -19,7 +19,7 @@ git clone https://github.com/LeonTing1010/mole && cd mole && sudo make install
 ## Usage
 
 ```bash
-mole server deploy              # deploy a VPS (Vultr / DigitalOcean / …)
+mole server deploy              # deploy a VPS (provisioned via mole-server)
 mole server ls                 # list deployed VPS
 mole server use <name>         # pick the active server
 mole up                        # connect (runs in background)

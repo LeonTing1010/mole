@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"bytes"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,7 +29,7 @@ type Server struct {
 	Password   string `json:"password"`
 	CreatedAt  string `json:"created_at"`
 	Active     bool   `json:"active,omitempty"`
-	Stopped    bool   `json:"stopped,omitempty"` // true when halted on Vultr (no compute billing, storage only)
+	Stopped    bool   `json:"stopped,omitempty"` // true when halted on the server (no compute billing, storage only)
 	// Optional per-server tuning. All opt-in: zero values reproduce the previous
 	// URI byte-for-byte. Obfs/ObfsPassword turn on hysteria2 salamander
 	// obfuscation (must match the server, or the tunnel goes dark). UpMbps/DownMbps
@@ -150,13 +148,13 @@ var serverLsCmd = &cobra.Command{
 
 var serverReconcileCmd = &cobra.Command{
 	Use:   "reconcile",
-	Short: "Compare local servers.json against Vultr; show drift",
+	Short: "Compare local servers.json against the server; show drift",
 	RunE:  runReconcile,
 }
 
 var serverAdoptCmd = &cobra.Command{
 	Use:   "adopt <instance-id>",
-	Short: "Add an existing Vultr instance to the local server list",
+	Short: "Add an existing server instance to the local server list",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runAdopt,
 }
@@ -191,16 +189,16 @@ func init() {
 	serverCmd.AddCommand(serverStopCmd)
 	serverCmd.AddCommand(serverStartCmd)
 
-	serverDeployCmd.Flags().String("region", "nrt", "Vultr region (nrt, sgp, lax, ...)")
-	serverDeployCmd.Flags().String("plan", "vc2-1c-1gb", "Vultr plan")
+	serverDeployCmd.Flags().String("region", "nrt", "server region (nrt, sgp, lax, ...)")
+	serverDeployCmd.Flags().String("plan", "vc2-1c-1gb", "server plan")
 	serverDeployCmd.Flags().String("name", "", "Server name (auto-generated if empty)")
 	serverDeployCmd.Flags().Int("port", 443, "Hysteria2 port")
 
-	serverDestroyCmd.Flags().Bool("force-local", false, "Remove from local list even if the Vultr DELETE fails (use only when the remote instance is verified gone)")
+	serverDestroyCmd.Flags().Bool("force-local", false, "Remove from local list even if the server DELETE fails (use only when the remote instance is verified gone)")
 
-	serverAdoptCmd.Flags().String("name", "", "Local name for the adopted server (defaults to the Vultr label)")
+	serverAdoptCmd.Flags().String("name", "", "Local name for the adopted server (defaults to the server's label)")
 	serverAdoptCmd.Flags().Int("port", 443, "Hysteria2 port the adopted instance listens on")
-	serverAdoptCmd.Flags().String("password", "", "Hysteria2 password (required — Vultr does not store this)")
+	serverAdoptCmd.Flags().String("password", "", "Hysteria2 password (required — the server does not retain this)")
 }
 
 // ── deploy ─────────────────────────────────────────────────────
@@ -215,46 +213,32 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 		name = fmt.Sprintf("%s-%d", region, time.Now().Unix())
 	}
 
-	password := randomHex(8)
-
 	fmt.Printf("🚀 Deploying %s in %s (%s, port %d)\n", name, region, plan, port)
 
-	scriptID, err := vultrCreateStartupScript(name, port, password)
-	if err != nil {
-		return fmt.Errorf("create startup script: %w", err)
-	}
-
-	createResp, err := vultrAPI("POST", "/instances", map[string]any{
+	resp, err := serverAPI("POST", "/instances", map[string]any{
 		"region":      region,
 		"plan":        plan,
-		"os_id":       "2136", // Ubuntu 22.04 LTS
 		"label":       name,
-		"script_id":   scriptID,
+		"port":        port,
 		"enable_ipv6": true,
-		"backups":     "disabled",
 	})
 	if err != nil {
-		// Instance creation failed; the startup script we just made is now an
-		// orphan resource on Vultr. Best-effort cleanup so the user isn't
-		// charged for / cluttered with abandoned scripts.
-		_, _ = vultrAPI("DELETE", "/startup-scripts/"+scriptID, nil)
-		return fmt.Errorf("create instance: %w", err)
+		return fmt.Errorf("deploy: %w", err)
 	}
 
 	var created struct {
 		Instance struct {
-			ID string `json:"id"`
+			ID       string `json:"id"`
+			Password string `json:"password"`
 		} `json:"instance"`
 	}
-	if err := json.Unmarshal(createResp, &created); err != nil {
+	if err := json.Unmarshal(resp, &created); err != nil {
 		return err
 	}
 	instanceID := created.Instance.ID
+	password := created.Instance.Password
 	fmt.Printf("✅ Instance %s created — waiting for IP...\n", instanceID)
 
-	// Persist a partial entry IMMEDIATELY so a crash before waitForIP /
-	// saveServers below doesn't leak an invisible Vultr instance. The IP is
-	// filled in once Vultr assigns one; until then `Ready() == false`.
 	srv := Server{
 		Name: name, InstanceID: instanceID, Region: region,
 		Port: uint16(port), Password: password,
@@ -267,7 +251,7 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 	servers = append(servers, srv)
 	if err := saveServers(servers); err != nil {
 		fmt.Printf("⚠️  Could not record %s locally: %v\n", instanceID, err)
-		fmt.Printf("    The instance IS running on Vultr. Recover it with:\n")
+		fmt.Printf("    The instance IS running. Recover it with:\n")
 		fmt.Printf("        mole server adopt %s --password %s --port %d\n", instanceID, password, port)
 		return err
 	}
@@ -310,17 +294,15 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 
 func waitForIP(instanceID string) (string, string, error) {
 	for i := 0; i < 30; i++ {
-		resp, err := vultrAPI("GET", "/instances/"+instanceID, nil)
+		resp, err := serverAPI("GET", "/instances/"+instanceID, nil)
 		if err == nil {
 			var r struct {
-				Instance struct {
-					MainIP string `json:"main_ip"`
-					V6IP   string `json:"v6_main_ip"`
-				} `json:"instance"`
+				MainIP string `json:"main_ip"`
+				V6IP   string `json:"v6_main_ip"`
 			}
 			if json.Unmarshal(resp, &r) == nil {
-				if ip := r.Instance.MainIP; ip != "" && ip != "0.0.0.0" {
-					return ip, r.Instance.V6IP, nil
+				if ip := r.MainIP; ip != "" && ip != "0.0.0.0" {
+					return ip, r.V6IP, nil
 				}
 			}
 		}
@@ -351,18 +333,18 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 	target := servers[idx]
 
 	if target.InstanceID != "" {
-		_, err := vultrAPI("DELETE", "/instances/"+target.InstanceID, nil)
+		_, err := serverAPI("DELETE", "/instances/"+target.InstanceID, nil)
 		switch {
 		case err == nil:
 			// Remote delete succeeded — fall through and remove local entry.
-		case IsVultrNotFound(err):
-			// Already gone on Vultr; safe to drop the local entry.
-			fmt.Printf("ℹ️  Vultr says %s is already gone — removing local entry\n", target.InstanceID)
+		case IsServerNotFound(err):
+			// Already gone; safe to drop the local entry.
+			fmt.Printf("ℹ️  Server says %s is already gone — removing local entry\n", target.InstanceID)
 		case forceLocal:
-			fmt.Printf("⚠️  Vultr DELETE failed: %v\n", err)
-			fmt.Printf("    --force-local set; removing local entry anyway. Verify on the Vultr dashboard that %s is really gone.\n", target.InstanceID)
+			fmt.Printf("⚠️  Server DELETE failed: %v\n", err)
+			fmt.Printf("    --force-local set; removing local entry anyway. Verify the remote instance is really gone before forcing removal.\n", target.InstanceID)
 		default:
-			return fmt.Errorf("vultr delete failed: %w\n    The local entry was NOT removed. If the instance is really gone on Vultr, retry with --force-local.", err)
+			return fmt.Errorf("server delete failed: %w\n    The local entry was NOT removed. If the instance is really gone on the server, retry with --force-local.", err)
 		}
 	}
 
@@ -417,9 +399,9 @@ func runReconcile(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("read local servers: %w", err)
 	}
-	remote, err := vultrListInstances()
+	remote, err := serverListInstances()
 	if err != nil {
-		return fmt.Errorf("list vultr instances: %w", err)
+		return fmt.Errorf("list server instances: %w", err)
 	}
 
 	localByID := make(map[string]Server, len(local))
@@ -428,7 +410,7 @@ func runReconcile(_ *cobra.Command, _ []string) error {
 			localByID[s.InstanceID] = s
 		}
 	}
-	remoteByID := make(map[string]vultrInstance, len(remote))
+	remoteByID := make(map[string]serverInstance, len(remote))
 	for _, r := range remote {
 		remoteByID[r.ID] = r
 	}
@@ -479,7 +461,7 @@ func runReconcile(_ *cobra.Command, _ []string) error {
 		fmt.Printf("%-12s  %-22s  %-24s  %-18s  %s\n", r.state, r.id, r.name, r.ip, r.message)
 	}
 	if len(rows) == 0 {
-		fmt.Println("(no instances on local or Vultr)")
+		fmt.Println("(no instances on local or server)")
 	}
 	return nil
 }
@@ -493,27 +475,25 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 	password, _ := cmd.Flags().GetString("password")
 
 	if password == "" {
-		return fmt.Errorf("--password is required: Vultr does not store the Hysteria2 password, you must supply the one used when the instance was created")
+		return fmt.Errorf("--password is required: the server does not retain the Hysteria2 password, you must supply the one used when the instance was created")
 	}
 
-	resp, err := vultrAPI("GET", "/instances/"+instanceID, nil)
+	resp, err := serverAPI("GET", "/instances/"+instanceID, nil)
 	if err != nil {
-		return fmt.Errorf("fetch vultr instance: %w", err)
+		return fmt.Errorf("fetch instance: %w", err)
 	}
 	var r struct {
-		Instance struct {
-			ID     string `json:"id"`
-			Label  string `json:"label"`
-			Region string `json:"region"`
-			MainIP string `json:"main_ip"`
-			V6IP   string `json:"v6_main_ip"`
-		} `json:"instance"`
+		ID     string `json:"id"`
+		Label  string `json:"label"`
+		Region string `json:"region"`
+		MainIP string `json:"main_ip"`
+		V6IP   string `json:"v6_main_ip"`
 	}
 	if err := json.Unmarshal(resp, &r); err != nil {
 		return err
 	}
 	if name == "" {
-		name = r.Instance.Label
+		name = r.Label
 		if name == "" {
 			name = "adopted-" + instanceID
 		}
@@ -531,10 +511,10 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 
 	srv := Server{
 		Name:       name,
-		InstanceID: r.Instance.ID,
-		Region:     r.Instance.Region,
-		IP:         r.Instance.MainIP,
-		IPv6:       r.Instance.V6IP,
+		InstanceID: r.ID,
+		Region:     r.Region,
+		IP:         r.MainIP,
+		IPv6:       r.V6IP,
 		Port:       uint16(port),
 		Password:   password,
 		CreatedAt:  time.Now().Format(time.RFC3339),
@@ -574,7 +554,7 @@ func runStop(_ *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("⏸️  Halting %s...\n", name)
-	_, err = vultrAPI("POST", "/instances/"+target.InstanceID+"/halt", nil)
+	_, err = serverAPI("POST", "/instances/"+target.InstanceID+"/halt", nil)
 	if err != nil {
 		return fmt.Errorf("halt instance: %w", err)
 	}
@@ -612,7 +592,7 @@ func runStart(_ *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("▶️  Starting %s...\n", name)
-	_, err = vultrAPI("POST", "/instances/"+target.InstanceID+"/start", nil)
+	_, err = serverAPI("POST", "/instances/"+target.InstanceID+"/start", nil)
 	if err != nil {
 		return fmt.Errorf("start instance: %w", err)
 	}
@@ -620,14 +600,12 @@ func runStart(_ *cobra.Command, args []string) error {
 	// Wait for the instance to be running
 	fmt.Println("   Waiting for instance to be ready...")
 	for i := 0; i < 30; i++ {
-		resp, err := vultrAPI("GET", "/instances/"+target.InstanceID, nil)
+		resp, err := serverAPI("GET", "/instances/"+target.InstanceID, nil)
 		if err == nil {
 			var r struct {
-				Instance struct {
-					Status string `json:"status"`
-				} `json:"instance"`
+				Status string `json:"status"`
 			}
-			if json.Unmarshal(resp, &r) == nil && r.Instance.Status == "active" {
+			if json.Unmarshal(resp, &r) == nil && r.Status == "active" {
 				break
 			}
 		}
@@ -686,7 +664,7 @@ func loadServers() ([]Server, error) {
 // saveServers writes the server list atomically (tmp + rename) so a crash
 // mid-write never leaves a half-written or empty file. Losing servers.json
 // means losing every InstanceID — the corresponding VPS instances become
-// invisible orphans on Vultr.
+// invisible orphans on the server.
 func saveServers(servers []Server) error {
 	data, err := json.MarshalIndent(servers, "", "  ")
 	if err != nil {
@@ -732,40 +710,40 @@ func indexByName(servers []Server, name string) int {
 	return -1
 }
 
-// ── Vultr API ─────────────────────────────────────────────────
+// ── mole-server API ────────────────────────────────────────────
 
-const vultrBase = "https://api.vultr.com/v2"
+const moleServerBase = "https://mole.taprun.dev/api"
 
-// VultrError carries the HTTP status from a failed Vultr API call so callers
-// can distinguish "instance is gone" (404) from generic transport / 5xx
-// failures. Without this distinction, `mole server destroy` cannot safely
+// ServerError carries the HTTP status from a failed mole-server API call so
+// callers can distinguish "instance is gone" (404) from generic transport /
+// 5xx failures. Without this distinction, `mole server destroy` cannot safely
 // decide whether to drop the local entry.
-type VultrError struct {
+type ServerError struct {
 	Method string
 	Path   string
 	Status int
 	Body   string
 }
 
-func (e *VultrError) Error() string {
-	return fmt.Sprintf("vultr %s %s: %d %s", e.Method, e.Path, e.Status, e.Body)
+func (e *ServerError) Error() string {
+	return fmt.Sprintf("server %s %s: %d %s", e.Method, e.Path, e.Status, e.Body)
 }
 
-// IsVultrNotFound reports whether err is a 404 from the Vultr API.
-func IsVultrNotFound(err error) bool {
-	var ve *VultrError
-	return errors.As(err, &ve) && ve.Status == 404
+// IsServerNotFound reports whether err is a 404 from the mole-server API.
+func IsServerNotFound(err error) bool {
+	var se *ServerError
+	return errors.As(err, &se) && se.Status == 404
 }
 
-func vultrAPIKey() (string, error) {
-	if k := strings.TrimSpace(os.Getenv("VULTR_API_KEY")); k != "" {
+func moleServerToken() (string, error) {
+	if k := strings.TrimSpace(os.Getenv("MOLE_SERVER_TOKEN")); k != "" {
 		return k, nil
 	}
-	return "", fmt.Errorf("VULTR_API_KEY environment variable is not set")
+	return "", fmt.Errorf("MOLE_SERVER_TOKEN environment variable is not set")
 }
 
-func vultrAPI(method, path string, body any) ([]byte, error) {
-	key, err := vultrAPIKey()
+func serverAPI(method, path string, body any) ([]byte, error) {
+	token, err := moleServerToken()
 	if err != nil {
 		return nil, err
 	}
@@ -774,8 +752,8 @@ func vultrAPI(method, path string, body any) ([]byte, error) {
 		b, _ := json.Marshal(body)
 		reqBody = bytes.NewReader(b)
 	}
-	req, _ := http.NewRequest(method, vultrBase+path, reqBody)
-	req.Header.Set("Authorization", "Bearer "+key)
+	req, _ := http.NewRequest(method, moleServerBase+path, reqBody)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
@@ -785,144 +763,30 @@ func vultrAPI(method, path string, body any) ([]byte, error) {
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		return nil, &VultrError{Method: method, Path: path, Status: resp.StatusCode, Body: string(data)}
+		return nil, &ServerError{Method: method, Path: path, Status: resp.StatusCode, Body: string(data)}
 	}
 	return data, nil
 }
 
-// vultrInstance is the subset of /instances list fields reconcile needs.
-type vultrInstance struct {
+// serverInstance is the subset of /api/instances list fields reconcile needs.
+type serverInstance struct {
 	ID     string `json:"id"`
 	Label  string `json:"label"`
 	Region string `json:"region"`
 	MainIP string `json:"main_ip"`
 }
 
-// vultrListInstances fetches every instance on the account. Vultr paginates
-// at 100/page; we follow the cursor until exhausted so a user with >100
-// instances doesn't get a silently-truncated reconcile.
-func vultrListInstances() ([]vultrInstance, error) {
-	var all []vultrInstance
-	cursor := ""
-	for {
-		path := "/instances?per_page=100"
-		if cursor != "" {
-			path += "&cursor=" + cursor
-		}
-		data, err := vultrAPI("GET", path, nil)
-		if err != nil {
-			return nil, err
-		}
-		var page struct {
-			Instances []vultrInstance `json:"instances"`
-			Meta      struct {
-				Links struct {
-					Next string `json:"next"`
-				} `json:"links"`
-			} `json:"meta"`
-		}
-		if err := json.Unmarshal(data, &page); err != nil {
-			return nil, err
-		}
-		all = append(all, page.Instances...)
-		if page.Meta.Links.Next == "" {
-			return all, nil
-		}
-		cursor = page.Meta.Links.Next
-	}
-}
-
-func vultrCreateStartupScript(name string, port int, password string) (string, error) {
-	script := hysteria2BootScript(port, password)
-	resp, err := vultrAPI("POST", "/startup-scripts", map[string]any{
-		"name":   name,
-		"type":   "boot",
-		"script": base64.StdEncoding.EncodeToString([]byte(script)),
-	})
+// serverListInstances fetches all instances via mole-server.
+func serverListInstances() ([]serverInstance, error) {
+	data, err := serverAPI("GET", "/instances", nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	var r struct {
-		StartupScript struct {
-			ID string `json:"id"`
-		} `json:"startup_script"`
+	var resp struct {
+		Instances []serverInstance `json:"instances"`
 	}
-	if err := json.Unmarshal(resp, &r); err != nil {
-		return "", err
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
 	}
-	return r.StartupScript.ID, nil
-}
-
-func hysteria2BootScript(port int, password string) string {
-	return fmt.Sprintf(`#!/bin/bash
-set -ex
-exec > /var/log/hysteria-install.log 2>&1
-
-apt update && apt install -y curl openssl iptables
-curl -fsSL https://get.hy2.sh/ | bash
-mkdir -p /etc/hysteria
-openssl ecparam -genkey -name prime256v1 -out /etc/hysteria/server.key
-openssl req -new -x509 -key /etc/hysteria/server.key -out /etc/hysteria/server.crt -subj /CN=bing.com -days 36500
-chown hysteria:hysteria /etc/hysteria/server.{key,crt} 2>/dev/null || true
-
-# Linux defaults cap UDP socket buffers at 208KB which causes ENOBUFS
-# under hy2/QUIC's high packet rates. Hysteria docs recommend 16MB.
-cat > /etc/sysctl.d/99-hysteria.conf <<'SYSCTL'
-net.core.rmem_max=16777216
-net.core.wmem_max=16777216
-net.core.rmem_default=2097152
-net.core.wmem_default=2097152
-SYSCTL
-sysctl -p /etc/sysctl.d/99-hysteria.conf
-
-cat > /etc/hysteria/config.yaml <<EOF
-listen: :%d
-tls:
-  cert: /etc/hysteria/server.crt
-  key: /etc/hysteria/server.key
-auth:
-  type: password
-  password: %s
-quic:
-  initStreamReceiveWindow:     16777216
-  maxStreamReceiveWindow:      16777216
-  initConnectionReceiveWindow: 33554432
-  maxConnectionReceiveWindow:  33554432
-  maxIdleTimeout:              60s
-masquerade:
-  type: proxy
-  proxy:
-    url: https://bing.com
-    rewriteHost: true
-EOF
-
-iptables -I INPUT -p udp --dport %d -j ACCEPT 2>/dev/null || true
-iptables -I INPUT -p tcp --dport %d -j ACCEPT 2>/dev/null || true
-
-systemctl enable hysteria-server
-systemctl restart hysteria-server
-
-# Verify the service actually came up. Without this, a config typo or a
-# rename in upstream's installer (the unit was 'hysteria.service' before
-# being renamed to 'hysteria-server.service' — that quietly broke deploys
-# until anyone noticed) leaves a "successful" Vultr instance with no
-# listener, and the only symptom is a confusing client-side timeout. Dump
-# diagnostics into the install log so the next operator can see exactly
-# what happened from the Vultr console.
-sleep 2
-if ! systemctl is-active --quiet hysteria-server; then
-    echo "ERROR: hysteria-server did not start"
-    systemctl status hysteria-server --no-pager || true
-    journalctl -u hysteria-server -n 100 --no-pager || true
-    exit 1
-fi
-ss -lunp | grep -E ":%d\b" || echo "WARN: no UDP listener on :%d"
-echo "OK: hysteria-server active"
-`, port, password, port, port, port, port)
-}
-
-func randomHex(n int) string {
-	b := make([]byte, n)
-	rand.Read(b)
-	return fmt.Sprintf("%x", b)
+	return resp.Instances, nil
 }

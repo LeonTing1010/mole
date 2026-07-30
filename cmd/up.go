@@ -63,7 +63,7 @@ func runParent() error {
 	// ps(1) to clean any leftover sing-box before we daemonize.
 	core.KillOrphanedSingboxes(utils.SingboxConfigPath())
 
-	// Auto-wake BEFORE sudo: the wake only needs VULTR_API_KEY (not root),
+	// Auto-wake BEFORE sudo: the wake only needs MOLE_SERVER_TOKEN (not root),
 	// and sudo strips environment variables, so we must do this while the
 	// user's env is still intact.
 	if _, err := ActiveServer(); err != nil && isStoppedError(err) {
@@ -300,7 +300,7 @@ func autoWakeServer() error {
 		return fmt.Errorf("server has no instance ID")
 	}
 
-	_, err = vultrAPI("POST", "/instances/"+target.InstanceID+"/start", nil)
+	_, err = serverAPI("POST", "/instances/"+target.InstanceID+"/start", nil)
 	if err != nil {
 		return fmt.Errorf("start instance: %w", err)
 	}
@@ -308,14 +308,12 @@ func autoWakeServer() error {
 	// Wait for the instance to be running
 	fmt.Println("   Waiting for instance to be ready...")
 	for i := 0; i < 30; i++ {
-		resp, err := vultrAPI("GET", "/instances/"+target.InstanceID, nil)
+		resp, err := serverAPI("GET", "/instances/"+target.InstanceID, nil)
 		if err == nil {
 			var r struct {
-				Instance struct {
-					Status string `json:"status"`
-				} `json:"instance"`
+				Status string `json:"status"`
 			}
-			if json.Unmarshal(resp, &r) == nil && r.Instance.Status == "active" {
+			if json.Unmarshal(resp, &r) == nil && r.Status == "active" {
 				break
 			}
 		}
