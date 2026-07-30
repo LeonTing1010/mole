@@ -31,6 +31,7 @@ type Server struct {
 	Password   string `json:"password"`
 	CreatedAt  string `json:"created_at"`
 	Active     bool   `json:"active,omitempty"`
+	Stopped    bool   `json:"stopped,omitempty"` // true when halted on Vultr (no compute billing, storage only)
 	// Optional per-server tuning. All opt-in: zero values reproduce the previous
 	// URI byte-for-byte. Obfs/ObfsPassword turn on hysteria2 salamander
 	// obfuscation (must match the server, or the tunnel goes dark). UpMbps/DownMbps
@@ -160,6 +161,20 @@ var serverAdoptCmd = &cobra.Command{
 	RunE:  runAdopt,
 }
 
+var serverStopCmd = &cobra.Command{
+	Use:   "stop <name>",
+	Short: "Halt a VPS (stops compute billing, keeps storage)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runStop,
+}
+
+var serverStartCmd = &cobra.Command{
+	Use:   "start <name>",
+	Short: "Start a halted VPS",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runStart,
+}
+
 var useCmd = &cobra.Command{
 	Use:   "use <name>",
 	Short: "Set the active VPS",
@@ -173,6 +188,8 @@ func init() {
 	serverCmd.AddCommand(serverLsCmd)
 	serverCmd.AddCommand(serverReconcileCmd)
 	serverCmd.AddCommand(serverAdoptCmd)
+	serverCmd.AddCommand(serverStopCmd)
+	serverCmd.AddCommand(serverStartCmd)
 
 	serverDeployCmd.Flags().String("region", "nrt", "Vultr region (nrt, sgp, lax, ...)")
 	serverDeployCmd.Flags().String("plan", "vc2-1c-1gb", "Vultr plan")
@@ -379,7 +396,9 @@ func runLs(_ *cobra.Command, _ []string) error {
 			marker = "▸ "
 		}
 		status := "ready"
-		if !s.Ready() {
+		if s.Stopped {
+			status = "stopped"
+		} else if !s.Ready() {
 			status = "provisioning"
 		}
 		ip := s.IP
@@ -531,6 +550,99 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// ── stop ─────────────────────────────────────────────────────
+
+func runStop(_ *cobra.Command, args []string) error {
+	name := args[0]
+	servers, err := loadServers()
+	if err != nil {
+		return fmt.Errorf("read local servers: %w", err)
+	}
+	idx := indexByName(servers, name)
+	if idx < 0 {
+		return fmt.Errorf("server %q not found", name)
+	}
+	target := servers[idx]
+
+	if target.Stopped {
+		fmt.Printf("ℹ️  %s is already stopped\n", name)
+		return nil
+	}
+
+	if target.InstanceID == "" {
+		return fmt.Errorf("server %q has no instance ID", name)
+	}
+
+	fmt.Printf("⏸️  Halting %s...\n", name)
+	_, err = vultrAPI("POST", "/instances/"+target.InstanceID+"/halt", nil)
+	if err != nil {
+		return fmt.Errorf("halt instance: %w", err)
+	}
+
+	servers[idx].Stopped = true
+	if err := saveServers(servers); err != nil {
+		return err
+	}
+	fmt.Printf("✅ %s halted (storage preserved, ~$0.5/mo)\n", name)
+	fmt.Println("   Resume with: mole server start " + name)
+	return nil
+}
+
+// ── start ────────────────────────────────────────────────────
+
+func runStart(_ *cobra.Command, args []string) error {
+	name := args[0]
+	servers, err := loadServers()
+	if err != nil {
+		return fmt.Errorf("read local servers: %w", err)
+	}
+	idx := indexByName(servers, name)
+	if idx < 0 {
+		return fmt.Errorf("server %q not found", name)
+	}
+	target := servers[idx]
+
+	if !target.Stopped {
+		fmt.Printf("ℹ️  %s is already running\n", name)
+		return nil
+	}
+
+	if target.InstanceID == "" {
+		return fmt.Errorf("server %q has no instance ID", name)
+	}
+
+	fmt.Printf("▶️  Starting %s...\n", name)
+	_, err = vultrAPI("POST", "/instances/"+target.InstanceID+"/start", nil)
+	if err != nil {
+		return fmt.Errorf("start instance: %w", err)
+	}
+
+	// Wait for the instance to be running
+	fmt.Println("   Waiting for instance to be ready...")
+	for i := 0; i < 30; i++ {
+		resp, err := vultrAPI("GET", "/instances/"+target.InstanceID, nil)
+		if err == nil {
+			var r struct {
+				Instance struct {
+					Status string `json:"status"`
+				} `json:"instance"`
+			}
+			if json.Unmarshal(resp, &r) == nil && r.Instance.Status == "active" {
+				break
+			}
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	servers[idx].Stopped = false
+	if err := saveServers(servers); err != nil {
+		return err
+	}
+	fmt.Printf("✅ %s started\n", name)
+	fmt.Println("   Run `mole up` to connect.")
+	return nil
+}
+
 // ── use ────────────────────────────────────────────────────────
 
 func runUse(_ *cobra.Command, args []string) error {
@@ -596,6 +708,9 @@ func ActiveServer() (*Server, error) {
 	}
 	for i, s := range servers {
 		if s.Active {
+			if servers[i].Stopped {
+				return nil, fmt.Errorf("active server %q is stopped — run `mole server start %s` to resume", servers[i].Name, servers[i].Name)
+			}
 			if !servers[i].Ready() {
 				return nil, fmt.Errorf("active server %q is still provisioning (no IP yet) — run `mole server reconcile` or wait", servers[i].Name)
 			}

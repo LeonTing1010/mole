@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -60,6 +62,16 @@ func runParent() error {
 	// still holding TUN + the Clash API port. Sweep both state.json and
 	// ps(1) to clean any leftover sing-box before we daemonize.
 	core.KillOrphanedSingboxes(utils.SingboxConfigPath())
+
+	// Auto-wake BEFORE sudo: the wake only needs VULTR_API_KEY (not root),
+	// and sudo strips environment variables, so we must do this while the
+	// user's env is still intact.
+	if _, err := ActiveServer(); err != nil && isStoppedError(err) {
+		fmt.Println("⏸️  Active server is stopped, waking it up...")
+		if err := autoWakeServer(); err != nil {
+			return fmt.Errorf("auto-wake failed: %w", err)
+		}
+	}
 
 	// TUN needs root. Re-exec through sudo so the daemon child inherits root
 	// and can launch sing-box directly (no sudo prompt in the detached child).
@@ -259,4 +271,61 @@ func waitForDaemonReady(pid int, timeout time.Duration) error {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+// isStoppedError reports whether err is the "server is stopped" error from ActiveServer.
+func isStoppedError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "is stopped")
+}
+
+// autoWakeServer starts the stopped active server and waits for it to be ready.
+func autoWakeServer() error {
+	servers, err := loadServers()
+	if err != nil {
+		return err
+	}
+	var idx int = -1
+	for i, s := range servers {
+		if s.Active {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("no active server")
+	}
+	target := servers[idx]
+
+	if target.InstanceID == "" {
+		return fmt.Errorf("server has no instance ID")
+	}
+
+	_, err = vultrAPI("POST", "/instances/"+target.InstanceID+"/start", nil)
+	if err != nil {
+		return fmt.Errorf("start instance: %w", err)
+	}
+
+	// Wait for the instance to be running
+	fmt.Println("   Waiting for instance to be ready...")
+	for i := 0; i < 30; i++ {
+		resp, err := vultrAPI("GET", "/instances/"+target.InstanceID, nil)
+		if err == nil {
+			var r struct {
+				Instance struct {
+					Status string `json:"status"`
+				} `json:"instance"`
+			}
+			if json.Unmarshal(resp, &r) == nil && r.Instance.Status == "active" {
+				break
+			}
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	servers[idx].Stopped = false
+	if err := saveServers(servers); err != nil {
+		return err
+	}
+	fmt.Printf("✅ %s started\n", target.Name)
+	return nil
 }
