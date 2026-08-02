@@ -34,7 +34,7 @@ func TestEmbeddedCNCIDRsIsUsable(t *testing.T) {
 }
 
 func TestBuildPFRulesShape(t *testing.T) {
-	rules := buildPFRules("45.32.28.60")
+	rules := buildPFRules([]string{"45.32.28.60"})
 
 	// The table must be declared before any rule references it.
 	if !strings.HasPrefix(strings.SplitN(rules, "\n", 3)[1], "table <mole_cn4>") {
@@ -57,5 +57,32 @@ func TestBuildPFRulesShape(t *testing.T) {
 		if !(vps < blk4 && cn < blk4) {
 			t.Fatalf("pass rules must precede the block for %s (quick = first match wins):\n%s", ifc, rules)
 		}
+	}
+}
+
+// A standby node must be reachable too. Passing only the active endpoint makes
+// every direct probe to another server fail at our own firewall, which reads
+// exactly like a dead node — and makes failing over to one impossible to
+// verify beforehand.
+func TestPFRulesPassEveryKnownServer(t *testing.T) {
+	rules := buildPFRules([]string{"45.32.28.60", "139.180.199.247"})
+	for _, ip := range []string{"45.32.28.60", "139.180.199.247"} {
+		if !strings.Contains(rules, "to "+ip+"\n") {
+			t.Errorf("no pass rule for %s:\n%s", ip, rules)
+		}
+	}
+	// Blanket blocks must still be present, or the change would have opened
+	// the very leak the anchor exists to close.
+	if !strings.Contains(rules, "block out quick") {
+		t.Error("block rules disappeared")
+	}
+}
+
+// Empty entries would render a syntactically invalid `pass out quick on en0 to`
+// and pfctl would reject the whole anchor — arming nothing at all.
+func TestPFRulesSkipEmptyAddresses(t *testing.T) {
+	rules := buildPFRules([]string{"", "45.32.28.60", "  "})
+	if strings.Contains(rules, "to \n") || strings.Contains(rules, "to   \n") {
+		t.Errorf("empty address emitted a malformed rule:\n%s", rules)
 	}
 }

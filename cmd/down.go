@@ -16,10 +16,46 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var destroyOnDown bool
+
 var downCmd = &cobra.Command{
 	Use:   "down",
 	Short: "Stop the background VPN",
 	RunE:  runDown,
+}
+
+func init() {
+	downCmd.Flags().BoolVar(&destroyOnDown, "destroy", false, "also destroy the active server (it bills until destroyed, not until stopped)")
+}
+
+// destroyActiveServerForDown deletes the active server on the way down.
+//
+// This is the complement to `mole up --idle-destroy`, and it covers the case
+// that one structurally cannot: the watcher lives inside the daemon, so it can
+// only notice disuse while mole is running. Going to bed with `mole down` kills
+// the only thing that was watching, and the server then bills all night. An
+// explicit "I'm done" is also a better signal than any traffic inference —
+// there is nothing to infer.
+//
+// Deliberately idempotent and silent when there is nothing to destroy: `mole
+// down` re-execs itself through sudo when it finds root-owned processes, so
+// this runs twice, and the second pass must not turn a successful teardown into
+// an error. It runs before that re-exec because the Vultr key lives in the
+// user's environment, which sudo drops — the same reason `mole up` does its
+// recoveries there.
+func destroyActiveServerForDown() error {
+	servers, err := loadServers()
+	if err != nil || len(servers) == 0 {
+		return nil
+	}
+	for _, s := range servers {
+		if !s.Active {
+			continue
+		}
+		fmt.Printf("🗑️  Destroying %s (it bills until destroyed, not until stopped)...\n", s.Name)
+		return destroyServerByName(s.Name, false)
+	}
+	return nil
 }
 
 // runDown drives the system back to a clean state and only prints success once
@@ -38,6 +74,15 @@ var downCmd = &cobra.Command{
 //  6. Restore host state (DNS / UDP buffers / pid / state files).
 //  7. Re-scan ps; only print success if nothing is left.
 func runDown(cmd *cobra.Command, args []string) error {
+	// Before the sudo hop below, and before the tunnel goes away: the Vultr API
+	// call rides the proxy, so doing it while the tunnel still works avoids
+	// depending on api.vultr.com being pleasant to reach direct from here.
+	if destroyOnDown {
+		if err := destroyActiveServerForDown(); err != nil {
+			return fmt.Errorf("destroy on down: %w (the VPN was NOT stopped; fix or re-run without --destroy)", err)
+		}
+	}
+
 	fmt.Println("🛑 Stopping VPN...")
 
 	daemons := collectMoleDaemons()
@@ -257,7 +302,18 @@ func reExecDownViaSudo() error {
 	if err != nil {
 		return err
 	}
-	args := append([]string{exe}, os.Args[1:]...)
+	// Drop --destroy: it was already carried out in the pre-sudo pass, which is
+	// the only one with the Vultr key. Passing it on would re-enter the destroy
+	// with the *next* server promoted to active and delete that one too — the
+	// idempotence of "destroy the active server" holds only for the last one
+	// standing.
+	args := []string{exe}
+	for _, a := range os.Args[1:] {
+		if a == "--destroy" {
+			continue
+		}
+		args = append(args, a)
+	}
 	c := exec.Command("sudo", args...)
 	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout

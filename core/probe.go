@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/crypto/blake2b"
+
 	"github.com/LeonTing1010/mole/utils"
 )
 
@@ -40,10 +42,17 @@ const ipBoundIf = 25
 //     the junk silently, so timeout had to be treated as OK and a blackhole
 //     could never be seen).
 //
+// obfsPassword must match the server's salamander key whenever the server runs
+// with obfuscation. An obfuscated server deobfuscates every datagram it
+// receives before handing it to QUIC, so a bare elicitation packet decodes to
+// noise and is dropped without a reply — the probe would report ProbeSilent
+// forever and the health verdict would sit at path-blackhole while the tunnel
+// carried traffic perfectly well. Empty means the server runs unobfuscated.
+//
 // Verdicts: response → ProbeAlive (+real RTT); "connection refused" (kernel's
 // surfacing of ICMP port unreachable) → ProbeRefused; deadline → ProbeSilent;
 // anything preventing the probe from running → ProbeError.
-func ProbeHy2UDP(addr string, timeout time.Duration) (time.Duration, utils.ProbeVerdict, error) {
+func ProbeHy2UDP(addr, obfsPassword string, timeout time.Duration) (time.Duration, utils.ProbeVerdict, error) {
 	ifi, err := defaultPhysicalInterface()
 	if err != nil {
 		return 0, utils.ProbeError, fmt.Errorf("no physical interface for direct probe: %w", err)
@@ -70,7 +79,7 @@ func ProbeHy2UDP(addr string, timeout time.Duration) (time.Duration, utils.Probe
 		return 0, utils.ProbeError, err
 	}
 	start := time.Now()
-	if _, err := conn.Write(vnElicitPacket()); err != nil {
+	if _, err := conn.Write(salamanderObfuscate(vnElicitPacket(), obfsPassword)); err != nil {
 		if isRefused(err) {
 			return 0, utils.ProbeRefused, fmt.Errorf("write: %w", err)
 		}
@@ -85,7 +94,8 @@ func ProbeHy2UDP(addr string, timeout time.Duration) (time.Duration, utils.Probe
 		// Any datagram back from the server (the socket is connected, so only
 		// this peer can be the source) proves path + process. We don't insist
 		// on strict VN framing — being liberal here can't create a false 🟢
-		// about the thing we measure.
+		// about the thing we measure. That also means the reply needs no
+		// deobfuscation: its arrival is the entire signal.
 		return rtt, utils.ProbeAlive, nil
 	case isRefused(err):
 		return 0, utils.ProbeRefused, fmt.Errorf("read: %w", err)
@@ -111,6 +121,34 @@ func vnElicitPacket() []byte {
 	pkt[14] = 8
 	_, _ = rand.Read(pkt[15:23])
 	return pkt
+}
+
+// salamanderSaltLen is the salt hysteria2 prepends to every obfuscated packet.
+const salamanderSaltLen = 8
+
+// salamanderObfuscate wraps pkt exactly as hysteria2's salamander obfuscator
+// does: a random 8-byte salt, followed by the payload XOR'd with a repeating
+// BLAKE2b-256(PSK || salt). Returns pkt untouched when no password is set.
+//
+// The server applies the inverse before QUIC ever sees the bytes, so getting
+// this wrong is indistinguishable from a dead path — which is precisely the
+// misreading this function exists to prevent.
+func salamanderObfuscate(pkt []byte, password string) []byte {
+	if password == "" {
+		return pkt
+	}
+	out := make([]byte, salamanderSaltLen+len(pkt))
+	if _, err := rand.Read(out[:salamanderSaltLen]); err != nil {
+		return pkt // cannot obfuscate; a silent verdict beats a nil packet
+	}
+	keyInput := make([]byte, 0, len(password)+salamanderSaltLen)
+	keyInput = append(keyInput, password...)
+	keyInput = append(keyInput, out[:salamanderSaltLen]...)
+	key := blake2b.Sum256(keyInput)
+	for i, c := range pkt {
+		out[salamanderSaltLen+i] = c ^ key[i%len(key)]
+	}
+	return out
 }
 
 // isRefused reports whether err is the kernel surfacing an ICMP

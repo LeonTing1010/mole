@@ -96,6 +96,13 @@ type TLSConfig struct {
 	Enabled    bool   `json:"enabled"`
 	ServerName string `json:"server_name,omitempty"`
 	Insecure   bool   `json:"insecure,omitempty"`
+	// Certificate pins the exact server certificate, as PEM lines. With it set,
+	// Insecure MUST stay false: the pin replaces CA trust entirely, so the tunnel
+	// verifies without a domain, an ACME cert, or an entry in a Certificate
+	// Transparency log. Without a pin, hysteria2's password is handed to an
+	// unverified peer — anyone able to steer the UDP flow completes TLS with a
+	// cert of their choosing and harvests both password and plaintext.
+	Certificate []string `json:"certificate,omitempty"`
 }
 
 type TransportConfig struct {

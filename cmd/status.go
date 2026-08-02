@@ -10,7 +10,7 @@ import (
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show VPN status, current mode, and exit IP",
+	Short: "Show VPN status, health, and the active bandwidth ceiling",
 	RunE:  runStatus,
 }
 
@@ -27,11 +27,7 @@ func runStatus(_ *cobra.Command, _ []string) error {
 	}
 
 	if active != nil {
-		line := fmt.Sprintf("   Active:  %s (%s)", active.Name, active.IP)
-		if info, err := utils.GetIPInfo(active.IP); err == nil && info.Country != "" {
-			line = fmt.Sprintf("   Active:  %s — %s, %s (%s)", active.Name, info.Country, info.City, active.IP)
-		}
-		fmt.Println(line)
+		fmt.Printf("   Active:  %s — %s (%s)\n", active.Name, active.Region, active.IP)
 	} else {
 		fmt.Println("   Active:  none — run `mole server deploy`")
 	}
@@ -46,11 +42,6 @@ func runStatus(_ *cobra.Command, _ []string) error {
 
 	if running {
 		printSupervisorState()
-		if info, err := utils.GetMyIPInfo(); err == nil {
-			fmt.Printf("   Exit IP: %s — %s, %s\n", info.IP, info.Country, info.City)
-		} else {
-			fmt.Printf("   Exit IP: (lookup failed: %v)\n", err)
-		}
 	} else if active != nil {
 		fmt.Println("   Run `mole up` to connect.")
 	}

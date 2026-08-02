@@ -350,10 +350,16 @@ func TestHysteria2CongestionControl(t *testing.T) {
 		return member
 	}
 
-	t.Run("default is Brutal 20/50", func(t *testing.T) {
+	// The default is deliberately low. Brutal holds its declared rate straight
+	// through loss, so a ceiling above the real link floods it into collapse
+	// while one below merely underuses it — an unmeasured path must start at the
+	// safe end. It is shared with the server list through core so the two cannot
+	// resolve "no ceiling configured" to different numbers.
+	t.Run("default is the shared conservative ceiling", func(t *testing.T) {
 		o := proxyOut(t, "hy2://p@example.com:443?sni=bing.com&insecure=1#s")
-		if o.UpMbps != 20 || o.DownMbps != 50 {
-			t.Errorf("got up=%d down=%d, want 20/50", o.UpMbps, o.DownMbps)
+		if o.UpMbps != core.DefaultUpMbps || o.DownMbps != core.DefaultDownMbps {
+			t.Errorf("got up=%d down=%d, want %d/%d",
+				o.UpMbps, o.DownMbps, core.DefaultUpMbps, core.DefaultDownMbps)
 		}
 	})
 

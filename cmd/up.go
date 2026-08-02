@@ -3,13 +3,13 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
 	"runtime"
-	"strings"
 	"syscall"
 	"time"
 
@@ -21,6 +21,7 @@ import (
 
 var internalDaemon bool
 var noKillSwitch bool
+var noDestroyOnLidClose bool
 
 // maskURI replaces the user:password portion of a URI with "***" for logging.
 func maskURI(s string) string {
@@ -42,6 +43,12 @@ func init() {
 	upCmd.Flags().BoolVar(&internalDaemon, "internal-daemon", false, "")
 	_ = upCmd.Flags().MarkHidden("internal-daemon")
 	upCmd.Flags().BoolVar(&noKillSwitch, "no-killswitch", false, "skip the PF kill switch (foreign traffic may leak to the physical interface if sing-box dies)")
+	upCmd.Flags().BoolVar(&noDestroyOnLidClose, "no-destroy-on-lid-close", false, "keep the server when the lid closes (it bills until destroyed, not until stopped)")
+	// The old spelling, kept working because it is in people's shell history.
+	// It was never accurate about what fired: idle and maintenance sleep counted
+	// too, which is the bug this rename came out of.
+	upCmd.Flags().BoolVar(&noDestroyOnLidClose, "no-destroy-on-sleep", false, "")
+	_ = upCmd.Flags().MarkDeprecated("no-destroy-on-sleep", "use --no-destroy-on-lid-close")
 }
 
 func runUp(_ *cobra.Command, _ []string) error {
@@ -63,13 +70,47 @@ func runParent() error {
 	// ps(1) to clean any leftover sing-box before we daemonize.
 	core.KillOrphanedSingboxes(utils.SingboxConfigPath())
 
-	// Auto-wake BEFORE sudo: the wake only needs MOLE_SERVER_TOKEN (not root),
+	// Auto-wake BEFORE sudo: the wake only needs VULTR_API_KEY (not root),
 	// and sudo strips environment variables, so we must do this while the
 	// user's env is still intact.
-	if _, err := ActiveServer(); err != nil && isStoppedError(err) {
-		fmt.Println("⏸️  Active server is stopped, waking it up...")
-		if err := autoWakeServer(); err != nil {
-			return fmt.Errorf("auto-wake failed: %w", err)
+	// Both recoveries run before sudo for the same reason, and both are
+	// deterministic: there is exactly one correct action and no judgement to
+	// make, so asking the operator to perform it by hand only adds a step that
+	// can be forgotten. Anything genuinely ambiguous still stops and says so.
+	if _, err := ActiveServer(); err != nil {
+		switch {
+		case isStoppedError(err):
+			fmt.Println("⏸️  Active server is stopped, waking it up...")
+			if err := autoWakeServer(); err != nil {
+				return fmt.Errorf("auto-wake failed: %w", err)
+			}
+		case isProvisioningError(err):
+			// An entry recorded mid-deploy is missing only its address, and
+			// only Vultr can supply it. Fetch it rather than reporting the
+			// server unusable and naming a command for the operator to run.
+			fmt.Println("⏳ Active server has no address yet, fetching it...")
+			if _, rerr := reconcileAddresses(); rerr != nil {
+				return fmt.Errorf("could not record the server's address: %w", rerr)
+			}
+			if _, rerr := ActiveServer(); rerr != nil {
+				return fmt.Errorf("%w (Vultr has not assigned an address yet — retry shortly)", rerr)
+			}
+		}
+	}
+
+	// Destroy-on-lid-close fires from inside the daemon, which sudo will have
+	// stripped the environment from, so the key has to be stashed here — the
+	// same pre-sudo window, and for the same reason, as the recoveries above.
+	//
+	// A missing key disarms the feature rather than failing the command: `mole
+	// up` has never needed one, and refusing to bring up a tunnel over a
+	// billing optimisation would be the wrong trade. Say so, though — silently
+	// not destroying is exactly the surprise that shows up on an invoice.
+	if !noDestroyOnLidClose {
+		if err := stashVultrKey(); err != nil {
+			fmt.Printf("⚠️  destroy-on-lid-close is OFF: %v\n", err)
+			fmt.Println("    The server will keep billing after this Mac is shut.")
+			noDestroyOnLidClose = true
 		}
 	}
 
@@ -119,10 +160,6 @@ func runParent() error {
 		return fmt.Errorf("save config: %w", err)
 	}
 	fmt.Printf("📋 Config: %s\n", cfgPath)
-
-	if info, err := utils.GetIPInfo(srv.IP); err == nil {
-		fmt.Printf("🌍 %s — %s, %s\n", srv.Name, info.Country, info.City)
-	}
 
 	fmt.Println("🚀 Starting VPN...")
 
@@ -184,12 +221,22 @@ func runDaemon() error {
 	// process is SIGKILL'd the anchor stays armed and foreign stays blocked
 	// (fail-closed) until the next `mole up`/`mole down`.
 	if runtime.GOOS == "darwin" && !noKillSwitch {
-		if err := utils.LoadKillSwitch(srv.IP); err != nil {
+		// Every recorded server, not just the active one: a probe to a standby
+		// node also leaves a physical interface, and blocking it would report
+		// that node dark whether or not it is.
+		if err := utils.LoadKillSwitch(knownServerIPs()...); err != nil {
 			fmt.Printf("⚠️  kill switch failed to arm: %v — foreign traffic will LEAK direct if sing-box dies\n", err)
 		} else {
 			fmt.Println("🛡️  kill switch armed: foreign egress locked to the tunnel, CN direct unrestricted")
 			defer utils.UnloadKillSwitch()
 		}
+	}
+
+	// The stashed key is only needed while this daemon runs. Remove it on any
+	// clean exit so the extra copy of a root-scoped credential does not outlive
+	// the feature that asked for it.
+	if !noDestroyOnLidClose {
+		defer os.Remove(utils.VultrKeyPath())
 	}
 
 	core.SetServerAddress(srv.IP)
@@ -199,10 +246,29 @@ func runDaemon() error {
 		// where DoT-to-1.1.1.1 hiccups got misread as VPS death and reported a
 		// healthy VPS as down in `mole status`.
 		ProbeAddr: fmt.Sprintf("%s:%d", srv.IP, srv.Port),
+		// The probe has to speak the server's obfuscation or it decodes to
+		// noise on arrival, goes unanswered, and reports a dark path through a
+		// working tunnel.
+		ObfsPassword: srv.ObfsPassword,
 		// Time-of-day Brutal ceiling. Inert unless the server sets a peak profile;
 		// when set, the config (built from the same server URI) carries the
 		// peak/off-peak selector and the supervisor flips it by the clock.
 		Schedule: srv.Schedule(),
+		// Idle-destroy. Off unless asked for; when on, the watcher deletes this
+		// server once nothing has gone abroad for the configured window and then
+		// stops the daemon, so the deferred DNS restore and kill-switch unload
+		// above run and the machine is left in a normal state rather than one
+		// where every foreign connection is fail-closed against a server that no
+		// longer exists.
+		// On by default. Closing the lid is the one unambiguous "done for now" a
+		// laptop produces, and the only such signal that survives the host going
+		// to sleep — anything measured by a timer or by traffic simply freezes
+		// there. Re-check the key rather than trusting the parent stashed it:
+		// this process may have been started straight from the daemon path.
+		DestroyOnLidClose: !noDestroyOnLidClose && vultrKeyAvailable(),
+		OnIdleDestroy: func() error {
+			return destroyServerByName(srv.Name, false)
+		},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -274,9 +340,11 @@ func waitForDaemonReady(pid int, timeout time.Duration) error {
 }
 
 // isStoppedError reports whether err is the "server is stopped" error from ActiveServer.
-func isStoppedError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "is stopped")
-}
+func isStoppedError(err error) bool { return errors.Is(err, ErrServerStopped) }
+
+// isProvisioningError reports the one failure that fixes itself: a local entry
+// created during a deploy whose address had not appeared yet.
+func isProvisioningError(err error) bool { return errors.Is(err, ErrServerProvisioning) }
 
 // autoWakeServer starts the stopped active server and waits for it to be ready.
 func autoWakeServer() error {
@@ -305,19 +373,30 @@ func autoWakeServer() error {
 		return fmt.Errorf("start instance: %w", err)
 	}
 
-	// Wait for the instance to be running
+	// Wait for the instance to actually come up, and say so if it doesn't.
+	// This loop used to fall out after 60s and clear Stopped regardless, which
+	// recorded the server as awake on the strength of having asked — `mole up`
+	// then built a tunnel to a halted box and left the supervisor to discover
+	// it. Automatic recovery is worth having precisely because it is verified;
+	// an unverified one just moves the failure somewhere less obvious.
 	fmt.Println("   Waiting for instance to be ready...")
-	for i := 0; i < 30; i++ {
+	deadline := time.Now().Add(3 * time.Minute)
+	running := false
+	for !running && time.Now().Before(deadline) {
 		resp, err := serverAPI("GET", "/instances/"+target.InstanceID, nil)
 		if err == nil {
 			var r struct {
 				Status string `json:"status"`
 			}
 			if json.Unmarshal(resp, &r) == nil && r.Status == "active" {
+				running = true
 				break
 			}
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(3 * time.Second)
+	}
+	if !running {
+		return fmt.Errorf("start was accepted but %s is still not running after 3m", target.Name)
 	}
 
 	servers[idx].Stopped = false

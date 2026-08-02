@@ -24,10 +24,33 @@ const ProxySelectorTag = "proxy"
 func BandwidthRungTag(down int) string { return fmt.Sprintf("proxy-bw-%d", down) }
 
 // standardRungs are the ceilings the ladder always offers when they fit under
-// the configured maximum. Roughly 1.5×-spaced: fine enough to track a link that
-// swings by an order of magnitude, coarse enough that switching is a decision
-// rather than a twitch.
-var standardRungs = []int{1, 2, 3, 5, 8, 12, 20, 30, 50}
+// the configured maximum. Roughly 1.5×-spaced up to 50: fine enough to track a
+// link that swings by an order of magnitude, coarse enough that switching is a
+// decision rather than a twitch.
+//
+// The spacing tightens above 50 on purpose. Down low, picking a rung too small
+// only leaves throughput unused, so wide steps cost little. Up high you are
+// closing in on the physical link, where the two directions stop being
+// symmetric: one rung short is a few Mbps unused, one rung long is Brutal
+// declaring more than the path can carry and flooding it into ENOBUFS. Near the
+// measured cap, step carefully.
+var standardRungs = []int{1, 2, 3, 5, 8, 12, 20, 30, 50, 65, 80}
+
+// Default Brutal ceiling for a server that carries no explicit one. Lives here
+// because both the config builder and the server list must resolve "unset" to
+// the same numbers — when they disagreed, the config laddered from one ceiling
+// while the supervisor scheduled over another, and the tunnel sat on the top
+// rung with nothing able to move it down.
+//
+// Deliberately conservative: Brutal ignores loss by design, so a ceiling above
+// the real link floods it into repeated collapse, while one below only leaves
+// throughput unused. Raise it per server with `mole ceiling` once measured.
+const (
+	DefaultUpMbps       = 5
+	DefaultDownMbps     = 20
+	DefaultPeakUpMbps   = 2
+	DefaultPeakDownMbps = 5
+)
 
 // BandwidthSchedule encodes a time-of-day Brutal ceiling for the hy2 outbound.
 //
@@ -120,6 +143,31 @@ func (s BandwidthSchedule) Rungs() []int {
 	}
 	sort.Ints(out)
 	return out
+}
+
+// StepDown returns the ceiling `steps` rungs below `down`, clamped to the
+// lowest rung the ladder offers. A `down` that is not itself a rung snaps to the
+// nearest rung at or below it first, so a stale pin can't wander off the ladder.
+//
+// This is what the supervisor's self-healing walks: a Brutal ceiling above what
+// the path can carry floods it, and the remedy is always to descend, never to
+// climb. Returns 0 when there is no ladder.
+func (s BandwidthSchedule) StepDown(down, steps int) int {
+	rungs := s.Rungs()
+	if len(rungs) == 0 {
+		return 0
+	}
+	i := 0
+	for j, n := range rungs {
+		if n <= down {
+			i = j
+		}
+	}
+	i -= steps
+	if i < 0 {
+		i = 0
+	}
+	return rungs[i]
 }
 
 // HasRung reports whether the ladder carries a given DOWN ceiling — i.e. whether

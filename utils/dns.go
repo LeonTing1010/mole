@@ -149,7 +149,20 @@ func getDNS(service string) ([]string, error) {
 	return dns, nil
 }
 
+// setDNS points one network service at the given resolvers.
+//
+// Skips sudo when already root, the way pfctl() does. Functionally this changes
+// nothing today — sudo invoked by root never authenticates — but the daemon
+// restores DNS from a context where asking a human for anything is impossible:
+// it runs unattended, and after a destroy-on-lid-close it runs with the lid shut.
+// Code on that path should not read as though it might prompt.
 func setDNS(service string, dns []string) error {
-	args := append([]string{"networksetup", "-setdnsservers", service}, dns...)
-	return exec.Command("sudo", args...).Run()
+	args := append([]string{"-setdnsservers", service}, dns...)
+	var cmd *exec.Cmd
+	if os.Geteuid() == 0 {
+		cmd = exec.Command("networksetup", args...)
+	} else {
+		cmd = exec.Command("sudo", append([]string{"networksetup"}, args...)...)
+	}
+	return cmd.Run()
 }

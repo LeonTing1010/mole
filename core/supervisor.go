@@ -16,6 +16,7 @@ import (
 type Supervisor struct {
 	configPath     string
 	probeAddr      string // "host:port" — direct UDP probe target
+	obfsPassword   string // salamander key the probe must speak; "" when unobfuscated
 	probeURL       string // URL driven through the proxy for keepalive (and fallback probe)
 	probeEvery     time.Duration
 	keepaliveEvery time.Duration
@@ -30,6 +31,10 @@ type Supervisor struct {
 	// connections are never torn down.
 	schedule BandwidthSchedule
 
+	// Destroy-on-lid-close. Inert unless both are set; see runSleepDestroy.
+	destroyOnLidClose bool
+	onIdleDestroy  func() error
+
 	stateMu sync.Mutex
 	state   *utils.State
 	// lastHealth (guarded by stateMu) is the previously observed synthesized
@@ -43,9 +48,14 @@ type Supervisor struct {
 
 // SupervisorOpts controls the supervisor's probe cadence. Zero values get sane defaults.
 type SupervisorOpts struct {
-	ClashAddr      string
-	ProbeAddr      string // VPS hy2 endpoint "ip:port" for direct UDP probe (recommended)
-	ProbeURL       string // URL driven through the proxy for keepalive; also the fallback probe when ProbeAddr is empty
+	ClashAddr string
+	ProbeAddr string // VPS hy2 endpoint "ip:port" for direct UDP probe (recommended)
+	ProbeURL  string // URL driven through the proxy for keepalive; also the fallback probe when ProbeAddr is empty
+	// ObfsPassword is the server's salamander key. The direct probe must speak
+	// the same obfuscation the server does, or every probe decodes to noise on
+	// arrival and is dropped unanswered — health would report a dark path
+	// through a perfectly healthy tunnel. Empty for unobfuscated servers.
+	ObfsPassword   string
 	ProbeEvery     time.Duration
 	KeepaliveEvery time.Duration // in-tunnel keepalive cadence; 0 → default
 	ProbeTimeMs    int
@@ -55,6 +65,14 @@ type SupervisorOpts struct {
 	// peak/off-peak selector that config.Build emits for the same server. Leave
 	// it zero to keep a plain fixed-bandwidth server.
 	Schedule BandwidthSchedule
+
+	// DestroyOnLidClose destroys the server when the lid is shut — the sleep
+	// notification, gated on the clamshell actually being closed, so idle and
+	// maintenance sleep do not count. macOS only. See runSleepDestroy for why
+	// this is the only trigger rather than one of several.
+	DestroyOnLidClose bool
+	// OnIdleDestroy performs the destroy. Required when DestroyOnLidClose is set.
+	OnIdleDestroy func() error
 }
 
 // NewSupervisor builds a supervisor ready to start. It does not start sing-box.
@@ -82,11 +100,14 @@ func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervis
 	return &Supervisor{
 		configPath:     configPath,
 		probeAddr:      opts.ProbeAddr,
+		obfsPassword:   opts.ObfsPassword,
 		probeURL:       opts.ProbeURL,
 		probeEvery:     opts.ProbeEvery,
 		keepaliveEvery: opts.KeepaliveEvery,
 		probeTimeMs:    opts.ProbeTimeMs,
 		schedule:       opts.Schedule,
+		destroyOnLidClose: opts.DestroyOnLidClose,
+		onIdleDestroy:  opts.OnIdleDestroy,
 		clash:          NewClashClient(opts.ClashAddr),
 		state: &utils.State{
 			Mode:      utils.ModeProxy,
@@ -95,8 +116,8 @@ func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervis
 			StartedAt: time.Now(),
 		},
 		lastHealth: utils.HealthOK,
-		stopCh: make(chan struct{}),
-		doneCh: make(chan struct{}),
+		stopCh:     make(chan struct{}),
+		doneCh:     make(chan struct{}),
 	}
 }
 
@@ -113,11 +134,18 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	// peak window is configured. Without a peak profile it has no clock work to
 	// do, but it is still the thing that applies a manual `mole ceiling` pin.
 	scheduleOn := len(s.schedule.Rungs()) >= 2
+	// Without a destroy hook the watcher could only log that it would have
+	// deleted something, so treat a missing hook as the feature being off rather
+	// than running a loop whose conclusion goes nowhere.
+	sleepOn := s.destroyOnLidClose && s.onIdleDestroy != nil
 
 	var wg sync.WaitGroup
 	n := 3
 	if scheduleOn {
-		n = 4
+		n++
+	}
+	if sleepOn {
+		n++
 	}
 	wg.Add(n)
 
@@ -152,6 +180,17 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			defer wg.Done()
 			defer recoverPanic("bandwidth-scheduler")
 			s.runBandwidthScheduler(ctx)
+		}()
+	}
+
+	// Goroutine E (optional): destroy the server on the way into sleep, so a
+	// laptop that has been shut for the night is not billing for a tunnel
+	// nobody can be using.
+	if sleepOn {
+		go func() {
+			defer wg.Done()
+			defer recoverPanic("sleep-destroy")
+			s.runSleepDestroy(ctx)
 		}()
 	}
 
@@ -253,7 +292,7 @@ func (s *Supervisor) probeOnce() {
 	if s.probeAddr != "" {
 		// Direct (interface-bound, outside-the-tunnel) probe to the VPS hy2
 		// endpoint; see ProbeHy2UDP for why both properties matter.
-		rtt, v, perr := ProbeHy2UDP(s.probeAddr, time.Duration(s.probeTimeMs)*time.Millisecond)
+		rtt, v, perr := ProbeHy2UDP(s.probeAddr, s.obfsPassword, time.Duration(s.probeTimeMs)*time.Millisecond)
 		delay = int(rtt / time.Millisecond)
 		verdict = v
 		err = perr
@@ -285,6 +324,49 @@ func (s *Supervisor) probeOnce() {
 	s.noteHealthLocked()
 
 	_ = utils.WriteState(s.stateSnapshotLocked())
+}
+
+// Self-healing cadence, in scheduler ticks (one tick = one minute).
+//
+// Asymmetric on purpose. Descending is cheap and reversible, so two bad minutes
+// are enough to act on; climbing back re-exposes the link to the ceiling that
+// was just failing, so it waits for a long clean stretch. healMaxBackoff bounds
+// the descent — past a few rungs the ceiling is no longer what is wrong, and the
+// ladder's own bottom rung is the real floor.
+const (
+	healBackoffTicks = 2
+	healRecoverTicks = 15
+	healMaxBackoff   = 3
+)
+
+// healState folds a stream of per-tick health observations into the number of
+// rungs the ceiling should sit below its clock/pin target.
+//
+// Kept as a value with no dependencies so the policy can be exercised directly:
+// the failure it guards against takes tens of minutes to reproduce against a
+// real link, which is exactly the kind of logic that otherwise only ever gets
+// tested in production.
+type healState struct{ backoff, bad, good int }
+
+// tick folds in one observation and returns the backoff to apply now.
+func (h *healState) tick(healthy bool) int {
+	if healthy {
+		h.bad, h.good = 0, h.good+1
+		if h.backoff > 0 && h.good >= healRecoverTicks {
+			h.backoff, h.good = h.backoff-1, 0
+			log.Printf("self-heal: %d min clean — raising the ceiling one rung (backoff %d)", healRecoverTicks, h.backoff)
+		}
+		return h.backoff
+	}
+	h.good, h.bad = 0, h.bad+1
+	// Stop descending at healMaxBackoff. Below that the ceiling is no longer the
+	// problem and dropping further only throttles a recovery we still want to be
+	// ready for.
+	if h.bad >= healBackoffTicks && h.backoff < healMaxBackoff {
+		h.backoff, h.bad = h.backoff+1, 0
+		log.Printf("self-heal: path unhealthy %d min — lowering the ceiling one rung (backoff %d)", healBackoffTicks, h.backoff)
+	}
+	return h.backoff
 }
 
 // noteHealthLocked logs one line whenever the synthesized health verdict
@@ -396,6 +478,8 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 
 	applied := ""
 	warnedPin := 0 // last bad pin we complained about, so we complain once per value
+	backoff := 0   // rungs currently stepped down below the clock/pin target
+	var heal healState
 	apply := func() {
 		now := time.Now()
 		member := s.schedule.Member(now)
@@ -410,6 +494,23 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 			} else if warnedPin != pin {
 				warnedPin = pin
 				log.Printf("bandwidth scheduler: pinned ceiling %d Mbps has no rung in this config (available: %v) — following the clock", pin, s.schedule.Rungs())
+			}
+		}
+		// Self-healing. The clock and the pin both encode what the link was
+		// measured to carry, and a link that is currently failing is by
+		// definition not carrying it. Brutal holds its declared rate straight
+		// through loss, so an over-set ceiling keeps flooding a path that is
+		// already dropping packets — descending is the only lever that helps, and
+		// it is the one that used to be missing: health was observed, logged, and
+		// then acted upon by nobody.
+		//
+		// The pin stays the resting point, not a floor. "3 Mbps is my normal"
+		// still means the tunnel returns to 3 once the path is clean; it should
+		// not mean the tunnel keeps hammering 3 through a blackout.
+		if backoff > 0 {
+			if lower := s.schedule.StepDown(down, backoff); lower > 0 && lower != down {
+				member, down = BandwidthRungTag(lower), lower
+				name = fmt.Sprintf("%s↓%d", name, backoff)
 			}
 		}
 		if member == applied {
@@ -435,6 +536,17 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 		log.Printf("bandwidth profile → %s (↓%d Mbps) via %s", name, down, member)
 	}
 
+	// retune adjusts the backoff from the health the probes are already
+	// measuring, so a degrading path lowers its own ceiling instead of waiting
+	// for someone to notice. Deliberately slow in both directions and asymmetric
+	// between them — see healState.
+	retune := func() {
+		s.stateMu.Lock()
+		healthy := s.state.Health() == utils.HealthOK
+		s.stateMu.Unlock()
+		backoff = heal.tick(healthy)
+	}
+
 	apply()
 
 	t := time.NewTicker(time.Minute)
@@ -446,6 +558,7 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 		case <-s.stopCh:
 			return
 		case <-t.C:
+			retune()
 			apply()
 		}
 	}

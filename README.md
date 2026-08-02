@@ -58,6 +58,85 @@ The switch is a single Clash-API call, so the TUN, DNS and in-flight
 connections are untouched. Changing the ladder itself (the `servers.json`
 `up_mbps`/`down_mbps`/peak values) still needs `mole down && mole up`.
 
+A measured ceiling outlives the server that carried it. Destroy records the
+ladder in `~/.mole/ladders.json` keyed by **region**, and the next deploy into
+that region starts from it instead of the conservative defaults — otherwise
+destroy-on-lid-close would throw away an afternoon of measuring every night and
+quietly run the next day's tunnel at a fraction of what the path can carry.
+Nothing is inherited across regions, because the number describes a transit
+path and not a box. An inherited ceiling the new instance cannot hold is not a
+trap: the supervisor backs it down a rung at a time within minutes. One that is
+too low has nothing to correct it, which is the asymmetry the record exists
+for.
+
+## Destroy on lid close
+
+Vultr bills an instance for existing, not for running — a *stopped* instance
+costs exactly as much as a running one, and the only way to stop paying is to
+destroy it. So mole destroys the server when you shut the lid. **This is on by
+default.**
+
+```bash
+mole up                            # server is deleted when the lid closes
+mole up --no-destroy-on-lid-close  # keep it (and keep paying)
+mole down --destroy                # stop the VPN and delete the server now
+```
+
+The lid is the trigger because it is the only signal that is not a guess.
+Traffic is an unreliable stand-in for "this tunnel is wanted" in both
+directions — a machine at the login screen still chatters to push channels, and
+a peak-hour UDP blackout looks exactly like a quiet evening. A
+time-since-last-keypress timer has to pick a threshold that is wrong for
+somebody, and worse, it cannot survive the thing it is waiting for: once the
+host sleeps the daemon is frozen, the count stops where it stood, and the
+server bills until morning.
+
+A closing lid is none of that. Someone decided with their hands, the system
+says so, and it *waits* for an answer — the network is still up when the
+notification arrives, so the delete completes before the machine goes down.
+mole registers for the power-management notification through IOKit
+(`IORegisterForSystemPower`) and never vetoes the sleep itself: a laptop that
+refuses to sleep in a bag is a far worse outcome than any billing this saves.
+macOS only; elsewhere the feature reports that it is unavailable rather than
+arming a trigger that will never fire.
+
+Sleep alone is *not* the trigger, though it used to be, and that was a bug: a
+laptop sleeps dozens of times a day without anyone leaving — dark-wake
+maintenance, sleep services, and the idle sleep that follows a blanked screen
+all arrive as the same `kIOMessageSystemWillSleep`. So each one is checked
+against `AppleClamshellState` (and root domain's `Sleep Reason`) at the moment
+it arrives, and only a genuinely shut lid destroys anything. A lid closed with
+an external display attached, where the machine stays awake, does not — the
+tunnel is still in use.
+
+Polling that same lid switch on a timer would not work, which is why it is read
+here and not on a loop: the machine sleeps a second or two after the lid shuts,
+and no polling interval fast enough to notice leaves time to finish a
+cross-border request.
+
+Coming back is manual and takes a couple of minutes:
+
+```bash
+mole server deploy && mole up
+```
+
+Worth knowing:
+
+- Vultr's hourly rate is the monthly price ÷ 672 and is **capped at the monthly
+  price**, so you have to be destroyed for more than ~48 hours a month before
+  saving a cent. Every instance also carries a **1-hour minimum charge**.
+- Each redeploy is a **new IP and a new identity**. Keeping an IP across
+  destroys means a reserved IP, which Vultr bills at ~$3/mo — more than this
+  feature saves.
+- Nothing covers the host being shut down outright rather than slept. That
+  would need a watcher that is always on somewhere else, and putting a Vultr
+  key back into an internet-facing service costs more than this saves.
+- It needs `VULTR_API_KEY` in the environment at `mole up` time. TUN needs
+  root, `mole up` re-execs through sudo, and sudo drops the environment, so the
+  key is stashed at `~/.mole/vultr_key` (0600) for the daemon and removed when
+  it exits. That is a second copy of a root-scoped credential on disk — a good
+  reason to give mole a Vultr key restricted to instance management.
+
 ### Time-of-day peak window
 
 If a server sets `peak_down_mbps > 0`, `mole up` emits a peak/off-peak selector

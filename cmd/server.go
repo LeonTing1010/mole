@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,13 +36,24 @@ type Server struct {
 	// Optional per-server tuning. All opt-in: zero values reproduce the previous
 	// URI byte-for-byte. Obfs/ObfsPassword turn on hysteria2 salamander
 	// obfuscation (must match the server, or the tunnel goes dark). UpMbps/DownMbps
-	// pin Brutal congestion control to a measured ceiling instead of the built-in
-	// 20/50 default — set them to ~80% of a real speed test, or to -1 to disable
-	// Brutal and let hysteria2 use adaptive BBR (best for time-varying links).
+	// pin Brutal congestion control to a measured ceiling instead of the
+	// conservative default in core — set them to ~80% of a real speed test, or to
+	// -1 to disable Brutal and let hysteria2 use adaptive BBR.
 	Obfs         string `json:"obfs,omitempty"`
 	ObfsPassword string `json:"obfs_password,omitempty"`
 	UpMbps       int    `json:"up_mbps,omitempty"`
 	DownMbps     int    `json:"down_mbps,omitempty"`
+
+	// TLS identity. TLSCertPEM is the server's leaf certificate, pinned by the
+	// client so the tunnel verifies without a domain, a CA, or a Certificate
+	// Transparency entry announcing this host to the world. SNI must match a SAN
+	// on that certificate — Go dropped Common-Name fallback in 1.15, so a
+	// CN-only cert fails verification the moment pinning is switched on.
+	//
+	// Empty on servers provisioned before pinning existed: those fall back to
+	// the old unverified handshake, which `config.Validate` warns about.
+	TLSCertPEM string `json:"tls_cert_pem,omitempty"`
+	SNI        string `json:"sni,omitempty"`
 
 	// Time-of-day Brutal ceiling. When PeakDownMbps>0, `mole up` emits a
 	// peak/off-peak selector and the supervisor flips it on the local clock with
@@ -54,8 +66,29 @@ type Server struct {
 	PeakEndHour   int `json:"peak_end_hour,omitempty"`
 }
 
-// Default peak window (local 24h) when a server sets a peak ceiling but no hours.
+// Default Brutal ceiling and peak window (local 24h) for a server that carries
+// no explicit ladder.
+//
+// A server with no ceiling on file used to be silently catastrophic. Two places
+// disagreed about what "unset" meant: parseHysteria2 substituted 20/50, while
+// Schedule() reported 0. The config therefore materialised a full ladder whose
+// default member was the TOP rung (proxy-bw-50), while the supervisor's
+// scheduler stayed asleep and `mole ceiling` refused to run — so nothing could
+// ever move it down, and `mole status` reported a healthy tunnel flooding a path
+// that sustains 3 Mbps. These constants are now the single source of truth for
+// both sides; see ladder().
+//
+// They are deliberately conservative. Brutal ignores loss by design, so a
+// ceiling above the real link floods it into repeated collapse, while one below
+// merely leaves throughput on the table. A node whose link has never been
+// measured must not start at its ceiling — raise it with `mole ceiling` once the
+// path is known.
 const (
+	defaultUpMbps       = 5
+	defaultDownMbps     = 20
+	defaultPeakUpMbps   = 2
+	defaultPeakDownMbps = 5
+
 	defaultPeakStartHour = 12
 	defaultPeakEndHour   = 2
 )
@@ -68,13 +101,42 @@ func (s *Server) peakWindow() (start, end int) {
 	return s.PeakStartHour, s.PeakEndHour
 }
 
+// ladder resolves this server's effective Brutal ceiling, filling in the
+// defaults above for anything unset. Both URI() and Schedule() go through it, so
+// the outbound sing-box dials and the ladder the supervisor schedules over can
+// never describe different ceilings.
+//
+// A negative UpMbps/DownMbps is the BBR sentinel and is passed through
+// untouched: it means "no declared bandwidth", which is a deliberate choice, not
+// an unset field, and substituting a default would silently override it.
+func (s *Server) ladder() (up, down, peakUp, peakDown, start, end int) {
+	if s.UpMbps < 0 || s.DownMbps < 0 {
+		return s.UpMbps, s.DownMbps, 0, 0, 0, 0
+	}
+	up, down = s.UpMbps, s.DownMbps
+	if up == 0 {
+		up = defaultUpMbps
+	}
+	if down == 0 {
+		down = defaultDownMbps
+	}
+	peakUp, peakDown = s.PeakUpMbps, s.PeakDownMbps
+	if peakDown == 0 {
+		peakUp, peakDown = defaultPeakUpMbps, defaultPeakDownMbps
+	} else if peakUp == 0 {
+		peakUp = defaultPeakUpMbps
+	}
+	start, end = s.peakWindow()
+	return up, down, peakUp, peakDown, start, end
+}
+
 // Schedule builds the supervisor's time-of-day bandwidth schedule for this
-// server. Enabled() is false (inert) unless PeakDownMbps>0.
+// server, over the same effective ceiling the outbound is built from.
 func (s *Server) Schedule() core.BandwidthSchedule {
-	start, end := s.peakWindow()
+	up, down, peakUp, peakDown, start, end := s.ladder()
 	return core.BandwidthSchedule{
-		OffUp: s.UpMbps, OffDown: s.DownMbps,
-		PeakUp: s.PeakUpMbps, PeakDown: s.PeakDownMbps,
+		OffUp: up, OffDown: down,
+		PeakUp: peakUp, PeakDown: peakDown,
 		StartHour: start, EndHour: end,
 	}
 }
@@ -84,9 +146,9 @@ func (s *Server) Schedule() core.BandwidthSchedule {
 // `waitForIP` succeeds.
 func (s *Server) Ready() bool { return s.IP != "" }
 
-// URI returns the hy2:// URI sing-box consumes. Optional obfs/bandwidth query
-// params are appended only when set, so an untuned server yields the exact same
-// URI as before.
+// URI returns the hy2:// URI sing-box consumes. Obfs params are appended only
+// when set; the bandwidth ceiling is always emitted, defaults included, so the
+// parser never has to invent one of its own.
 func (s *Server) URI() string {
 	host := s.IP
 	if host == "" {
@@ -95,31 +157,47 @@ func (s *Server) URI() string {
 	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
 		host = "[" + host + "]"
 	}
-	q := "insecure=1&sni=bing.com"
+	// Identity layer. A pinned certificate replaces the old blanket
+	// `insecure=1`, and the SNI travels with it because it has to match a SAN on
+	// the pinned cert. The legacy shape (`insecure=1&sni=bing.com`) is kept
+	// byte-for-byte for servers with no cert on file, so existing entries in
+	// servers.json keep producing the exact URI they always did.
+	//
+	// bing.com as the default SNI is the thing being retired: claiming to be
+	// Bing while addressing a Vultr IP is a one-rule DPI catch, and the
+	// self-signed "Bing" cert an active prober gets back is conclusive. New
+	// servers get a random, unbranded SAN instead.
+	sni := s.SNI
+	if sni == "" {
+		sni = "bing.com"
+	}
+	var q string
+	if s.TLSCertPEM != "" {
+		q = "sni=" + url.QueryEscape(sni) +
+			"&pinnedcert=" + base64.RawURLEncoding.EncodeToString([]byte(s.TLSCertPEM))
+	} else {
+		q = "insecure=1&sni=" + url.QueryEscape(sni)
+	}
 	if s.Obfs != "" {
 		q += "&obfs=" + url.QueryEscape(s.Obfs)
 		if s.ObfsPassword != "" {
 			q += "&obfs-password=" + url.QueryEscape(s.ObfsPassword)
 		}
 	}
-	// Non-zero passes through, including a negative sentinel (-1) that the parser
-	// reads as "disable Brutal, use BBR". Zero stays absent so an untuned server
-	// yields the byte-for-byte same URI as before.
-	if s.UpMbps != 0 {
-		q += fmt.Sprintf("&upmbps=%d", s.UpMbps)
-	}
-	if s.DownMbps != 0 {
-		q += fmt.Sprintf("&downmbps=%d", s.DownMbps)
-	}
-	// Peak profile params drive the time-of-day selector in config.Build. Emitted
-	// only when a peak ceiling is set, so an untuned server's URI is unchanged.
-	if s.PeakDownMbps > 0 {
-		start, end := s.peakWindow()
-		q += fmt.Sprintf("&peakdownmbps=%d", s.PeakDownMbps)
-		if s.PeakUpMbps > 0 {
-			q += fmt.Sprintf("&peakupmbps=%d", s.PeakUpMbps)
-		}
-		q += fmt.Sprintf("&peakstart=%d&peakend=%d", start, end)
+	// The ceiling is always emitted, defaults included. Leaving it off for an
+	// untuned server is what let parseHysteria2 substitute its own, much higher,
+	// default — the config and the supervisor then laddered over different
+	// numbers and the tunnel ran at the top rung with no way down. An explicit
+	// URI costs a few bytes and makes that divergence unrepresentable.
+	//
+	// The negative sentinel (-1) passes through as-is: the parser reads it as
+	// "disable Brutal, use BBR", and ladder() leaves it alone.
+	up, down, peakUp, peakDown, start, end := s.ladder()
+	q += fmt.Sprintf("&upmbps=%d&downmbps=%d", up, down)
+	// Peak profile params drive the time-of-day selector in config.Build.
+	if peakDown > 0 {
+		q += fmt.Sprintf("&peakdownmbps=%d&peakupmbps=%d&peakstart=%d&peakend=%d",
+			peakDown, peakUp, start, end)
 	}
 	return fmt.Sprintf("hy2://%s@%s:%d?%s#%s", s.Password, host, s.Port, q, s.Name)
 }
@@ -186,8 +264,8 @@ var useCmd = &cobra.Command{
 }
 
 var serverImportCmd = &cobra.Command{
-	Use:   "import <hysteria2://...>",
-	Short: "Add a server from a subscription URI (no mole-server required)",
+	Use:   "import <hysteria2://... | https://.../sub/...>",
+	Short: "Add a server from a hysteria2:// URI",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runImport,
 }
@@ -202,7 +280,12 @@ func init() {
 	serverCmd.AddCommand(serverStartCmd)
 	serverCmd.AddCommand(serverImportCmd)
 
-	serverDeployCmd.Flags().String("region", "nrt", "server region (nrt, sgp, lax, ...)")
+	// Seoul, not Tokyo. Measured from a China Mobile Shanghai line on 2026-07-31,
+	// all three sampled in the same minute: icn 0% loss / 107ms median, nrt 5.8%
+	// loss / 180ms, itm 4.9% / 308ms. Tokyo's transit hauls the traffic through
+	// PCCW with a 165ms floor — roughly three times the physical distance — and
+	// that sustained loss is what the tunnel kept collapsing on.
+	serverDeployCmd.Flags().String("region", "icn", "server region (icn, nrt, sgp, lax, ...)")
 	serverDeployCmd.Flags().String("plan", "vc2-1c-1gb", "server plan")
 	serverDeployCmd.Flags().String("name", "", "Server name (auto-generated if empty)")
 	serverDeployCmd.Flags().Int("port", 443, "Hysteria2 port")
@@ -230,34 +313,75 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 
 	fmt.Printf("🚀 Deploying %s in %s (%s, port %d)\n", name, region, plan, port)
 
-	resp, err := serverAPI("POST", "/instances", map[string]any{
-		"region":      region,
-		"plan":        plan,
-		"label":       name,
-		"port":        port,
-		"enable_ipv6": true,
-	})
+	// Mint the TLS identity and obfs key here, not on the VPS: the client must
+	// keep the certificate to pin it, and material generated on the far side
+	// could only come back over the very channel the pin is meant to secure.
+	// The private key does transit the provisioning API — which already mints
+	// and carries the tunnel password, so this adds no new trust boundary.
+	id, err := newServerIdentity()
+	if err != nil {
+		return fmt.Errorf("deploy: generate server identity: %w", err)
+	}
+
+	// Provisioning talks to Vultr from this machine, and only from here. The
+	// Worker that used to offer a second route could never actually provision:
+	// Vultr's API access control allowlists source addresses and a Cloudflare
+	// Worker has no stable egress to allowlist, so every call from it came back
+	// 403. Keeping it as an alternative meant every deploy could fail in two
+	// different ways, one of them silently.
+	instanceID, password, err := deployViaVultr(name, region, plan, port, id)
 	if err != nil {
 		return fmt.Errorf("deploy: %w", err)
 	}
+	return finishDeploy(name, region, port, instanceID, password, id, true)
+}
 
-	var created struct {
-		Instance struct {
-			ID       string `json:"id"`
-			Password string `json:"password"`
-		} `json:"instance"`
-	}
-	if err := json.Unmarshal(resp, &created); err != nil {
-		return err
-	}
-	instanceID := created.Instance.ID
-	password := created.Instance.Password
+// finishDeploy records a freshly created instance locally, waits for its IP and
+// reports the result.
+//
+// identityApplied must reflect what the far end actually installed. Recording a
+// pin or an obfs key the server never received doesn't leave the tunnel merely
+// unverified — it blackholes it, on a box reachable no other way.
+func finishDeploy(name, region string, port int, instanceID, password string, id *serverIdentity, identityApplied bool) error {
 	fmt.Printf("✅ Instance %s created — waiting for IP...\n", instanceID)
 
 	srv := Server{
 		Name: name, InstanceID: instanceID, Region: region,
 		Port: uint16(port), Password: password,
 		CreatedAt: time.Now().Format(time.RFC3339),
+		// Write the ceiling out explicitly rather than leaning on the defaults.
+		// A server entry that describes its own ladder is inspectable in
+		// servers.json and survives any future change to what "unset" means —
+		// which is the exact hazard this replaced: entries with no ceiling at all
+		// ran at the top rung while `mole ceiling` refused to run.
+		UpMbps: core.DefaultUpMbps, DownMbps: core.DefaultDownMbps,
+		PeakUpMbps: core.DefaultPeakUpMbps, PeakDownMbps: core.DefaultPeakDownMbps,
+		PeakStartHour: defaultPeakStartHour, PeakEndHour: defaultPeakEndHour,
+	}
+	// Prefer what this region was last measured to carry. The defaults above are
+	// deliberately timid — right for a path nobody has tested, wrong for one that
+	// has been laddered up by hand — and destroy-on-lid-close means most deploys
+	// land in a region that was measured only yesterday. See ladder_memory.go.
+	if l, ok := recallLadder(region); ok {
+		srv.UpMbps, srv.DownMbps = l.UpMbps, l.DownMbps
+		srv.PeakUpMbps, srv.PeakDownMbps = l.PeakUpMbps, l.PeakDownMbps
+		srv.PeakStartHour, srv.PeakEndHour = l.PeakStartHour, l.PeakEndHour
+		fmt.Printf("📶 Ceiling %d↓/%d↑ Mbps (peak %d↓/%d↑) carried over from the last %s server — %s\n",
+			l.DownMbps, l.UpMbps, l.PeakDownMbps, l.PeakUpMbps, region, describeAge(l, time.Now()))
+	}
+	// Record the identity only once the server confirms it installed it.
+	// Pinning a certificate the far end never received, or turning on obfs it
+	// isn't running, blackholes the tunnel completely — and does so on a box
+	// that has no other way in.
+	if identityApplied {
+		srv.TLSCertPEM = id.CertPEM
+		srv.SNI = id.SNI
+		srv.Obfs = "salamander"
+		srv.ObfsPassword = id.ObfsPassword
+		fmt.Println("🔒 Pinned certificate + salamander obfs installed")
+	} else {
+		fmt.Println("⚠️  Server provisioned without the pinned-cert/obfs identity")
+		fmt.Println("    (the boot script did not report installing it — redeploy to get a pinned node)")
 	}
 	servers, _ := loadServers()
 	if len(servers) == 0 {
@@ -273,10 +397,13 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 
 	ip, ipv6, err := waitForIP(instanceID)
 	if err != nil {
-		fmt.Printf("⚠️  %v\n", err)
-		fmt.Printf("    The instance is recorded locally as %q but has no IP yet.\n", name)
-		fmt.Printf("    Run `mole server reconcile` later, or `mole server destroy %s` to remove it.\n", name)
-		return err
+		// Not a deploy failure. The instance was created, its id is saved, and
+		// the address is a value that arrives on its own — every later command
+		// fills it in through reconcileAddresses without being asked. Returning
+		// an error here is what used to strand a perfectly good VPS behind a
+		// manual step.
+		fmt.Printf("⚠️  %v — it is recorded as %q and the address will be filled in automatically.\n", err, name)
+		return nil
 	}
 	fmt.Printf("   IPv4: %s\n", ip)
 	if ipv6 != "" {
@@ -307,32 +434,114 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+// waitForIP polls until Vultr assigns the instance an address.
+//
+// The old bound was 60s, which Vultr routinely exceeds — and exceeding it was
+// treated as a deploy failure that told the operator to go run `mole server
+// reconcile --apply` by hand. Nothing had actually failed: the instance existed,
+// its id was already recorded, and the only missing piece was a value that
+// arrives on its own. Wait long enough to cover the normal case, and let
+// reconcileAddresses pick up the rest without anyone being asked to.
 func waitForIP(instanceID string) (string, string, error) {
-	for i := 0; i < 30; i++ {
+	deadline := time.Now().Add(5 * time.Minute)
+	for attempt := 1; time.Now().Before(deadline); attempt++ {
 		resp, err := serverAPI("GET", "/instances/"+instanceID, nil)
 		if err == nil {
-			var r struct {
-				MainIP string `json:"main_ip"`
-				V6IP   string `json:"v6_main_ip"`
-			}
-			if json.Unmarshal(resp, &r) == nil {
-				if ip := r.MainIP; ip != "" && ip != "0.0.0.0" {
-					return ip, r.V6IP, nil
-				}
+			if ip, v6 := parseInstanceAddress(resp); ip != "" {
+				return ip, v6, nil
 			}
 		}
-		fmt.Printf("   waiting... %d/30\n", i+1)
-		time.Sleep(2 * time.Second)
+		if attempt%5 == 0 {
+			fmt.Printf("   still waiting for an address (%ds)...\n", attempt*3)
+		}
+		time.Sleep(3 * time.Second)
 	}
-	return "", "", fmt.Errorf("instance %s did not get an IP within 60s", instanceID)
+	return "", "", fmt.Errorf("instance %s has no address yet", instanceID)
+}
+
+// parseInstanceAddress pulls the addresses out of a single-instance GET,
+// returning empty strings while Vultr has not assigned one yet.
+//
+// The envelope is the whole point. Vultr wraps this response in
+// {"instance": {...}}, the same way the list endpoint wraps its array in
+// {"instances": [...]} — and reading main_ip off the top level, as this used
+// to, finds nothing no matter how long it waits. Every deploy burned the full
+// five minutes and then reported no address for a machine that had been
+// reachable for four of them, while `mole server reconcile` — which reads the
+// list endpoint, correctly unwrapped — filled it in on the first try.
+func parseInstanceAddress(resp []byte) (ip, ipv6 string) {
+	var r struct {
+		Instance struct {
+			MainIP string `json:"main_ip"`
+			V6IP   string `json:"v6_main_ip"`
+		} `json:"instance"`
+	}
+	if json.Unmarshal(resp, &r) != nil {
+		return "", ""
+	}
+	// Vultr reports 0.0.0.0 for "allocated, not assigned yet", which is not an
+	// address anyone can connect to.
+	if r.Instance.MainIP == "" || r.Instance.MainIP == "0.0.0.0" {
+		return "", ""
+	}
+	return r.Instance.MainIP, r.Instance.V6IP
+}
+
+// reconcileAddresses fills in the address of every local entry that has an
+// instance id but no IP, by asking Vultr. It is the deterministic half of
+// `mole server reconcile` — an entry recorded mid-provision is missing a value
+// that only one source can supply, and there is no judgement involved in
+// copying it over. Anything ambiguous (an entry whose IP disagrees with the
+// remote one, an instance with no local entry) is deliberately left alone for
+// `mole server reconcile` to report.
+//
+// Returns how many entries it filled. A failure to reach Vultr is not fatal to
+// callers that were only trying to self-heal, so they may ignore the error.
+func reconcileAddresses() (int, error) {
+	local, err := loadServers()
+	if err != nil {
+		return 0, err
+	}
+	needed := false
+	for _, s := range local {
+		if s.InstanceID != "" && s.IP == "" {
+			needed = true
+			break
+		}
+	}
+	if !needed {
+		return 0, nil
+	}
+
+	remote, err := serverListInstances()
+	if err != nil {
+		return 0, err
+	}
+
+	filled := fillAddresses(local, remote)
+	if filled == 0 {
+		return 0, nil
+	}
+	if err := saveServers(local); err != nil {
+		return 0, err
+	}
+	return filled, nil
 }
 
 // ── destroy ────────────────────────────────────────────────────
 
 func runDestroy(cmd *cobra.Command, args []string) error {
-	name := args[0]
 	forceLocal, _ := cmd.Flags().GetBool("force-local")
+	return destroyServerByName(args[0], forceLocal)
+}
 
+// destroyServerByName deletes one instance and drops its local entry.
+//
+// Split out of runDestroy so the daemon's idle-destroy can reach exactly the
+// same code: a second implementation would be a second set of rules for when
+// the local entry may be removed, and the whole point of those rules is that a
+// failed delete must not leave mole believing a billing instance is gone.
+func destroyServerByName(name string, forceLocal bool) error {
 	servers, err := loadServers()
 	if err != nil {
 		return fmt.Errorf("read local servers: %w", err)
@@ -362,6 +571,11 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("server delete failed: %w\n    The local entry was NOT removed. If the instance is really gone on the server, retry with --force-local.", err)
 		}
 	}
+
+	// Save the ceiling before the entry carrying it disappears. This is the last
+	// moment it exists: the next deploy in this region would otherwise start
+	// from the defaults, however much measuring went into these numbers.
+	rememberLadder(target)
 
 	servers = append(servers[:idx], servers[idx+1:]...)
 	// If the destroyed server was active, promote the first remaining.
@@ -410,6 +624,16 @@ func runLs(_ *cobra.Command, _ []string) error {
 // ── reconcile ──────────────────────────────────────────────────
 
 func runReconcile(_ *cobra.Command, _ []string) error {
+	// Fill in missing addresses first, unconditionally. This used to sit behind
+	// --apply, which made the one repair in here that needs no judgement wait on
+	// somebody remembering a flag. Ambiguous states below are still only
+	// reported, never acted on.
+	if filled, err := reconcileAddresses(); err != nil {
+		return fmt.Errorf("record missing addresses: %w", err)
+	} else if filled > 0 {
+		fmt.Printf("✔ recorded %d missing address(es)\n\n", filled)
+	}
+
 	local, err := loadServers()
 	if err != nil {
 		return fmt.Errorf("read local servers: %w", err)
@@ -433,6 +657,7 @@ func runReconcile(_ *cobra.Command, _ []string) error {
 	type row struct {
 		state   string // "synced" | "remote-only" | "local-only" | "ip-mismatch"
 		id, ip  string
+		v6      string
 		name    string
 		region  string
 		message string
@@ -458,7 +683,10 @@ func runReconcile(_ *cobra.Command, _ []string) error {
 		switch {
 		case lok && rok:
 			if l.IP == "" {
-				rows = append(rows, row{state: "syncing", id: id, ip: r.MainIP, name: l.Name, region: r.Region, message: "local entry was provisioning; remote has IP — run `mole server reconcile --apply` to update (not yet implemented; re-deploy or hand-edit)"})
+				// Reached only when Vultr itself still has no address for the
+				// instance — the fill above already handled every case where it did.
+				rows = append(rows, row{state: "syncing", id: id, ip: r.MainIP, v6: r.V6MainIP, name: l.Name, region: r.Region,
+					message: "still provisioning; no address on either side yet"})
 			} else if l.IP != r.MainIP {
 				rows = append(rows, row{state: "drift", id: id, ip: r.MainIP, name: l.Name, region: r.Region, message: fmt.Sprintf("local IP %s ≠ remote IP %s", l.IP, r.MainIP)})
 			} else {
@@ -545,15 +773,16 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// runImport adds a server from a subscription URI without contacting
-// mole-server — the inverse of the link mole-server (or any hy2 endpoint) hands
-// out. This is the path that lets mole act as a pure client: paste the URI,
-// connect, no control plane required.
+// runImport adds a server from a hysteria2:// URI. This is the pure-client
+// path: paste the link, connect, no control plane involved. It is deliberately
+// the only import form — a subscription URL would mean re-fetching a node
+// descriptor over the network on every connect, which is one more thing that
+// can be unreachable, stale, or lying at exactly the moment the tunnel is
+// already failing.
 func runImport(cmd *cobra.Command, args []string) error {
-	uri := args[0]
 	name, _ := cmd.Flags().GetString("name")
 
-	srv, err := serverFromURI(uri)
+	srv, err := serverFromURI(args[0])
 	if err != nil {
 		return err
 	}
@@ -571,9 +800,9 @@ func runImport(cmd *cobra.Command, args []string) error {
 	if indexByName(servers, srv.Name) >= 0 {
 		return fmt.Errorf("local server %q already exists; pass --name to use a different one", srv.Name)
 	}
-	for _, s := range servers {
-		if serverHost(s) == serverHost(*srv) && s.Port == srv.Port {
-			return fmt.Errorf("a server at %s:%d already exists as %q", serverHost(*srv), srv.Port, s.Name)
+	for _, existing := range servers {
+		if serverHost(existing) == serverHost(*srv) && existing.Port == srv.Port {
+			return fmt.Errorf("a server at %s:%d already exists as %q", serverHost(*srv), srv.Port, existing.Name)
 		}
 	}
 	if len(servers) == 0 {
@@ -600,7 +829,7 @@ func serverHost(s Server) string {
 // serverFromURI is the inverse of Server.URI(): it parses a hysteria2
 // subscription link into a Server entry, round-tripping every field Server.URI
 // emits (password, host, port, obfs, bandwidth ceilings, peak window, name).
-// It never talks to mole-server.
+// It contacts nothing: the URI carries everything.
 func serverFromURI(raw string) (*Server, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -615,7 +844,7 @@ func serverFromURI(raw string) (*Server, error) {
 	}
 	// url.Hostname()/Port() correctly strip and split bracketed IPv6
 	// (e.g. [2606:…]:8443); Server.URI() always emits IPv6 bracketed, so the
-	// link mole-server hands out parses back cleanly here.
+	// link Server.URI() emits parses back cleanly here.
 	host := u.Hostname()
 	if host == "" {
 		return nil, fmt.Errorf("URI missing host")
@@ -639,6 +868,16 @@ func serverFromURI(raw string) (*Server, error) {
 	if v := q.Get("obfs"); v != "" {
 		srv.Obfs = v
 		srv.ObfsPassword = q.Get("obfs-password")
+	}
+	if v := q.Get("sni"); v != "" {
+		srv.SNI = v
+	}
+	if v := q.Get("pinnedcert"); v != "" {
+		if b, err := base64.RawURLEncoding.DecodeString(v); err == nil {
+			srv.TLSCertPEM = string(b)
+		} else if b, err := base64.StdEncoding.DecodeString(v); err == nil {
+			srv.TLSCertPEM = string(b)
+		}
 	}
 	if v := q.Get("upmbps"); v != "" {
 		srv.UpMbps, _ = strconv.Atoi(v)
@@ -809,7 +1048,47 @@ func saveServers(servers []Server) error {
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
 		return err
 	}
+	// The daemon writes this file too now (idle-destroy drops the entry for the
+	// server it deleted) and it runs as root. See utils.ChownToMoleDirOwner.
+	utils.ChownToMoleDirOwner(tmp)
 	return os.Rename(tmp, path)
+}
+
+// The two states `mole up` repairs on its own. They are sentinels rather than
+// message text because the recovery keys off them: matching on a substring
+// means any reword of the message silently turns the automatic repair back into
+// a manual one, with nothing failing to say so.
+var (
+	// ErrServerStopped: the instance is halted on Vultr and needs starting.
+	ErrServerStopped = errors.New("active server is stopped")
+	// ErrServerProvisioning: the entry exists but its address has not arrived.
+	ErrServerProvisioning = errors.New("active server is still provisioning")
+)
+
+// fillAddresses copies each remote address onto the local entry that is missing
+// one, matching on instance id, and reports how many it filled. Pure so the
+// matching rules can be tested without a Vultr account: an entry that already
+// has an address is never touched (that would be the "drift" case, which needs a
+// human), and a placeholder 0.0.0.0 is not an address.
+func fillAddresses(local []Server, remote []serverInstance) int {
+	byID := make(map[string]serverInstance, len(remote))
+	for _, r := range remote {
+		byID[r.ID] = r
+	}
+	filled := 0
+	for i := range local {
+		if local[i].InstanceID == "" || local[i].IP != "" {
+			continue
+		}
+		r, ok := byID[local[i].InstanceID]
+		if !ok || r.MainIP == "" || r.MainIP == "0.0.0.0" {
+			continue
+		}
+		local[i].IP = r.MainIP
+		local[i].IPv6 = r.V6MainIP
+		filled++
+	}
+	return filled
 }
 
 // ActiveServer returns the active server for use by other commands.
@@ -821,10 +1100,10 @@ func ActiveServer() (*Server, error) {
 	for i, s := range servers {
 		if s.Active {
 			if servers[i].Stopped {
-				return nil, fmt.Errorf("active server %q is stopped — run `mole server start %s` to resume", servers[i].Name, servers[i].Name)
+				return nil, fmt.Errorf("%w: %q", ErrServerStopped, servers[i].Name)
 			}
 			if !servers[i].Ready() {
-				return nil, fmt.Errorf("active server %q is still provisioning (no IP yet) — run `mole server reconcile` or wait", servers[i].Name)
+				return nil, fmt.Errorf("%w: %q has no address yet", ErrServerProvisioning, servers[i].Name)
 			}
 			return &servers[i], nil
 		}
@@ -844,14 +1123,32 @@ func indexByName(servers []Server, name string) int {
 	return -1
 }
 
-// ── mole-server API ────────────────────────────────────────────
+// knownServerIPs returns every address mole may need to reach directly: the
+// active tunnel endpoint plus every standby node recorded locally. The active
+// server comes first so its pass rule is matched first.
+func knownServerIPs() []string {
+	servers, _ := loadServers()
+	var active, others []string
+	for _, s := range servers {
+		for _, ip := range []string{s.IP, s.IPv6} {
+			if ip == "" {
+				continue
+			}
+			if s.Active {
+				active = append(active, ip)
+			} else {
+				others = append(others, ip)
+			}
+		}
+	}
+	return append(active, others...)
+}
 
-const moleServerBase = "https://mole.taprun.dev/api"
+// ── Vultr management API ───────────────────────────────────────
 
-// ServerError carries the HTTP status from a failed mole-server API call so
-// callers can distinguish "instance is gone" (404) from generic transport /
-// 5xx failures. Without this distinction, `mole server destroy` cannot safely
-// decide whether to drop the local entry.
+// vultrBase is the only management endpoint mole talks to.
+const vultrBase = "https://api.vultr.com/v2"
+
 type ServerError struct {
 	Method string
 	Path   string
@@ -863,34 +1160,96 @@ func (e *ServerError) Error() string {
 	return fmt.Sprintf("server %s %s: %d %s", e.Method, e.Path, e.Status, e.Body)
 }
 
-// IsServerNotFound reports whether err is a 404 from the mole-server API.
+// IsServerNotFound reports whether err is a 404 from the Vultr API.
 func IsServerNotFound(err error) bool {
 	var se *ServerError
 	return errors.As(err, &se) && se.Status == 404
 }
 
-func moleServerToken() (string, error) {
-	if k := strings.TrimSpace(os.Getenv("MOLE_SERVER_TOKEN")); k != "" {
+// vultrKey returns the account API key every management call authenticates
+// with. It is root-scoped on the Vultr account, which is precisely why it now
+// lives only here and on this machine: it used to also sit as a secret inside an
+// internet-facing Cloudflare Worker, where any flaw in an unauthenticated route
+// reached it.
+// The environment wins: it is where the key lives for every interactive call,
+// and a stale file must never quietly outrank the key the operator just
+// exported. The file is the fallback for the one caller that cannot have an
+// environment — the sudo-launched daemon doing idle-destroy. See
+// utils.VultrKeyPath.
+func vultrKey() (string, error) {
+	if k := strings.TrimSpace(os.Getenv("VULTR_API_KEY")); k != "" {
 		return k, nil
 	}
-	return "", fmt.Errorf("MOLE_SERVER_TOKEN environment variable is not set")
+	if b, err := os.ReadFile(utils.VultrKeyPath()); err == nil {
+		if k := strings.TrimSpace(string(b)); k != "" {
+			return k, nil
+		}
+	}
+	return "", fmt.Errorf("VULTR_API_KEY environment variable is not set")
 }
 
+// vultrKeyAvailable reports whether a destroy could authenticate right now.
+// Used to disarm destroy-on-lid-close up front instead of discovering the problem
+// at the moment the lid closes, when nothing is watching.
+func vultrKeyAvailable() bool {
+	_, err := vultrKey()
+	return err == nil
+}
+
+// stashVultrKey copies the key out of the environment to where the daemon can
+// read it. Called from `mole up` before the sudo re-exec, which is the last
+// moment the environment still exists.
+func stashVultrKey() error {
+	k := strings.TrimSpace(os.Getenv("VULTR_API_KEY"))
+	if k == "" {
+		return fmt.Errorf("VULTR_API_KEY is not set (the daemon deletes the server on its own when this Mac sleeps, and sudo does not carry the environment into it)")
+	}
+	p := utils.VultrKeyPath()
+	// Remove first: WriteFile does not narrow the mode of a file that already
+	// exists, so a previously world-readable copy would stay that way.
+	_ = os.Remove(p)
+	if err := os.WriteFile(p, []byte(k+"\n"), 0600); err != nil {
+		return fmt.Errorf("stash the Vultr key for the daemon: %w", err)
+	}
+	return nil
+}
+
+// serverAPI performs one management-plane request straight against the Vultr
+// API.
+//
+// There used to be a control plane in front of this — a Worker that proxied the
+// same calls, with a transport-error fallback to Vultr, a rule for which
+// failures were authoritative, and a rule for which operations were safe to
+// retry down the second path. All of that existed to reconcile two ways of
+// reaching one API, and every one of those rules was a place to be wrong: a base
+// URL that never resolved once turned Cloudflare's HTML 404 into "your instance
+// is gone" and abandoned a VPS that had just been created. One path cannot
+// disagree with itself.
 func serverAPI(method, path string, body any) ([]byte, error) {
-	token, err := moleServerToken()
+	key, err := vultrKey()
 	if err != nil {
 		return nil, err
 	}
+	return callAPI(vultrBase, "Bearer "+key, method, path, body, 60*time.Second)
+}
+
+// callAPI performs one management-plane request against base+path and returns
+// the response body, or a *ServerError for HTTP >= 400, or a raw transport
+// error (EOF / timeout / DNS) for connection-level failures.
+func callAPI(base, auth string, method, path string, body any, timeout time.Duration) ([]byte, error) {
 	var reqBody io.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
 		reqBody = bytes.NewReader(b)
 	}
-	req, _ := http.NewRequest(method, moleServerBase+path, reqBody)
-	req.Header.Set("Authorization", "Bearer "+token)
+	req, err := http.NewRequest(method, base+path, reqBody)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", auth)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	resp, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -904,15 +1263,16 @@ func serverAPI(method, path string, body any) ([]byte, error) {
 
 // serverInstance is the subset of /api/instances list fields reconcile needs.
 type serverInstance struct {
-	ID     string `json:"id"`
-	Label  string `json:"label"`
-	Region string `json:"region"`
-	MainIP string `json:"main_ip"`
+	ID       string `json:"id"`
+	Label    string `json:"label"`
+	Region   string `json:"region"`
+	MainIP   string `json:"main_ip"`
+	V6MainIP string `json:"v6_main_ip"`
 }
 
-// serverListInstances fetches all instances via mole-server.
+// serverListInstances fetches every instance on the Vultr account.
 func serverListInstances() ([]serverInstance, error) {
-	data, err := serverAPI("GET", "/instances", nil)
+	data, err := serverAPI("GET", "/instances?per_page=100", nil)
 	if err != nil {
 		return nil, err
 	}

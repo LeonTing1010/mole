@@ -1,8 +1,9 @@
 package config
 
 import (
-	"encoding/json"
 	"embed"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -395,7 +396,12 @@ func parseHysteria2(u *url.URL) (*OutboundConfig, error) {
 	// night) — no single fixed Brutal rate fits, and a too-high one floods the
 	// path into repeated collapse-to-zero. Leaving up/down at 0 omits the fields
 	// from the outbound, so sing-box uses BBR.
-	upMbps, downMbps := 20, 50
+	// This fallback is shared with cmd's Server.ladder() through core. It used to
+	// be a local 20/50 while the server list resolved the same "unset" to 0, and
+	// that disagreement is what let a freshly deployed node ladder from a ceiling
+	// the supervisor never knew about — pinned to the top rung with nothing able
+	// to lower it.
+	upMbps, downMbps := core.DefaultUpMbps, core.DefaultDownMbps
 	up, _ := strconv.Atoi(q.Get("upmbps"))
 	down, _ := strconv.Atoi(q.Get("downmbps"))
 	switch {
@@ -421,7 +427,35 @@ func parseHysteria2(u *url.URL) (*OutboundConfig, error) {
 		o.Obfs = &Hy2Obfs{Type: obfsType, Password: q.Get("obfs-password")}
 	}
 
+	// Pinned server certificate, base64 of the leaf PEM. Deliberately parsed
+	// last so it can overrule ?insecure=1: a pin is strictly stronger than any
+	// verification the flag could have skipped, and a URI carrying both is a
+	// stale link being upgraded, not a request to keep trusting anything.
+	if pin := q.Get("pinnedcert"); pin != "" {
+		if pem := decodeB64(pin); pem != "" {
+			if o.TLS == nil {
+				o.TLS = &TLSConfig{Enabled: true}
+			}
+			o.TLS.Certificate = strings.Split(pem, "\n")
+			o.TLS.Insecure = false
+		}
+	}
+
 	return o, nil
+}
+
+// decodeB64 accepts the URL-safe unpadded form Server.URI emits and the padded
+// standard form a hand-pasted link may carry. Returns "" when the payload isn't
+// decodable, so a corrupt pin degrades to "no pin" — which Validate then warns
+// about loudly rather than failing on, since servers provisioned before pinning
+// existed have no cert to offer and must keep working.
+func decodeB64(s string) string {
+	for _, enc := range []*base64.Encoding{base64.RawURLEncoding, base64.StdEncoding, base64.URLEncoding, base64.RawStdEncoding} {
+		if b, err := enc.DecodeString(s); err == nil && len(b) > 0 {
+			return strings.TrimSpace(string(b))
+		}
+	}
+	return ""
 }
 
 // geositeCNPath returns the on-disk geosite-cn rule-set, or "" when it isn't
@@ -585,5 +619,26 @@ func Validate(cfg *SingboxConfig) error {
 		}
 	}
 
+	// An unverified proxy TLS session is a live MITM hole, not a style issue:
+	// hysteria2 authenticates with a password sent *inside* that session, so a
+	// peer we never verified walks away with the password and the plaintext.
+	// This warns instead of failing because servers provisioned before pinning
+	// existed genuinely have no cert to pin, and refusing to start would strand
+	// the user offline. Re-provision to clear it (`mole server deploy`).
+	if insecureProxyTLS(cfg) {
+		log.Printf("⚠️  proxy TLS is unverified (no pinned certificate) — the tunnel password is exposed to any on-path attacker; re-provision with `mole server deploy` to pin it")
+	}
+
 	return nil
+}
+
+// insecureProxyTLS reports whether any proxy outbound skips verification
+// without a pin standing in for it.
+func insecureProxyTLS(cfg *SingboxConfig) bool {
+	for _, o := range cfg.Outbounds {
+		if o.TLS != nil && o.TLS.Insecure && len(o.TLS.Certificate) == 0 {
+			return true
+		}
+	}
+	return false
 }
