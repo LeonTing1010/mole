@@ -73,12 +73,23 @@ func Build(serverURI string) (*SingboxConfig, error) {
 		QueryType: []string{"HTTPS", "SVCB"},
 		Action:    "reject",
 	})
-	// Reverse-DNS (PTR) lookups must never ride the proxy. mDNS/Bonjour floods
-	// *.in-addr.arpa for LAN addresses (192.168/172.16/10.x); these don't match
+	// Reverse lookups for RFC 6303 locally-served zones are answered here and
+	// never leave the machine. Bonjour/DNS-SD browses every interface subnet
+	// (en0's 192.168.1.0/24, and utun4's own 172.19.0.0/28), so these fire a few
+	// times an hour forever. The upstream resolver can only ever say NXDOMAIN
+	// for them — but the query still costs a UDP round trip, and a single lost
+	// packet parks the lookup for the full 10s deadline with no retry, stalling
+	// Finder's "Shared" list and AirPlay/AirDrop discovery. When the link is
+	// sick they arrive in bursts and bury the real errors in the log. Replying
+	// NXDOMAIN locally is behaviourally identical and instant.
+	dnsRules = append(dnsRules, DNSRule{
+		DomainSuffix: localReverseZones(),
+		Action:       "reject",
+	})
+	// Any remaining (public) PTR must never ride the proxy. These don't match
 	// the A/AAAA fakeip rule, so without this they fall to `final: dns-remote`
 	// (DoT over the tunnel) and each blocks ~20s when the link is congested —
-	// the single biggest source of "everything feels frozen". Direct resolver
-	// answers real PTRs fast and returns a quick NXDOMAIN for private ones.
+	// the single biggest source of "everything feels frozen".
 	dnsRules = append(dnsRules, DNSRule{
 		DomainSuffix: []string{".in-addr.arpa", ".ip6.arpa"},
 		Server:       "dns-direct",
@@ -102,6 +113,18 @@ func Build(serverURI string) (*SingboxConfig, error) {
 		dnsRules = append(dnsRules, DNSRule{
 			DomainSuffix: suffixes,
 			Server:       "dns-fake",
+		})
+	}
+	// Same exception, matched by substring for hosts no suffix can reach:
+	// sing-box's domain_suffix aligns on label boundaries, so the Mac App Store's
+	// per-account store partitions (p46-buy/p47-buy.itunes.apple.com — install
+	// authorisation, TLS-reset on the direct path) fall through a
+	// `buy.itunes.apple.com` suffix. Emitted as its own rule, never merged with
+	// the suffix rule above: sing-box ANDs matcher kinds inside a single rule.
+	if keywords := proxyDomainKeywords(directSources); len(keywords) > 0 {
+		dnsRules = append(dnsRules, DNSRule{
+			DomainKeyword: keywords,
+			Server:        "dns-fake",
 		})
 	}
 	// Custom direct domains resolve to real IPs too (see note above) so they
@@ -175,10 +198,25 @@ func Build(serverURI string) (*SingboxConfig, error) {
 	// Custom rules sit between base rules (sniff etc.) and system rules
 	// so they can use the sniffed domain while still respecting FakeIP
 	// and geoip-cn fallbacks.
+	//
+	// 域名规则改走 local rule-set（2026-08-04，见 hotrules.go）：纯「一组域名 → 一个出站」
+	// 的规则落到 ~/.mole/rule-sets/*.json，sing-box 监听这些文件、改完即时生效，
+	// 于是加一个域名不再需要 `mole down && mole up`（那条路会拆 TUN、卸 kill switch、
+	// 断掉所有在途连接）。表达不了的规则（ip_cidr/protocol/action/invert）仍原样内联。
+	domainRules := append(append([]RouteRule{}, builtinRules...), customRules...)
+	hotByOutbound, hotOrder, inlineRules := SplitHotRules(domainRules)
+	if err := DetectHotRuleConflicts(hotByOutbound); err != nil {
+		return nil, err
+	}
+	if err := WriteHotRuleSets(hotByOutbound, hotOrder); err != nil {
+		return nil, err
+	}
+	hotDecls, hotRefs := HotRuleSetRefs(hotOrder)
+
 	var routeRules []RouteRule
 	routeRules = append(routeRules, baseRules...)
-	routeRules = append(routeRules, builtinRules...)
-	routeRules = append(routeRules, customRules...)
+	routeRules = append(routeRules, inlineRules...)
+	routeRules = append(routeRules, hotRefs...)
 	routeRules = append(routeRules, systemRules...)
 
 	// Rule-sets are referenced from local files only — never fetched by sing-box
@@ -203,6 +241,7 @@ func Build(serverURI string) (*SingboxConfig, error) {
 			Path:   geositeCN,
 		})
 	}
+	ruleSets = append(ruleSets, hotDecls...)
 
 	return &SingboxConfig{
 		Log: LogConfig{Level: "warn"},
@@ -532,6 +571,30 @@ func loadCustomRules() []RouteRule {
 	return rules
 }
 
+// localReverseZones lists the reverse-DNS zones RFC 6303 says a resolver must
+// answer itself: private IPv4 space, link-local, loopback, and the IPv6 ULA and
+// link-local ranges. Every suffix keeps its leading dot so matching stays on a
+// label boundary — ".10.in-addr.arpa" must not swallow "110.in-addr.arpa",
+// which is public address space.
+func localReverseZones() []string {
+	zones := []string{
+		".10.in-addr.arpa",      // 10.0.0.0/8
+		".168.192.in-addr.arpa", // 192.168.0.0/16
+		".254.169.in-addr.arpa", // 169.254.0.0/16 link-local
+		".127.in-addr.arpa",     // loopback
+		".0.in-addr.arpa",       // "this" network
+		".d.f.ip6.arpa",         // fd00::/8 unique-local
+		".8.e.f.ip6.arpa",       // fe80::/10 link-local
+		".9.e.f.ip6.arpa",
+		".a.e.f.ip6.arpa",
+		".b.e.f.ip6.arpa",
+	}
+	for i := 16; i <= 31; i++ { // 172.16.0.0/12
+		zones = append(zones, fmt.Sprintf(".%d.172.in-addr.arpa", i))
+	}
+	return zones
+}
+
 // directDomainSuffixes collects every domain_suffix from custom rules whose
 // outbound is "direct", de-duplicated. These resolve via dns-direct (real IPs)
 // so direct routing works for NAT'd clients that can't use fake-ip.
@@ -569,6 +632,27 @@ func proxyDomainSuffixes(rules []RouteRule) []string {
 			if !seen[s] {
 				seen[s] = true
 				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
+
+// proxyDomainKeywords is proxyDomainSuffixes' substring twin: keywords from
+// rules explicitly routed to the proxy, for hosts whose blocked label sits in
+// the middle of the name (pNN-buy.itunes.apple.com) and so cannot be expressed
+// as a dot-aligned suffix.
+func proxyDomainKeywords(rules []RouteRule) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range rules {
+		if r.Outbound != "proxy" {
+			continue
+		}
+		for _, k := range r.DomainKeyword {
+			if !seen[k] {
+				seen[k] = true
+				out = append(out, k)
 			}
 		}
 	}

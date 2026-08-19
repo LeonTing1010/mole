@@ -3,6 +3,8 @@ package core
 import (
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -22,6 +24,23 @@ const ProxySelectorTag = "proxy"
 // lazily (a rung holds no QUIC session until something routes to it or pre-warms
 // it), so an unused rung costs a few lines of JSON and nothing else.
 func BandwidthRungTag(down int) string { return fmt.Sprintf("proxy-bw-%d", down) }
+
+// BandwidthRungMbps reads the ceiling back out of a ladder member's tag, so a
+// live selector answer can be reported as a number. Returns 0 for anything that
+// is not a rung — the selector may legitimately be pointing at a member the
+// ladder did not mint, and guessing a ceiling for it would be worse than saying
+// nothing.
+func BandwidthRungMbps(tag string) int {
+	rest, ok := strings.CutPrefix(tag, "proxy-bw-")
+	if !ok {
+		return 0
+	}
+	down, err := strconv.Atoi(rest)
+	if err != nil || down <= 0 {
+		return 0
+	}
+	return down
+}
 
 // standardRungs are the ceilings the ladder always offers when they fit under
 // the configured maximum. Roughly 1.5×-spaced up to 50: fine enough to track a

@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -132,11 +133,32 @@ func Stop() error {
 
 	select {
 	case <-done:
+		return nil
 	case <-time.After(5 * time.Second):
-		proc.Kill()
-		<-done
 	}
-	return nil
+
+	// SIGINT did not land within the grace window. SIGKILL reaches almost
+	// everything — but not a child wedged in a syscall it never returns from,
+	// e.g. a TUN/IOKit read frozen across a night of sleep, or a UDP socket
+	// left in the "no buffer space available" state the log showed on the night
+	// the lid-close destroy hung the daemon. The wait after Kill used to be
+	// unbounded, and that was a real bug, not a theoretical one: Stop() runs
+	// synchronously on the supervisor's own shutdown goroutine, so a Stop()
+	// that never returns means Run() never returns, and the daemon becomes a
+	// zombie that keeps the PF kill switch armed and state.json frozen until
+	// someone runs `mole down`. Bound the wait, say what was left behind, and
+	// let the next `mole down` sweep the orphan.
+	if err := proc.Kill(); err != nil {
+		log.Printf("sing-box did not exit after SIGINT; SIGKILL failed: %v", err)
+		return fmt.Errorf("sing-box did not exit: %w", err)
+	}
+	select {
+	case <-done:
+		return nil
+	case <-time.After(3 * time.Second):
+		log.Printf("sing-box is wedged and ignoring SIGKILL — leaving it to `mole down`'s orphan sweep")
+		return fmt.Errorf("sing-box is wedged and ignoring SIGKILL")
+	}
 }
 
 // ExitChan returns a channel that closes when the current sing-box process exits.

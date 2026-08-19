@@ -14,7 +14,10 @@ import (
 
 // Supervisor keeps sing-box alive and probes VPS health for status reporting.
 type Supervisor struct {
-	configPath     string
+	configPath string
+	// onRulesChanged 重新编译域名 rule-set，返回域名条数。由 cmd 层注入以避开
+	// core→config 的循环依赖（config 已 import core）。nil = 关闭规则热更。
+	onRulesChanged func() (int, error)
 	probeAddr      string // "host:port" — direct UDP probe target
 	obfsPassword   string // salamander key the probe must speak; "" when unobfuscated
 	probeURL       string // URL driven through the proxy for keepalive (and fallback probe)
@@ -33,7 +36,28 @@ type Supervisor struct {
 
 	// Destroy-on-lid-close. Inert unless both are set; see runSleepDestroy.
 	destroyOnLidClose bool
-	onIdleDestroy  func() error
+	onIdleDestroy     func(budget time.Duration) error
+	// lidDryRun logs the lid close and destroys nothing, so the clamshell
+	// detection can be proven on a given Mac without paying a redeploy.
+	lidDryRun bool
+	// lidOffReason is what to tell the operator when the watcher is not armed.
+	lidOffReason string
+	// lidClosedFn reads the clamshell. A field rather than a direct call to
+	// lidClosed so the retry path is testable: the machine running the tests
+	// has its lid open by definition, and the branch that matters most is the
+	// one taken when it is shut. Defaults to the real reader.
+	lidClosedFn func() int
+	// Lid-destroy bookkeeping. It used to be reachable only from the
+	// power-notification thread, which is single-threaded by construction (one
+	// run loop, one callback at a time). The probe loop now settles debts too —
+	// it is the only thing that ticks inside a dark wake — so the two can race,
+	// and lidMu serializes them: one destroy in flight at a time, and one writer
+	// for lastLidAttempt. The tick side takes it with TryLock, because a tick
+	// that finds an attempt already running has nothing to add by waiting.
+	lidMu            sync.Mutex
+	lidDestroyed     chan struct{}
+	lidDestroyedOnce sync.Once
+	lastLidAttempt   time.Time
 
 	stateMu sync.Mutex
 	state   *utils.State
@@ -49,8 +73,11 @@ type Supervisor struct {
 // SupervisorOpts controls the supervisor's probe cadence. Zero values get sane defaults.
 type SupervisorOpts struct {
 	ClashAddr string
-	ProbeAddr string // VPS hy2 endpoint "ip:port" for direct UDP probe (recommended)
-	ProbeURL  string // URL driven through the proxy for keepalive; also the fallback probe when ProbeAddr is empty
+	// OnRulesChanged 在 custom-rules.json 变更时重新编译域名 rule-set，返回域名条数。
+	// 由 cmd 层注入（core 不能 import config，会成循环依赖）。nil = 关闭规则热更。
+	OnRulesChanged func() (int, error)
+	ProbeAddr      string // VPS hy2 endpoint "ip:port" for direct UDP probe (recommended)
+	ProbeURL       string // URL driven through the proxy for keepalive; also the fallback probe when ProbeAddr is empty
 	// ObfsPassword is the server's salamander key. The direct probe must speak
 	// the same obfuscation the server does, or every probe decodes to noise on
 	// arrival and is dropped unanswered — health would report a dark path
@@ -71,8 +98,25 @@ type SupervisorOpts struct {
 	// maintenance sleep do not count. macOS only. See runSleepDestroy for why
 	// this is the only trigger rather than one of several.
 	DestroyOnLidClose bool
-	// OnIdleDestroy performs the destroy. Required when DestroyOnLidClose is set.
-	OnIdleDestroy func() error
+	// OnIdleDestroy performs the destroy within budget. Required when
+	// DestroyOnLidClose is set.
+	//
+	// The budget is passed rather than fixed by the implementation because the
+	// two callers have incomparable windows: a lid close is a held-open ~30s,
+	// a retry on a dark wake is 2 seconds of borrowed time. See lidCloseBudget
+	// and retryBudget.
+	OnIdleDestroy func(budget time.Duration) error
+	// LidCloseDryRun arms the watcher but destroys nothing: a lid close is
+	// logged and the daemon keeps running. The clamshell test in
+	// sleepwatch_darwin.go reads properties whose placement varies by model, so
+	// "it compiles" is not evidence it fires on this Mac. This is how to get
+	// that evidence without deleting the server to find out.
+	LidCloseDryRun bool
+	// LidDestroyOffReason is why DestroyOnLidClose is false, in the operator's
+	// terms ("no Vultr key", a flag they passed). Recorded in state.json and
+	// logged at startup so a disarmed watcher is discoverable later instead of
+	// only at the moment it fails to fire.
+	LidDestroyOffReason string
 }
 
 // NewSupervisor builds a supervisor ready to start. It does not start sing-box.
@@ -98,17 +142,22 @@ func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervis
 		opts.ProbeTimeMs = 5000
 	}
 	return &Supervisor{
-		configPath:     configPath,
-		probeAddr:      opts.ProbeAddr,
-		obfsPassword:   opts.ObfsPassword,
-		probeURL:       opts.ProbeURL,
-		probeEvery:     opts.ProbeEvery,
-		keepaliveEvery: opts.KeepaliveEvery,
-		probeTimeMs:    opts.ProbeTimeMs,
-		schedule:       opts.Schedule,
+		configPath:        configPath,
+		probeAddr:         opts.ProbeAddr,
+		obfsPassword:      opts.ObfsPassword,
+		probeURL:          opts.ProbeURL,
+		probeEvery:        opts.ProbeEvery,
+		keepaliveEvery:    opts.KeepaliveEvery,
+		probeTimeMs:       opts.ProbeTimeMs,
+		schedule:          opts.Schedule,
 		destroyOnLidClose: opts.DestroyOnLidClose,
-		onIdleDestroy:  opts.OnIdleDestroy,
-		clash:          NewClashClient(opts.ClashAddr),
+		onIdleDestroy:     opts.OnIdleDestroy,
+		onRulesChanged:    opts.OnRulesChanged,
+		lidDryRun:         opts.LidCloseDryRun,
+		lidOffReason:      opts.LidDestroyOffReason,
+		lidClosedFn:       lidClosed,
+		lidDestroyed:      make(chan struct{}),
+		clash:             NewClashClient(opts.ClashAddr),
 		state: &utils.State{
 			Mode:      utils.ModeProxy,
 			PID:       os.Getpid(),
@@ -128,7 +177,6 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		return fmt.Errorf("initial sing-box start: %w", err)
 	}
 	defer Stop()
-	_ = utils.WriteState(s.snapshot())
 
 	// The scheduler runs whenever the config carries a ladder — not just when a
 	// peak window is configured. Without a peak profile it has no clock work to
@@ -139,8 +187,42 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	// than running a loop whose conclusion goes nowhere.
 	sleepOn := s.destroyOnLidClose && s.onIdleDestroy != nil
 
+	// Carry forward what the last daemon failed to finish. A destroy that fired
+	// and never completed leaves a server running that nobody is watching.
+	//
+	// Read from the debt file, not from state.json: `mole down` deletes
+	// state.json, so the version of this that read it printed nothing on the
+	// path people actually take. On 2026-08-14 a destroy owed since 03:40
+	// survived the night and was erased by the `mole down && mole up` at 10:02,
+	// after which the machine that had been billing for six hours was mentioned
+	// by nothing at all.
+	if debt := utils.ReadLidDebt(); debt != nil {
+		who := debt.Server
+		if who == "" {
+			who = "the server"
+		}
+		log.Printf("destroy-on-lid-close: %s has been billing since %s — the destroy owed then is %s after %d attempts (last: %s). `mole down --destroy` settles it",
+			who, debt.Since.Format("2006-01-02 15:04"), debt.State, debt.Attempts, debt.Reason)
+	}
+
+	// Say which way this went before anything else can fail. Both branches are
+	// recorded — in state.json for `mole status` and in the log for later — so
+	// the answer to "was it armed last night?" is a file read rather than an
+	// inference from the absence of output.
+	s.recordLidDestroy(sleepOn)
+	_ = utils.WriteState(s.snapshot())
+	if !sleepOn {
+		reason := s.lidOffReason
+		if reason == "" {
+			reason = "not enabled"
+		}
+		log.Printf("destroy-on-lid-close: OFF (%s) — the server bills until destroyed, shutting the lid will not stop it", reason)
+	}
+
 	var wg sync.WaitGroup
-	n := 3
+	// +1 = 规则热更监听（见 ruleswatch.go）：改 custom-rules.json 即时生效，
+	// 无需任何命令、不重启进程、不断 TUN。
+	n := 4
 	if scheduleOn {
 		n++
 	}
@@ -154,6 +236,16 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		defer wg.Done()
 		defer recoverPanic("singbox-lifecycle")
 		s.runLifecycle(ctx)
+	}()
+
+	// Goroutine A2: watch custom-rules.json and recompile the domain rule-sets
+	// in place. sing-box watches those files itself, so a domain change lands
+	// without a reconnect — no TUN teardown, no kill-switch gap, no dropped
+	// connections. Scope and limits: config/hotrules.go.
+	go func() {
+		defer wg.Done()
+		defer recoverPanic("rules-watch")
+		s.watchRules(ctx)
 	}()
 
 	// Goroutine B: probe VPS health for status reporting.
@@ -272,6 +364,11 @@ func (s *Supervisor) runProbe(ctx context.Context) {
 	t := time.NewTicker(s.probeEvery)
 	defer t.Stop()
 	for {
+		// Before the probe, not after: when both have something to do the
+		// machine is in a dark wake with seconds to live, and deleting the
+		// server is worth more than one more health sample. Returns immediately
+		// unless a destroy is owed, which is every tick of a normal day.
+		s.reconcileLidDebt("tick retry")
 		s.probeOnce()
 		select {
 		case <-ctx.Done():
@@ -346,7 +443,31 @@ const (
 // the failure it guards against takes tens of minutes to reproduce against a
 // real link, which is exactly the kind of logic that otherwise only ever gets
 // tested in production.
-type healState struct{ backoff, bad, good int }
+type healState struct {
+	backoff, bad, good int
+	// target is the ceiling the descent was accumulated against, so a change of
+	// intent can be told apart from a change of health.
+	target int
+}
+
+// retarget restarts the descent when the ceiling target changes under it.
+//
+// The backoff is evidence about one particular ceiling: "30 Mbps is currently
+// too much for this path". The moment someone runs `mole ceiling 12` that
+// evidence is about a setting nobody is asking for any more, and carrying it
+// over lands the tunnel some rungs below what they typed — while `mole ceiling`
+// prints the number they asked for and `mole status` prints a third one. An
+// explicit pin is a fresh statement of intent, so the descent starts over and
+// re-earns itself from the probes if the path really is still bad.
+func (h *healState) retarget(pin int) {
+	if pin == h.target {
+		return
+	}
+	if h.backoff > 0 {
+		log.Printf("self-heal: ceiling target changed (%d → %d) — clearing backoff %d", h.target, pin, h.backoff)
+	}
+	*h = healState{target: pin}
+}
 
 // tick folds in one observation and returns the backoff to apply now.
 func (h *healState) tick(healthy bool) int {
@@ -487,7 +608,8 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 		// A pin only counts if the config actually carries that rung — otherwise
 		// we would select a member sing-box has never heard of and the call would
 		// fail every tick. An out-of-range pin degrades to clock control.
-		if pin := utils.ReadCeiling(); pin > 0 {
+		pin := utils.ReadCeiling()
+		if pin > 0 {
 			if s.schedule.HasRung(pin) {
 				member, name, down = BandwidthRungTag(pin), "pinned", pin
 				warnedPin = 0
@@ -496,6 +618,12 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 				log.Printf("bandwidth scheduler: pinned ceiling %d Mbps has no rung in this config (available: %v) — following the clock", pin, s.schedule.Rungs())
 			}
 		}
+		// Retiring a pin is as much a change of intent as setting one, so the
+		// clock target (pin 0) gets the same treatment. Done here rather than in
+		// retune() because the pin is read on this path and the cleared backoff
+		// has to apply to the very tick that noticed the change.
+		heal.retarget(pin)
+		backoff = heal.backoff
 		// Self-healing. The clock and the pin both encode what the link was
 		// measured to carry, and a link that is currently failing is by
 		// definition not carrying it. Brutal holds its declared rate straight
@@ -513,27 +641,46 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 				name = fmt.Sprintf("%s↓%d", name, backoff)
 			}
 		}
-		if member == applied {
-			return
+		// Compare against what the selector is *actually* pointing at, not against
+		// what we last set. `mole ceiling` drives the same selector directly, so
+		// the two can disagree — and when they do, skipping on the stale cache
+		// leaves the CLI's choice live while this loop keeps reporting its own.
+		// Falling back to the cache on a query failure keeps a flaky API from
+		// turning into a re-select every tick.
+		live, err := s.clash.Selection(ProxySelectorTag)
+		if err != nil {
+			live = applied
 		}
-		// Pre-warm the target so it has a live QUIC session before we route real
-		// traffic onto it. Best-effort: a cold target just costs one handshake on
-		// the first connection.
-		if _, err := s.clash.TestDelay(member, s.probeURL, s.probeTimeMs); err != nil {
-			log.Printf("bandwidth scheduler: pre-warm %s failed: %v", member, err)
-		}
-		if err := s.clash.SelectProxy(ProxySelectorTag, member); err != nil {
-			log.Printf("bandwidth scheduler: select %s failed: %v", member, err)
-			return
+		if member != live {
+			// Pre-warm the target so it has a live QUIC session before we route real
+			// traffic onto it. Best-effort: a cold target just costs one handshake on
+			// the first connection.
+			if _, err := s.clash.TestDelay(member, s.probeURL, s.probeTimeMs); err != nil {
+				log.Printf("bandwidth scheduler: pre-warm %s failed: %v", member, err)
+			}
+			if err := s.clash.SelectProxy(ProxySelectorTag, member); err != nil {
+				log.Printf("bandwidth scheduler: select %s failed: %v", member, err)
+				return
+			}
+			log.Printf("bandwidth profile → %s (↓%d Mbps) via %s", name, down, member)
 		}
 		applied = member
 
+		// Record unconditionally of whether a switch was needed: the selector can
+		// already be right while the published state is stale (an out-of-band
+		// `mole ceiling` puts it exactly there), and this state is what `mole
+		// status` reads. Guarded on the recorded values so a steady tunnel still
+		// costs no writes.
 		s.stateMu.Lock()
-		s.state.BandwidthProfile = name
-		s.state.BandwidthDownMbps = down
+		stale := s.state.BandwidthProfile != name || s.state.BandwidthDownMbps != down
+		if stale {
+			s.state.BandwidthProfile = name
+			s.state.BandwidthDownMbps = down
+		}
 		s.stateMu.Unlock()
-		_ = utils.WriteState(s.snapshot())
-		log.Printf("bandwidth profile → %s (↓%d Mbps) via %s", name, down, member)
+		if stale {
+			_ = utils.WriteState(s.snapshot())
+		}
 	}
 
 	// retune adjusts the backoff from the health the probes are already
@@ -581,6 +728,111 @@ func (s *Supervisor) waitClashReady(ctx context.Context, timeout time.Duration) 
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
+}
+
+// recordLidDestroy stores what will happen when the lid is shut, so `mole
+// status` can answer it at any time instead of only the terminal that ran
+// `mole up` being able to, and only until it scrolls away.
+func (s *Supervisor) recordLidDestroy(armed bool) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	switch {
+	case armed && s.lidDryRun:
+		s.state.LidDestroy = utils.LidDestroyDryRun
+		s.state.LidDestroyReason = "--lid-close-dry-run"
+	case armed:
+		s.state.LidDestroy = utils.LidDestroyArmed
+		s.state.LidDestroyReason = ""
+	default:
+		s.state.LidDestroy = utils.LidDestroyOff
+		s.state.LidDestroyReason = s.lidOffReason
+	}
+}
+
+// recordLidDestroyed flips the marker from "what the daemon will do" to "what
+// it did", stamped with when. Called from the sleep notification thread right
+// after a successful lid-close destroy; the caller persists it. Kept a method
+// so the transition is testable the same way recordLidDestroy is.
+func (s *Supervisor) recordLidDestroyed(when time.Time) {
+	s.markLidSettled("server destroyed on lid close at " + when.Format("2006-01-02 15:04"))
+}
+
+// markLidSettled records that no server is running for this daemon to owe a
+// destroy on, whatever route got there: one this daemon deleted, or one that was
+// already gone when the lid shut. Both end the debt, and both must end it the
+// same way — the record is about whether anything is billing, not about who
+// deleted what.
+func (s *Supervisor) markLidSettled(reason string) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.state.LidDestroy = utils.LidDestroyFired
+	s.state.LidDestroyReason = reason
+	s.state.LidDestroyPendingSince = time.Time{}
+	s.state.LidDestroyAttempts = 0
+	// The debt is settled — the server this named is gone, so the record that
+	// outlives daemons has to go with it or `mole status` nags about a VPS that
+	// no longer exists.
+	_ = utils.ClearLidDebt()
+}
+
+// recordLidDestroyPending marks the destroy as owed: it fired, it failed, and
+// the server is still billing. Stamps the lid close on the first failure only,
+// so PendingSince keeps measuring from when the debt was incurred rather than
+// resetting on every retry.
+func (s *Supervisor) recordLidDestroyPending(when time.Time, cause error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.state.LidDestroy != utils.LidDestroyPending {
+		s.state.LidDestroyPendingSince = when
+		s.state.LidDestroyAttempts = 0
+	}
+	s.state.LidDestroy = utils.LidDestroyPending
+	s.state.LidDestroyAttempts++
+	s.state.LidDestroyReason = cause.Error()
+	s.persistLidDebtLocked()
+}
+
+// recordLidDestroyCancelled gives up on an owed destroy because the lid was
+// opened. Keeps PendingSince and the attempt count: they are the record of how
+// long the server billed unattended, which is the only thing anyone can still
+// learn from this once the tunnel is in use again.
+func (s *Supervisor) recordLidDestroyCancelled(reason string) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.state.LidDestroy = utils.LidDestroyCancelled
+	s.state.LidDestroyReason = reason
+	s.persistLidDebtLocked()
+}
+
+// persistLidDebtLocked mirrors the debt out of state.json into a file that
+// survives this daemon. Best effort: it is a record, not a lock, and a write
+// that fails costs a warning nobody sees rather than correctness.
+//
+// Called under stateMu.
+func (s *Supervisor) persistLidDebtLocked() {
+	_ = utils.WriteLidDebt(&utils.LidDebt{
+		Server:   s.state.Server,
+		Since:    s.state.LidDestroyPendingSince.Round(0),
+		Attempts: s.state.LidDestroyAttempts,
+		Reason:   s.state.LidDestroyReason,
+		State:    s.state.LidDestroy,
+	})
+}
+
+// lidIsClosed reads the clamshell through the injectable hook.
+func (s *Supervisor) lidIsClosed() int {
+	if s.lidClosedFn == nil {
+		return lidClosed()
+	}
+	return s.lidClosedFn()
+}
+
+// lidDestroyPending reports whether a destroy is still owed.
+func (s *Supervisor) lidDestroyPending() (since time.Time, attempts int, owed bool) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.state.LidDestroyPendingSince, s.state.LidDestroyAttempts,
+		s.state.LidDestroy == utils.LidDestroyPending
 }
 
 func (s *Supervisor) snapshot() *utils.State {

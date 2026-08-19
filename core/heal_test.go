@@ -111,3 +111,57 @@ func TestHealReturnsToTheTargetAndStops(t *testing.T) {
 		}
 	}
 }
+
+// The bug this guards: `mole ceiling 30` reported 30, the Clash selector really
+// was proxy-bw-30, and `mole status` said "pinned↓2 (Brutal ↓5 Mbps)" — the
+// backoff earned against the *previous* ceiling was still being subtracted from
+// the new one. A pin is a fresh statement of intent; the descent has to re-earn
+// itself from the probes rather than carrying over.
+func TestHealBackoffResetsWhenTheCeilingTargetChanges(t *testing.T) {
+	h := healState{target: 30}
+	for i := 0; i < healBackoffTicks*2; i++ {
+		h.tick(false)
+	}
+	if h.backoff == 0 {
+		t.Fatal("setup failed: the path was unhealthy long enough to descend, but backoff is 0")
+	}
+
+	h.retarget(12)
+	if h.backoff != 0 {
+		t.Errorf("backoff after pinning a new ceiling = %d, want 0 — the user's number must be what runs", h.backoff)
+	}
+	if h.target != 12 {
+		t.Errorf("target after retarget = %d, want 12", h.target)
+	}
+	// The partial evidence has to go too, or the next bad tick descends
+	// immediately off a count gathered against the old ceiling.
+	if h.bad != 0 || h.good != 0 {
+		t.Errorf("retarget left bad=%d good=%d, want both 0", h.bad, h.good)
+	}
+}
+
+// Retiring a pin (back to clock control, pin 0) is the same kind of change, and
+// the same tick must not keep descending below the clock's own target.
+func TestHealBackoffResetsWhenThePinIsRetired(t *testing.T) {
+	h := healState{target: 30}
+	for i := 0; i < healBackoffTicks*2; i++ {
+		h.tick(false)
+	}
+	h.retarget(0)
+	if h.backoff != 0 {
+		t.Errorf("backoff after `mole ceiling auto` = %d, want 0", h.backoff)
+	}
+}
+
+// Every tick calls retarget with the pin it just read, so an unchanged pin must
+// be inert — otherwise the descent could never accumulate at all.
+func TestHealRetargetIsInertWhenTheTargetIsUnchanged(t *testing.T) {
+	h := healState{target: 30}
+	for i := 0; i < healBackoffTicks*2; i++ {
+		h.retarget(30)
+		h.tick(false)
+	}
+	if h.backoff == 0 {
+		t.Error("repeated retarget with the same pin wiped the descent; a steady pin must not block self-healing")
+	}
+}

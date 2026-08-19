@@ -45,8 +45,8 @@ func init() {
 // recoveries there.
 func destroyActiveServerForDown() error {
 	servers, err := loadServers()
-	if err != nil || len(servers) == 0 {
-		return nil
+	if err != nil {
+		return fmt.Errorf("read local servers: %w", err)
 	}
 	for _, s := range servers {
 		if !s.Active {
@@ -55,7 +55,41 @@ func destroyActiveServerForDown() error {
 		fmt.Printf("🗑️  Destroying %s (it bills until destroyed, not until stopped)...\n", s.Name)
 		return destroyServerByName(s.Name, false)
 	}
+	// No active server in local state. But the running daemon may still owe a
+	// destroy it could not pay — e.g. the lid-close DELETE failed and the local
+	// entry was later lost, leaving a VPS that is STILL BILLING on Vultr with no
+	// local entry to destroy it through. Every normal destroy route needs that
+	// entry + the hy2 password, so don't return silently and let `mole down`
+	// print "✅": say where the orphan actually goes.
+	if owed := owedLidDestroyMsg(); owed != "" {
+		fmt.Printf("⚠️  %s\n", owed)
+		fmt.Println("    `mole down --destroy` cannot reach it — there is no local server entry to destroy.")
+		fmt.Println("    Destroy the orphan with: `mole server reconcile --destroy-remote`")
+	}
 	return nil
+}
+
+// owedLidDestroyMsg returns a one-line description of a destroy that fired at a
+// lid close and was never paid, or "" when there is no such debt. It is the same
+// record `mole status` surfaces, read here so `mole down --destroy` can refuse
+// to go quietly when the owed server is unreachable.
+func owedLidDestroyMsg() string {
+	debt := utils.ReadLidDebt()
+	if debt == nil {
+		return ""
+	}
+	who := debt.Server
+	if who == "" {
+		who = "the server"
+	}
+	switch debt.State {
+	case utils.LidDestroyCancelled:
+		return fmt.Sprintf("A destroy owed since %s was abandoned when the lid opened and %s is STILL BILLING",
+			debt.Since.Format("15:04"), who)
+	default:
+		return fmt.Sprintf("A lid close at %s failed to destroy %s (%d attempts) and it is STILL BILLING",
+			debt.Since.Format("2006-01-02 15:04"), who, debt.Attempts)
+	}
 }
 
 // runDown drives the system back to a clean state and only prints success once
@@ -74,13 +108,29 @@ func destroyActiveServerForDown() error {
 //  6. Restore host state (DNS / UDP buffers / pid / state files).
 //  7. Re-scan ps; only print success if nothing is left.
 func runDown(cmd *cobra.Command, args []string) error {
-	// Before the sudo hop below, and before the tunnel goes away: the Vultr API
-	// call rides the proxy, so doing it while the tunnel still works avoids
-	// depending on api.vultr.com being pleasant to reach direct from here.
+	// Before the sudo hop below, because the Vultr key lives in the user's
+	// environment and sudo drops it.
+	//
+	// It used to also matter that this ran before the tunnel went away — the
+	// API call rode the proxy, so it wanted a working tunnel underneath it.
+	// That is no longer true and was never a good property: it made tearing
+	// down the server depend on the thing being torn down. The management call
+	// now goes out the physical interface (utils.NewBoundHTTPClient) through
+	// the kill switch's exemption, so it works with the tunnel up, down, or
+	// dark.
 	if destroyOnDown {
 		if err := destroyActiveServerForDown(); err != nil {
 			return fmt.Errorf("destroy on down: %w (the VPN was NOT stopped; fix or re-run without --destroy)", err)
 		}
+	}
+
+	// Only when --destroy was not given, which just settled the debt itself. A
+	// destroy that fired at a closing lid and failed leaves a server running
+	// that nobody is watching; stopping the daemon removes the last thing that
+	// was going to retry it, so say so here — and, since the record now outlives
+	// state.json, `mole status` keeps saying it afterwards.
+	if !destroyOnDown {
+		printLeftoverLidDebt()
 	}
 
 	fmt.Println("🛑 Stopping VPN...")

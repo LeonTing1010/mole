@@ -141,3 +141,20 @@ func TestProfileWindowWrapsMidnight(t *testing.T) {
 		}
 	}
 }
+
+// BandwidthRungMbps is the inverse `mole status` uses to turn a live selector
+// answer back into a ceiling. It has to round-trip every rung the ladder can
+// mint, and refuse anything else rather than guessing a number for it.
+func TestBandwidthRungMbpsRoundTrips(t *testing.T) {
+	s := BandwidthSchedule{OffUp: 10, OffDown: 65, PeakUp: 5, PeakDown: 50, StartHour: 12, EndHour: 2}
+	for _, down := range s.Rungs() {
+		if got := BandwidthRungMbps(BandwidthRungTag(down)); got != down {
+			t.Errorf("round-trip of rung %d = %d", down, got)
+		}
+	}
+	for _, tag := range []string{"proxy", "direct", "proxy-bw-", "proxy-bw-x", "proxy-bw-0", "proxy-bw--3", "bw-30"} {
+		if got := BandwidthRungMbps(tag); got != 0 {
+			t.Errorf("BandwidthRungMbps(%q) = %d, want 0 — a non-rung must not report a ceiling", tag, got)
+		}
+	}
+}

@@ -9,11 +9,59 @@ package core
 #include <CoreFoundation/CoreFoundation.h>
 
 extern void moleWillSleep(void);
+extern void moleDidWake(void);
 
 static io_connect_t          gRootPort;
 static IONotificationPortRef gNotifyPort;
 static io_object_t           gNotifier;
 static CFRunLoopRef          gRunLoop;
+static IOPMAssertionID       gAwakeAssertion;
+
+// moleHoldAwake asks power management to keep the system out of sleep for the
+// length of a destroy, and moleReleaseAwake lets it go again.
+//
+// A request, not a guarantee, and the difference matters. A dark wake is short
+// — 2 to 19 seconds on the nights this was measured — and ends whenever
+// whatever caused it is finished, with no obligation to wait for us.
+//
+// kIOPMAssertNetworkClientActive is the assertion that covers this: the header
+// describes it as keeping the system awake "in dark or full wake, as long as
+// the system is on AC power", and on battery says plainly that OS X may not
+// honor it. So a laptop asleep in a bag — the exact case this feature exists
+// for — is the case where the hold does nothing, and the caller must be sized
+// to survive that (see retryBudget).
+//
+// It replaced kIOPMAssertionTypePreventSystemSleep, which was not a weaker
+// version of this but an inert one: deprecated in 10.9 and, per IOPMLib.h,
+// "not supported in any OS X releases". IOPMAssertionCreateWithName still
+// returns kIOReturnSuccess for it and `pmset -g assertions` still lists it
+// under this process — while the system-wide PreventSystemSleep counter stays
+// at 0. Measured on macOS 26 on 2026-08-14, which is how a comment claiming
+// this was "what makes a retry on a dark wake possible at all" survived a year
+// of never having held anything open.
+//
+// No root needed, for either type.
+static int moleHoldAwake(void) {
+    if (gAwakeAssertion != 0) {
+        return 0;
+    }
+    IOReturn r = IOPMAssertionCreateWithName(kIOPMAssertNetworkClientActive,
+                                             kIOPMAssertionLevelOn,
+                                             CFSTR("mole: completing a pending server destroy"),
+                                             &gAwakeAssertion);
+    if (r != kIOReturnSuccess) {
+        gAwakeAssertion = 0;
+        return -1;
+    }
+    return 0;
+}
+
+static void moleReleaseAwake(void) {
+    if (gAwakeAssertion != 0) {
+        IOPMAssertionRelease(gAwakeAssertion);
+        gAwakeAssertion = 0;
+    }
+}
 
 // moleLidIsClosed answers whether the sleep now underway is a closing lid.
 // Returns 1 for yes, 0 for no, -1 when the machine cannot say (a desktop with
@@ -93,6 +141,20 @@ static void moleSleepCallback(void *refCon, io_service_t service,
         }
         IOAllowPowerChange(gRootPort, (long)messageArgument);
         break;
+    case kIOMessageSystemHasPoweredOn:
+        // FULL wakes only, whatever the name suggests. The dark wakes a laptop
+        // takes all night do not deliver this message: on 2026-08-14 there were
+        // 28 of them between the lid closing and the lid opening, the daemon
+        // ran through every one, and this callback fired exactly once — at the
+        // end, on the full wake. (Hearing dark wake needs IOPMConnection, which
+        // is not in the public SDK.)
+        //
+        // So this is the fast path for "someone came back", not the retry
+        // engine it was written as. What settles a debt across a night is
+        // Supervisor.reconcileLidDebt, called from a loop that does tick inside
+        // dark wakes.
+        moleDidWake();
+        break;
     default:
         break;
     }
@@ -130,6 +192,7 @@ import (
 var (
 	sleepHookMu sync.Mutex
 	sleepHook   func()
+	wakeHook    func()
 )
 
 // lidClosed reports the machine's clamshell state: 1 shut, 0 open, -1 unknown.
@@ -147,8 +210,35 @@ func moleWillSleep() {
 	}
 }
 
-// WatchLidClose calls onLidClose on each sleep that a closed lid caused, and
-// blocks until ctx is cancelled.
+//export moleDidWake
+func moleDidWake() {
+	sleepHookMu.Lock()
+	fn := wakeHook
+	sleepHookMu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
+
+// HoldAwake asks the system not to sleep until ReleaseAwake. Calls do not
+// nest: a second Hold while one is held is a no-op, and one Release drops it.
+//
+// Only useful while the machine is in a wake it did not take for us — a dark
+// wake — and honored only on AC power. A nil error means the assertion was
+// created, not that the system will obey it; nothing in the API reports the
+// difference. Callers must be able to lose the race.
+func HoldAwake() error {
+	if C.moleHoldAwake() != 0 {
+		return fmt.Errorf("IOPMAssertionCreateWithName failed")
+	}
+	return nil
+}
+
+// ReleaseAwake drops the assertion taken by HoldAwake. Safe when none is held.
+func ReleaseAwake() { C.moleReleaseAwake() }
+
+// WatchPower calls onLidClose on each sleep that a closed lid caused and onWake
+// on every wake, dark or full, and blocks until ctx is cancelled.
 //
 // Riding the sleep notification is the only reliable way to act on a closing
 // lid. The lid state is readable (`AppleClamshellState` in the IO registry) but
@@ -167,13 +257,20 @@ func moleWillSleep() {
 // into sleep for as long as it takes, so it must be quick and must not
 // deadlock. The ~30s ceiling is the system's, not ours: overrun it and the
 // machine sleeps anyway, mid-request.
-func WatchLidClose(ctx context.Context, onLidClose func()) error {
+//
+// onWake runs on the same thread and holds up nothing — the system does not
+// wait on wake clients the way it waits on sleep clients. A wake handler that
+// needs time has to take it with HoldAwake, and a dark wake will end under one
+// that does not.
+func WatchPower(ctx context.Context, onLidClose, onWake func()) error {
 	sleepHookMu.Lock()
 	sleepHook = onLidClose
+	wakeHook = onWake
 	sleepHookMu.Unlock()
 	defer func() {
 		sleepHookMu.Lock()
 		sleepHook = nil
+		wakeHook = nil
 		sleepHookMu.Unlock()
 	}()
 

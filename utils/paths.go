@@ -86,6 +86,27 @@ func StatePath() string { return filepath.Join(MoleDir(), "state.json") }
 // Vultr key restricted to instance management over the account-wide one.
 func VultrKeyPath() string { return filepath.Join(MoleDir(), "vultr_key") }
 
+// APIIPsPath is the cache of what management hostnames last resolved to
+// outside the tunnel.
+//
+// It exists for the one call that cannot afford a DNS round trip: the destroy
+// at a closing lid, which gets ~30 seconds and often gets them on a link that
+// has already gone dark. Knowing where api.vultr.com lived an hour ago turns a
+// 5-second timeout into a dial that either works or fails immediately.
+func APIIPsPath() string { return filepath.Join(MoleDir(), "api-ips.json") }
+
+// LidDebtPath is where a destroy that fired at a lid close and never completed
+// is recorded — the server it failed to delete is still running and billing.
+//
+// A file of its own rather than a field in state.json, because state.json is
+// deleted by `mole down` and rewritten by the next `mole up`: on 2026-08-14 a
+// destroy owed since 03:40 survived six hours of dark wakes only to be erased
+// by the `mole down && mole up` typed at 10:02, after which nothing — not
+// `mole status`, not the new daemon's log — mentioned the server that had been
+// billing all night. This record outlives daemons on purpose and is cleared
+// only when the debt is actually settled (see ClearLidDebt).
+func LidDebtPath() string { return filepath.Join(MoleDir(), "lid-debt.json") }
+
 // CustomRulesPath is the optional JSON file for user-defined routing rules.
 func CustomRulesPath() string { return filepath.Join(MoleDir(), "custom-rules.json") }
 

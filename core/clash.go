@@ -100,3 +100,29 @@ func (c *ClashClient) Ping() error {
 	}
 	return nil
 }
+
+// Selection returns the member a selector currently points at. This is the only
+// way the supervisor can tell what is *actually* live: `mole ceiling` drives the
+// same selector out of band, so the scheduler's own record of what it last set
+// is a statement of intent, not a fact about the tunnel.
+func (c *ClashClient) Selection(selector string) (string, error) {
+	resp, err := c.http.Get(fmt.Sprintf("%s/proxies/%s", c.base, url.PathEscape(selector)))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		msg, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("selection %s: %s: %s", selector, resp.Status, string(msg))
+	}
+	var out struct {
+		Now string `json:"now"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if out.Now == "" {
+		return "", fmt.Errorf("selection %s: no current member in response", selector)
+	}
+	return out.Now, nil
+}

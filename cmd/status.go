@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/LeonTing1010/mole/core"
 	"github.com/LeonTing1010/mole/utils"
 	"github.com/spf13/cobra"
 )
@@ -45,6 +46,11 @@ func runStatus(_ *cobra.Command, _ []string) error {
 	} else if active != nil {
 		fmt.Println("   Run `mole up` to connect.")
 	}
+
+	// Last, so it is the line left on the screen. `mole status` is where people
+	// look when they wonder what mole is costing them, and until 2026-08-14 it
+	// was the one command that never mentioned a server billing unattended.
+	printLeftoverLidDebt()
 	return nil
 }
 
@@ -85,9 +91,28 @@ func printSupervisorState() {
 		fmt.Printf("   Mode:    %s\n", st.Mode)
 	}
 	// Time-of-day Brutal ceiling, when the active server has a peak profile.
+	//
+	// The recorded profile is the scheduler's belief, refreshed once a minute;
+	// the selector is what is actually carrying traffic. `mole ceiling` moves the
+	// selector immediately, so for up to a tick the two legitimately disagree —
+	// and reporting the belief as if it were the ceiling is how this line used to
+	// claim "↓5 Mbps" while the tunnel ran at 30. Lead with the live number, and
+	// name the disagreement instead of hiding it: past the settling window a
+	// standing mismatch means the scheduler has lost the selector.
 	if st.BandwidthProfile != "" {
-		fmt.Printf("   Profile: %s (Brutal ↓%d Mbps)\n", st.BandwidthProfile, st.BandwidthDownMbps)
+		live := 0
+		if now, err := core.NewClashClient("127.0.0.1:9090").Selection(core.ProxySelectorTag); err == nil {
+			live = core.BandwidthRungMbps(now)
+		}
+		switch {
+		case live == 0 || live == st.BandwidthDownMbps:
+			fmt.Printf("   Profile: %s (Brutal ↓%d Mbps)\n", st.BandwidthProfile, st.BandwidthDownMbps)
+		default:
+			fmt.Printf("   Profile: Brutal ↓%d Mbps live — scheduler still on %q (↓%d), reconciles next tick\n",
+				live, st.BandwidthProfile, st.BandwidthDownMbps)
+		}
 	}
+	printLidDestroy(st)
 	if !st.LastProbeAt.IsZero() {
 		fmt.Printf("   Probed:  %s ago\n", humanize(time.Since(st.LastProbeAt)))
 	}
@@ -103,6 +128,70 @@ func printSupervisorState() {
 				st.LastKeepaliveMs, humanize(time.Since(st.LastKeepaliveAt)))
 		}
 	}
+}
+
+// printLidDestroy reports what the running daemon will do to the server when
+// the lid is shut — or, once the destroy has fired, that it already did.
+// Shown on every `mole status` and once at the end of `mole up`, because the
+// failure mode this is here to catch is not an error anyone sees — it is a
+// feature that stays quiet and a bill that arrives later.
+//
+// An empty LidDestroy means the daemon predates the field, not that the watcher
+// is off; say nothing rather than assert either way.
+func printLidDestroy(st *utils.State) {
+	switch st.LidDestroy {
+	case utils.LidDestroyArmed:
+		fmt.Println("   Lid:     🟢 destroy-on-lid-close armed — shutting the lid deletes the server")
+	case utils.LidDestroyDryRun:
+		fmt.Println("   Lid:     🧪 destroy-on-lid-close DRY RUN — a lid close is logged, nothing is destroyed")
+	case utils.LidDestroyFired:
+		fmt.Printf("   Lid:     🔴 destroy-on-lid-close FIRED — the server was destroyed (%s)\n", st.LidDestroyReason)
+		fmt.Println("            The daemon is stopping; bring the tunnel back with `mole server deploy` then `mole up`")
+	case utils.LidDestroyPending:
+		fmt.Printf("   Lid:     🟠 destroy-on-lid-close FAILED at %s (%d attempts) — the server is STILL BILLING, %s so far\n",
+			st.LidDestroyPendingSince.Format("15:04"), st.LidDestroyAttempts,
+			humanize(time.Since(st.LidDestroyPendingSince)))
+		fmt.Printf("            Last error: %s\n", st.LidDestroyReason)
+		fmt.Println("            Retried on every wake while the lid stays shut; opening the lid gives up.")
+	case utils.LidDestroyCancelled:
+		fmt.Printf("   Lid:     🟠 a destroy owed since %s was abandoned when the lid opened — the server is still running\n",
+			st.LidDestroyPendingSince.Format("15:04"))
+		fmt.Printf("            %s\n", st.LidDestroyReason)
+		fmt.Println("            The watcher is armed again; the next lid close destroys as usual.")
+	case utils.LidDestroyOff:
+		reason := st.LidDestroyReason
+		if reason == "" {
+			reason = "reason not recorded"
+		}
+		fmt.Printf("   Lid:     🔴 destroy-on-lid-close OFF (%s)\n", reason)
+		fmt.Println("            The server bills until destroyed; shutting the lid will not stop it.")
+	}
+}
+
+// printLeftoverLidDebt warns about a destroy that fired at a lid close and was
+// never paid off.
+//
+// Separate from printLidDestroy because it describes a different thing: not
+// what the daemon starting now will do, but what an earlier one failed to do
+// and what that is still costing. Silent unless there is something to say.
+//
+// Reads the debt file rather than state.json, which is why it now keeps saying
+// this after a `mole down && mole up`. It used to go quiet at exactly the
+// moment the last thing that would have retried the destroy was killed.
+func printLeftoverLidDebt() {
+	debt := utils.ReadLidDebt()
+	if debt == nil {
+		return
+	}
+	who := debt.Server
+	if who == "" {
+		who = "the server"
+	}
+	fmt.Printf("⚠️  A lid close at %s failed to destroy %s (%d attempts); it has been\n",
+		debt.Since.Format("2006-01-02 15:04"), who, debt.Attempts)
+	fmt.Printf("   billing %s since. Destroy it with `mole down --destroy`, or keep using it —\n",
+		humanize(time.Since(debt.Since)))
+	fmt.Println("   Vultr bills a fresh hour on create, so replacing it now saves nothing.")
 }
 
 func humanize(d time.Duration) string {

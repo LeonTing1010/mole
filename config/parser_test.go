@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -454,4 +456,93 @@ func containsHelper(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestProxyDomainKeywords covers the substring escape hatch for hosts that a
+// dot-aligned domain_suffix cannot express — pNN-buy.itunes.apple.com, the Mac
+// App Store's per-account install-authorisation partitions.
+func TestProxyDomainKeywords(t *testing.T) {
+	rules := []RouteRule{
+		{DomainKeyword: []string{"buy.itunes.apple.com"}, Outbound: "proxy"},
+		{DomainKeyword: []string{"buy.itunes.apple.com"}, Outbound: "proxy"},
+		{DomainKeyword: []string{"cn-cdn.example.com"}, Outbound: "direct"},
+		{DomainSuffix: []string{"idmsa.apple.com"}, Outbound: "proxy"},
+	}
+
+	got := proxyDomainKeywords(rules)
+
+	if len(got) != 1 || got[0] != "buy.itunes.apple.com" {
+		t.Errorf("proxyDomainKeywords = %v, want [buy.itunes.apple.com] (deduped, proxy-only)", got)
+	}
+}
+
+// TestLocalReverseZonesRejectedFirst pins the ordering that makes the reject
+// useful: sing-box takes the first matching DNS rule, so the private-zone
+// reject must precede the catch-all ".in-addr.arpa -> dns-direct". Reversed,
+// every Bonjour browse would still burn a UDP round trip to the upstream
+// resolver (and park for the full 10s deadline whenever that packet is lost).
+func TestLocalReverseZonesRejectedFirst(t *testing.T) {
+	uri := "hy2://test@example.com:443?sni=bing.com&insecure=1#test-server"
+
+	cfg, err := Build(uri)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	reject, direct := -1, -1
+	for i, rule := range cfg.DNS.Rules {
+		switch {
+		case rule.Action == "reject" && slices.Contains(rule.DomainSuffix, ".168.192.in-addr.arpa"):
+			reject = i
+		case rule.Server == "dns-direct" && slices.Contains(rule.DomainSuffix, ".in-addr.arpa"):
+			direct = i
+		}
+	}
+	if reject == -1 {
+		t.Fatal("no reject rule for locally-served reverse zones")
+	}
+	if direct == -1 {
+		t.Fatal("no dns-direct rule for public PTR")
+	}
+	if reject > direct {
+		t.Errorf("reject rule at %d comes after dns-direct at %d - the catch-all wins and nothing is rejected", reject, direct)
+	}
+}
+
+// TestLocalReverseZonesStayOnLabelBoundary guards the one way this list can do
+// harm: a suffix without its leading dot would also match public space
+// (".10.in-addr.arpa" vs "110.in-addr.arpa"), silently NXDOMAINing real PTRs.
+func TestLocalReverseZonesStayOnLabelBoundary(t *testing.T) {
+	zones := localReverseZones()
+
+	for _, z := range zones {
+		if !strings.HasPrefix(z, ".") {
+			t.Errorf("zone %q lacks a leading dot - it would match unrelated public reverse names", z)
+		}
+	}
+	// The two subnets actually observed leaking: en0's LAN and mole's own TUN.
+	for _, want := range []string{".168.192.in-addr.arpa", ".19.172.in-addr.arpa"} {
+		if !slices.Contains(zones, want) {
+			t.Errorf("localReverseZones missing %q", want)
+		}
+	}
+}
+
+// TestDNSRuleMatchersNotMixed guards the invariant that makes the keyword rule
+// work at all: sing-box ANDs matcher kinds within one rule, so a rule carrying
+// both domain_suffix and domain_keyword would match neither on its own.
+func TestDNSRuleMatchersNotMixed(t *testing.T) {
+	uri := "hy2://test@example.com:443?sni=bing.com&insecure=1#test-server"
+
+	cfg, err := Build(uri)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	for i, rule := range cfg.DNS.Rules {
+		if len(rule.DomainKeyword) > 0 && len(rule.DomainSuffix) > 0 {
+			t.Errorf("DNS rule %d mixes domain_keyword %v with domain_suffix %v - sing-box ANDs them, so neither matches alone",
+				i, rule.DomainKeyword, rule.DomainSuffix)
+		}
+	}
 }

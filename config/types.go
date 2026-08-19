@@ -44,12 +44,13 @@ type DNSServer struct {
 }
 
 type DNSRule struct {
-	Domain       []string `json:"domain,omitempty"`
-	DomainSuffix []string `json:"domain_suffix,omitempty"`
-	RuleSet      []string `json:"rule_set,omitempty"`
-	QueryType    []string `json:"query_type,omitempty"`
-	Server       string   `json:"server,omitempty"`
-	Action       string   `json:"action,omitempty"`
+	Domain        []string `json:"domain,omitempty"`
+	DomainSuffix  []string `json:"domain_suffix,omitempty"`
+	DomainKeyword []string `json:"domain_keyword,omitempty"`
+	RuleSet       []string `json:"rule_set,omitempty"`
+	QueryType     []string `json:"query_type,omitempty"`
+	Server        string   `json:"server,omitempty"`
+	Action        string   `json:"action,omitempty"`
 }
 
 type InboundConfig struct {
@@ -139,7 +140,14 @@ type RouteRule struct {
 	Protocol     string   `json:"protocol,omitempty"`
 	IPCIDR       []string `json:"ip_cidr,omitempty"`
 	DomainSuffix []string `json:"domain_suffix,omitempty"`
-	RuleSet      []string `json:"rule_set,omitempty"`
-	Invert       bool     `json:"invert,omitempty"`
-	Outbound     string   `json:"outbound,omitempty"`
+	// DomainKeyword matches a substring anywhere in the domain, with no regard
+	// for label boundaries — the escape hatch for hosts a suffix cannot reach.
+	// sing-box's domain_suffix aligns on dots, so `buy.itunes.apple.com` does
+	// NOT match `p47-buy.itunes.apple.com` (Apple's per-account store
+	// partitions). Keep a rule to keyword-only or suffix-only: sing-box ANDs
+	// matcher kinds within one rule, so mixing them matches neither alone.
+	DomainKeyword []string `json:"domain_keyword,omitempty"`
+	RuleSet       []string `json:"rule_set,omitempty"`
+	Invert        bool     `json:"invert,omitempty"`
+	Outbound      string   `json:"outbound,omitempty"`
 }

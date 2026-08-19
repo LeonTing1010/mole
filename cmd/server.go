@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -229,6 +230,8 @@ var serverLsCmd = &cobra.Command{
 	RunE:    runLs,
 }
 
+var reconcileDestroyRemote bool
+
 var serverReconcileCmd = &cobra.Command{
 	Use:   "reconcile",
 	Short: "Compare local servers.json against the server; show drift",
@@ -276,6 +279,8 @@ func init() {
 	serverCmd.AddCommand(serverLsCmd)
 	serverCmd.AddCommand(serverReconcileCmd)
 	serverCmd.AddCommand(serverAdoptCmd)
+	serverReconcileCmd.Flags().BoolVar(&reconcileDestroyRemote, "destroy-remote", false,
+		"destroy remote-only (orphaned) instances via the Vultr API — no hy2 password needed; the API key authorizes the delete")
 	serverCmd.AddCommand(serverStopCmd)
 	serverCmd.AddCommand(serverStartCmd)
 	serverCmd.AddCommand(serverImportCmd)
@@ -542,6 +547,15 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 // the local entry may be removed, and the whole point of those rules is that a
 // failed delete must not leave mole believing a billing instance is gone.
 func destroyServerByName(name string, forceLocal bool) error {
+	return destroyServerWithin(name, forceLocal, apiBudget)
+}
+
+// destroyServerWithin is destroyServerByName with the management call's budget
+// spelled out. The daemon sets it: the window it has at a lid close and the one
+// it has on a dark wake differ by an order of magnitude, and spending 20
+// seconds inside a 2-second wake just means being frozen mid-request and
+// waking up to a dead socket.
+func destroyServerWithin(name string, forceLocal bool, budget time.Duration) error {
 	servers, err := loadServers()
 	if err != nil {
 		return fmt.Errorf("read local servers: %w", err)
@@ -557,7 +571,7 @@ func destroyServerByName(name string, forceLocal bool) error {
 	target := servers[idx]
 
 	if target.InstanceID != "" {
-		_, err := serverAPI("DELETE", "/instances/"+target.InstanceID, nil)
+		_, err := serverAPIWithin(budget, "DELETE", "/instances/"+target.InstanceID, nil)
 		switch {
 		case err == nil:
 			// Remote delete succeeded — fall through and remove local entry.
@@ -585,8 +599,65 @@ func destroyServerByName(name string, forceLocal bool) error {
 	if err := saveServers(servers); err != nil {
 		return err
 	}
+	// If this is the server a failed lid-close destroy left billing, the debt is
+	// now paid and the record has to go — it is what `mole status` nags from,
+	// and a nag about a server that no longer exists teaches people to ignore
+	// the next one. Any other name leaves it alone.
+	if debt := utils.ReadLidDebt(); debt != nil && debt.Server == name {
+		_ = utils.ClearLidDebt()
+	}
 	fmt.Printf("🗑️  %s destroyed\n", name)
 	return nil
+}
+
+// destroyActiveServerWithin destroys whichever server is active at the moment of
+// the call. The daemon's destroy hook goes through here rather than closing over
+// the name it started with, because between `mole up` and a lid close the answer
+// changes: a first lid close destroys the server, and the name captured hours
+// earlier now refers to nothing.
+//
+// When there is no local entry left, the two possibilities are opposite and
+// indistinguishable from here — everything really is gone, or the local entry
+// was lost while the instance kept billing (the trap
+// `mole server reconcile --destroy-remote` exists for). Guessing is not an
+// option in either direction: guess "gone" and a real orphan bills in silence,
+// guess "billing" and `mole status` invents a debt nobody owes, which is what it
+// did all afternoon on 2026-08-15. So ask the provider, and only report nothing
+// to destroy when the account is genuinely empty.
+// listInstancesForDestroy is the account read destroyActiveServerWithin relies
+// on, held in a var so a test can answer for the account — including refusing to
+// answer, which is the branch that must never be mistaken for "empty".
+var listInstancesForDestroy = serverListInstancesWithin
+
+func destroyActiveServerWithin(budget time.Duration) error {
+	servers, err := loadServers()
+	if err != nil {
+		return fmt.Errorf("read local servers: %w", err)
+	}
+	for _, s := range servers {
+		if s.Active {
+			return destroyServerWithin(s.Name, false, budget)
+		}
+	}
+	if len(servers) > 0 {
+		// Entries but none marked active: picking one is a guess with a bill
+		// attached either way, so name the state instead of acting on it.
+		return fmt.Errorf("%d server(s) deployed but none is active — destroy it with `mole server destroy <name>`", len(servers))
+	}
+
+	remote, err := listInstancesForDestroy(budget)
+	if err != nil {
+		return fmt.Errorf("no local server to destroy, and checking the account for an orphan failed: %w", err)
+	}
+	if len(remote) == 0 {
+		return core.ErrNothingToDestroy
+	}
+	ids := make([]string, 0, len(remote))
+	for _, r := range remote {
+		ids = append(ids, fmt.Sprintf("%s (%s)", r.Label, r.ID))
+	}
+	return fmt.Errorf("no local server entry, but %d instance(s) are still on the account: %s — destroy with `mole server reconcile --destroy-remote`",
+		len(remote), strings.Join(ids, ", "))
 }
 
 // ── ls ─────────────────────────────────────────────────────────
@@ -663,6 +734,11 @@ func runReconcile(_ *cobra.Command, _ []string) error {
 		message string
 	}
 	var rows []row
+	// remoteOnly holds the instance IDs that exist on Vultr but not in
+	// servers.json — true orphans. They can be deleted with the Vultr API key
+	// alone (no hy2 password), so they are the one drift class reconcile can
+	// safely act on; everything else needs a judgement or a secret.
+	var remoteOnly []string
 
 	ids := make(map[string]struct{}, len(local)+len(remote))
 	for id := range localByID {
@@ -693,7 +769,8 @@ func runReconcile(_ *cobra.Command, _ []string) error {
 				rows = append(rows, row{state: "synced", id: id, ip: r.MainIP, name: l.Name, region: r.Region})
 			}
 		case rok && !lok:
-			rows = append(rows, row{state: "remote-only", id: id, ip: r.MainIP, name: r.Label, region: r.Region, message: fmt.Sprintf("adopt with: mole server adopt %s --password <hy2-password>", id)})
+			rows = append(rows, row{state: "remote-only", id: id, ip: r.MainIP, name: r.Label, region: r.Region, message: fmt.Sprintf("orphan — adopt: `mole server adopt %s --password <hy2>`, or destroy: `mole server reconcile --destroy-remote`", id)})
+			remoteOnly = append(remoteOnly, id)
 		case lok && !rok:
 			rows = append(rows, row{state: "local-only", id: id, ip: l.IP, name: l.Name, region: l.Region, message: fmt.Sprintf("remove with: mole server destroy %s --force-local", l.Name)})
 		}
@@ -705,6 +782,33 @@ func runReconcile(_ *cobra.Command, _ []string) error {
 	}
 	if len(rows) == 0 {
 		fmt.Println("(no instances on local or server)")
+	}
+
+	// --destroy-remote acts on the one drift class that needs no judgement and
+	// no secret: an instance Vultr still bills for but mole has no record of.
+	// The API key authorizes the DELETE, so it works even when the hy2 password
+	// is long gone — which is exactly the trap the lid-close destroy fell into
+	// when its local entry vanished but the instance kept billing.
+	if reconcileDestroyRemote && len(remoteOnly) > 0 {
+		fmt.Println()
+		for _, id := range remoteOnly {
+			if _, err := serverAPI("DELETE", "/instances/"+id, nil); err != nil {
+				if IsServerNotFound(err) {
+					fmt.Printf("🗑️  %s already gone on the server\n", id)
+					continue
+				}
+				fmt.Printf("⚠️  %s NOT destroyed: %v\n", id, err)
+				continue
+			}
+			fmt.Printf("🗑️  %s destroyed (orphan removed)\n", id)
+			// This is the route out for the worst version of the lid-close
+			// failure: the destroy failed, the local entry vanished, and the
+			// instance kept billing with nothing pointing at it. If the orphan
+			// just deleted is the one the debt names, the debt is paid.
+			if debt := utils.ReadLidDebt(); debt != nil && debt.Server != "" && debt.Server == remoteByID[id].Label {
+				_ = utils.ClearLidDebt()
+			}
+		}
 	}
 	return nil
 }
@@ -1226,17 +1330,118 @@ func stashVultrKey() error {
 // is gone" and abandoned a VPS that had just been created. One path cannot
 // disagree with itself.
 func serverAPI(method, path string, body any) ([]byte, error) {
+	return serverAPIWithin(apiBudget, method, path, body)
+}
+
+// apiBudget is how long a management call may take end to end, retries
+// included. It is not a timeout picked for comfort — it is sized to the
+// shortest window mole ever has to make one of these calls in.
+//
+// A closing lid gives roughly 30 seconds before macOS sleeps regardless of
+// what anyone is doing. The old code allowed 60 for a single attempt, so a slow
+// path could not have finished even in principle; the machine would have slept
+// mid-request. Sized under the window instead, with attempts short enough that
+// a dead path is abandoned rather than waited on.
+const apiBudget = 20 * time.Second
+
+// apiAttempt bounds one try. Measured direct: connect 0.3s, TLS 0.6s, total
+// ~0.9s to api.vultr.com. Six seconds is an enormous multiple of that, which
+// is the point — anything slower is a path problem, and the remedy for a path
+// problem is the next attempt, not more patience on this one.
+const apiAttempt = 6 * time.Second
+
+// serverAPIWithin performs one management-plane request against the Vultr API,
+// retrying transport failures until budget is spent.
+//
+// Two paths, tried in this order:
+//
+//   - Bound: socket pinned to the physical interface, name resolved by
+//     223.5.5.5. Independent of the tunnel, which is what makes it correct for
+//     the caller that matters most — destroy-on-lid-close runs when the lid
+//     shuts, and the lid tends to shut on an evening the path already went
+//     dark. It needs the PF exemption, refreshed here on every call.
+//   - Routed: whatever the routing table says, which while mole is up means
+//     through the tunnel. Kept as a fallback for the network where direct
+//     egress to the API is the thing that is blocked.
+//
+// Only transport errors are retried. An HTTP status is the server's answer and
+// repeating the request cannot improve it — and for DELETE specifically, a 404
+// on a retry is the truthful "already gone" that IsServerNotFound reads.
+//
+// POST is never retried, and that asymmetry is deliberate. A transport error
+// does not say whether the server acted: a create that succeeded and then lost
+// its response looks exactly like one that never arrived, and the retry that
+// helps a DELETE would leave a second instance running and billing with no
+// local record of it. Better to fail loudly and let a human look.
+func serverAPIWithin(budget time.Duration, method, path string, body any) ([]byte, error) {
 	key, err := vultrKey()
 	if err != nil {
 		return nil, err
 	}
-	return callAPI(vultrBase, "Bearer "+key, method, path, body, 60*time.Second)
+	auth := "Bearer " + key
+	deadline := time.Now().Add(budget)
+
+	if err := utils.AllowDirectHost(utils.APIHost); err != nil {
+		// Not fatal: the routed path may still work, and on a host where the
+		// kill switch is not loaded there was nothing to exempt.
+		log.Printf("management API: direct exemption unavailable: %v", err)
+	}
+
+	if !idempotent(method) {
+		client, cerr := utils.NewBoundHTTPClient(budget)
+		if cerr != nil {
+			client = &http.Client{Timeout: budget}
+		}
+		return callAPI(client, vultrBase, auth, method, path, body)
+	}
+
+	var lastErr error
+	for attempt := 0; time.Now().Before(deadline); attempt++ {
+		timeout := apiAttempt
+		if remaining := time.Until(deadline); remaining < timeout {
+			timeout = remaining
+		}
+
+		var client *http.Client
+		// Alternate: bound first, then routed, so a budget of three attempts
+		// tries direct twice and the tunnel once rather than burning the whole
+		// window on one path that is already answering with EOF.
+		if attempt%2 == 0 {
+			client, err = utils.NewBoundHTTPClient(timeout)
+			if err != nil {
+				client = &http.Client{Timeout: timeout}
+			}
+		} else {
+			client = &http.Client{Timeout: timeout}
+		}
+
+		data, err := callAPI(client, vultrBase, auth, method, path, body)
+		if err == nil {
+			return data, nil
+		}
+		var se *ServerError
+		if errors.As(err, &se) {
+			return nil, err
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("after %s of attempts: %w", budget, lastErr)
+}
+
+// idempotent reports whether repeating method can only be answered the same
+// way or more truthfully — the precondition for retrying it.
+func idempotent(method string) bool {
+	switch method {
+	case "GET", "HEAD", "PUT", "DELETE":
+		return true
+	}
+	return false
 }
 
 // callAPI performs one management-plane request against base+path and returns
 // the response body, or a *ServerError for HTTP >= 400, or a raw transport
 // error (EOF / timeout / DNS) for connection-level failures.
-func callAPI(base, auth string, method, path string, body any, timeout time.Duration) ([]byte, error) {
+func callAPI(client *http.Client, base, auth string, method, path string, body any) ([]byte, error) {
 	var reqBody io.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -1249,7 +1454,7 @@ func callAPI(base, auth string, method, path string, body any, timeout time.Dura
 	req.Header.Set("Authorization", auth)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1272,7 +1477,14 @@ type serverInstance struct {
 
 // serverListInstances fetches every instance on the Vultr account.
 func serverListInstances() ([]serverInstance, error) {
-	data, err := serverAPI("GET", "/instances?per_page=100", nil)
+	return serverListInstancesWithin(apiBudget)
+}
+
+// serverListInstancesWithin is serverListInstances bounded by the caller's
+// window — the daemon asks this inside a closing lid, where the budget is the
+// difference between an answer and being frozen mid-request.
+func serverListInstancesWithin(budget time.Duration) ([]serverInstance, error) {
+	data, err := serverAPIWithin(budget, "GET", "/instances?per_page=100", nil)
 	if err != nil {
 		return nil, err
 	}

@@ -53,7 +53,7 @@ const ipBoundIf = 25
 // surfacing of ICMP port unreachable) → ProbeRefused; deadline → ProbeSilent;
 // anything preventing the probe from running → ProbeError.
 func ProbeHy2UDP(addr, obfsPassword string, timeout time.Duration) (time.Duration, utils.ProbeVerdict, error) {
-	ifi, err := defaultPhysicalInterface()
+	ifi, err := utils.DefaultPhysicalInterface()
 	if err != nil {
 		return 0, utils.ProbeError, fmt.Errorf("no physical interface for direct probe: %w", err)
 	}
@@ -156,60 +156,4 @@ func salamanderObfuscate(pkt []byte, password string) []byte {
 func isRefused(err error) bool {
 	return errors.Is(err, syscall.ECONNREFUSED) ||
 		(err != nil && strings.Contains(err.Error(), "connection refused"))
-}
-
-// defaultPhysicalInterface picks the interface real traffic leaves through —
-// up, non-loopback, carrying a global unicast IPv4, and not one of macOS's
-// virtual/utility interfaces. Prefers en0 (the Mac's primary interface) when
-// it qualifies. The TUN (utunN) is explicitly excluded: the whole point is to
-// probe from outside it.
-func defaultPhysicalInterface() (*net.Interface, error) {
-	ifs, err := net.Interfaces()
-	if err != nil {
-		return nil, err
-	}
-	virtual := []string{"lo", "utun", "gif", "stf", "awdl", "llw", "bridge", "ap", "anpi", "vmenet", "feth"}
-	var first *net.Interface
-	for i := range ifs {
-		ifi := ifs[i]
-		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		skip := false
-		for _, p := range virtual {
-			if strings.HasPrefix(ifi.Name, p) {
-				skip = true
-				break
-			}
-		}
-		if skip || !hasGlobalIPv4(&ifi) {
-			continue
-		}
-		if ifi.Name == "en0" {
-			return &ifi, nil
-		}
-		if first == nil {
-			first = &ifs[i]
-		}
-	}
-	if first == nil {
-		return nil, fmt.Errorf("no up physical interface with an IPv4 address")
-	}
-	return first, nil
-}
-
-func hasGlobalIPv4(ifi *net.Interface) bool {
-	addrs, err := ifi.Addrs()
-	if err != nil {
-		return false
-	}
-	for _, a := range addrs {
-		if ipn, ok := a.(*net.IPNet); ok {
-			ip4 := ipn.IP.To4()
-			if ip4 != nil && !ip4.IsLoopback() && !ip4.IsLinkLocalUnicast() {
-				return true
-			}
-		}
-	}
-	return false
 }

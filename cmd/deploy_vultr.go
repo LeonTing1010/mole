@@ -34,11 +34,11 @@ func deployViaVultr(name, region, plan string, port int, id *serverIdentity) (in
 	}
 
 	script := hy2BootScript(password, port, id)
-	scriptResp, err := callAPI(vultrBase, "Bearer "+key, "POST", "/startup-scripts", map[string]any{
+	scriptResp, err := serverAPIWithin(60*time.Second, "POST", "/startup-scripts", map[string]any{
 		"name":   name,
 		"type":   "boot",
 		"script": base64.StdEncoding.EncodeToString([]byte(script)),
-	}, 60*time.Second)
+	})
 	if err != nil {
 		return "", "", fmt.Errorf("create startup script: %w", err)
 	}
@@ -58,7 +58,7 @@ func deployViaVultr(name, region, plan string, port int, id *serverIdentity) (in
 	// window where the node boots with every port open to the internet, and a
 	// hardening step that has to be remembered separately is one that will
 	// eventually be forgotten.
-	fwID, fwErr := ensureFirewallGroup(key)
+	fwID, fwErr := ensureFirewallGroup()
 	if fwErr != nil {
 		fmt.Printf("⚠️  could not prepare the Vultr firewall group: %v\n", fwErr)
 		fmt.Println("    The node will boot with no cloud firewall — attach one before relying on it.")
@@ -76,7 +76,7 @@ func deployViaVultr(name, region, plan string, port int, id *serverIdentity) (in
 	if fwID != "" {
 		body["firewall_group_id"] = fwID
 	}
-	instResp, err := callAPI(vultrBase, "Bearer "+key, "POST", "/instances", body, 60*time.Second)
+	instResp, err := serverAPIWithin(60*time.Second, "POST", "/instances", body)
 	if err != nil {
 		return "", "", fmt.Errorf("create instance: %w", err)
 	}
@@ -108,8 +108,8 @@ const moleFirewallGroup = "mole-nodes"
 // from a flooded Brutal ceiling, and losing it would leave the two
 // indistinguishable. Nothing opens SSH: nodes are key-only, and the Vultr web
 // console remains the way in when something is truly broken.
-func ensureFirewallGroup(key string) (string, error) {
-	listed, err := callAPI(vultrBase, "Bearer "+key, "GET", "/firewalls", nil, 30*time.Second)
+func ensureFirewallGroup() (string, error) {
+	listed, err := serverAPIWithin(30*time.Second, "GET", "/firewalls", nil)
 	if err != nil {
 		return "", err
 	}
@@ -128,8 +128,8 @@ func ensureFirewallGroup(key string) (string, error) {
 		}
 	}
 
-	createdResp, err := callAPI(vultrBase, "Bearer "+key, "POST", "/firewalls",
-		map[string]any{"description": moleFirewallGroup}, 30*time.Second)
+	createdResp, err := serverAPIWithin(30*time.Second, "POST", "/firewalls",
+		map[string]any{"description": moleFirewallGroup})
 	if err != nil {
 		return "", err
 	}
@@ -151,7 +151,7 @@ func ensureFirewallGroup(key string) (string, error) {
 		{"ip_type": "v6", "protocol": "udp", "subnet": "::", "subnet_size": 0, "port": "443", "notes": "hysteria2 v6"},
 		{"ip_type": "v4", "protocol": "icmp", "subnet": "0.0.0.0", "subnet_size": 0, "notes": "path diagnostics"},
 	} {
-		if _, err := callAPI(vultrBase, "Bearer "+key, "POST", "/firewalls/"+id+"/rules", rule, 30*time.Second); err != nil {
+		if _, err := serverAPIWithin(30*time.Second, "POST", "/firewalls/"+id+"/rules", rule); err != nil {
 			return "", fmt.Errorf("add firewall rule %v: %w", rule["notes"], err)
 		}
 	}
