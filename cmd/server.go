@@ -82,15 +82,45 @@ type Server struct {
 	//
 	// The cost is per hop, so it scales with how often you hop: each new source
 	// port is a peer-address change the server's QUIC has to re-validate, and
-	// Brutal's send rate restarts from that point. The tunnel's own defence
-	// against a throttled five-tuple is the supervisor's stall kick, which pays
-	// this cost ONLY when the keepalive says an established session has actually
-	// stopped being carried — a few seconds a day rather than a quarter of the
-	// bandwidth all day. Turn hopping on when a path is throttling five-tuples
-	// faster than the kick can react, and expect to trade throughput for it.
+	// Brutal's send rate restarts from that point. Rotating the source port is
+	// also no answer to a five-tuple block that keys on something coarser: on
+	// 2026-08-27 the stall kick redialled four times, each new port died after
+	// exactly the 30s QUIC idle timeout, and only the REALITY leg was untouched.
+	// Reach for Proto instead when UDP itself is what is being singled out.
 	HopPorts   string `json:"hop_ports,omitempty"`
 	HopSeconds int    `json:"hop_seconds,omitempty"`
+
+	// Proto selects the tunnel protocol. Empty means hysteria2, so every server
+	// recorded before the REALITY leg existed keeps behaving exactly as it did.
+	//
+	// The two legs answer different failure modes on the same path. hysteria2
+	// rides UDP/443 and wins on a lossy link, because Brutal holds a fixed send
+	// rate straight through loss — but this path repeatedly meets a UDP-specific
+	// QoS penalty that no ceiling can outrun, and that no restart clears.
+	// VLESS+REALITY rides TCP/443 and looks, byte for byte, like an ordinary TLS
+	// 1.3 handshake to RealityDest, which is what makes it worth having when the
+	// UDP leg is being singled out.
+	Proto string `json:"proto,omitempty"`
+
+	// REALITY parameters. All empty on a hysteria2 server. RealityPubKey is the
+	// public half of a keypair whose private half exists only on the VPS;
+	// RealityShortID must be one the server accepts; RealityDest is the site
+	// whose TLS handshake the server borrows and doubles as the SNI the client
+	// sends.
+	UUID           string `json:"uuid,omitempty"`
+	RealityPubKey  string `json:"reality_public_key,omitempty"`
+	RealityShortID string `json:"reality_short_id,omitempty"`
+	RealityDest    string `json:"reality_dest,omitempty"`
 }
+
+// Tunnel protocols. protoHysteria2 is also what an empty Proto means.
+const (
+	protoHysteria2 = "hysteria2"
+	protoReality   = "reality"
+)
+
+// isReality reports whether this server speaks VLESS+REALITY.
+func (s *Server) isReality() bool { return s.Proto == protoReality }
 
 // Default Brutal ceiling and peak window (local 24h) for a server that carries
 // no explicit ladder.
@@ -136,6 +166,13 @@ func (s *Server) peakWindow() (start, end int) {
 // untouched: it means "no declared bandwidth", which is a deliberate choice, not
 // an unset field, and substituting a default would silently override it.
 func (s *Server) ladder() (up, down, peakUp, peakDown, start, end int) {
+	// REALITY has no Brutal ceiling to ladder over: it is TCP, so congestion
+	// control belongs to the kernel at both ends. Returning zeros keeps the
+	// selector out of the config and leaves the supervisor's clock-driven flip
+	// with nothing to flip — rather than laddering over rungs that don't exist.
+	if s.isReality() {
+		return 0, 0, 0, 0, 0, 0
+	}
 	if s.UpMbps < 0 || s.DownMbps < 0 {
 		return s.UpMbps, s.DownMbps, 0, 0, 0, 0
 	}
@@ -182,6 +219,9 @@ func (s *Server) URI() string {
 	}
 	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
 		host = "[" + host + "]"
+	}
+	if s.isReality() {
+		return s.realityURI(host)
 	}
 	// Identity layer. A pinned certificate replaces the old blanket
 	// `insecure=1`, and the SNI travels with it because it has to match a SAN on
@@ -234,6 +274,43 @@ func (s *Server) URI() string {
 		}
 	}
 	return fmt.Sprintf("hy2://%s@%s:%d?%s#%s", s.Password, host, s.Port, q, s.Name)
+}
+
+// realityURI renders the standard vless:// link for a REALITY node.
+//
+// The parameter names are the ones every VLESS client already speaks — pbk,
+// sid, fp, flow — rather than mole-specific spellings, so the same link works
+// in any client and a link from anywhere else works here.
+//
+// Nothing secret travels in it beyond the uuid: pbk is a public key and sid is
+// an identifier the server accepts, neither of which is enough to impersonate
+// the server. That is the practical difference from the hysteria2 link, which
+// carries the tunnel password and the obfs key.
+func (s *Server) realityURI(host string) string {
+	dest := s.RealityDest
+	if dest == "" {
+		dest = defaultRealityDest
+	}
+	q := url.Values{
+		"encryption": {"none"},
+		"security":   {"reality"},
+		"type":       {"tcp"},
+		// xtls-rprx-vision splices the inner TLS stream through after the
+		// handshake instead of re-encrypting every record inside the tunnel.
+		// It is what makes the flow's packet-length profile look like the TLS
+		// session it is imitating rather than like a proxy.
+		"flow": {"xtls-rprx-vision"},
+		// A Chrome ClientHello, forged by uTLS. This is not cosmetic: REALITY
+		// authenticates by hiding data in a field of the ClientHello, so the
+		// hello has to be one the borrowed site would plausibly receive.
+		"fp":  {"chrome"},
+		"sni": {dest},
+		"pbk": {s.RealityPubKey},
+	}
+	if s.RealityShortID != "" {
+		q.Set("sid", s.RealityShortID)
+	}
+	return fmt.Sprintf("vless://%s@%s:%d?%s#%s", s.UUID, host, s.Port, q.Encode(), s.Name)
 }
 
 // ── Commands ──────────────────────────────────────────────────
@@ -300,8 +377,8 @@ var useCmd = &cobra.Command{
 }
 
 var serverImportCmd = &cobra.Command{
-	Use:   "import <hysteria2://... | https://.../sub/...>",
-	Short: "Add a server from a hysteria2:// URI",
+	Use:   "import <hysteria2://... | vless://...?security=reality>",
+	Short: "Add a server from a hysteria2:// or vless:// (REALITY) URI",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runImport,
 }
@@ -326,7 +403,11 @@ func init() {
 	serverDeployCmd.Flags().String("region", "icn", "server region (icn, nrt, sgp, lax, ...)")
 	serverDeployCmd.Flags().String("plan", "vc2-1c-1gb", "server plan")
 	serverDeployCmd.Flags().String("name", "", "Server name (auto-generated if empty)")
-	serverDeployCmd.Flags().Int("port", 443, "Hysteria2 port")
+	serverDeployCmd.Flags().Int("port", 443, "tunnel port")
+	serverDeployCmd.Flags().String("proto", protoHysteria2,
+		"tunnel protocol: hysteria2 (UDP/443, Brutal congestion control) or reality (VLESS+REALITY over TCP/443)")
+	serverDeployCmd.Flags().String("dest", defaultRealityDest,
+		"REALITY handshake target — the site whose TLS handshake the node borrows (reality only)")
 
 	serverDestroyCmd.Flags().Bool("force-local", false, "Remove from local list even if the server DELETE fails (use only when the remote instance is verified gone)")
 
@@ -344,21 +425,57 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 	plan, _ := cmd.Flags().GetString("plan")
 	name, _ := cmd.Flags().GetString("name")
 	port, _ := cmd.Flags().GetInt("port")
+	proto, _ := cmd.Flags().GetString("proto")
+	dest, _ := cmd.Flags().GetString("dest")
 
+	switch strings.ToLower(strings.TrimSpace(proto)) {
+	case "", protoHysteria2, "hy2":
+		proto = protoHysteria2
+	case protoReality, "vless":
+		proto = protoReality
+	default:
+		return fmt.Errorf("deploy: unknown --proto %q (want %q or %q)", proto, protoHysteria2, protoReality)
+	}
 	if name == "" {
 		name = fmt.Sprintf("%s-%d", region, time.Now().Unix())
 	}
 
-	fmt.Printf("🚀 Deploying %s in %s (%s, port %d)\n", name, region, plan, port)
+	fmt.Printf("🚀 Deploying %s in %s (%s, %s on port %d)\n", name, region, plan, proto, port)
 
-	// Mint the TLS identity and obfs key here, not on the VPS: the client must
-	// keep the certificate to pin it, and material generated on the far side
-	// could only come back over the very channel the pin is meant to secure.
-	// The private key does transit the provisioning API — which already mints
-	// and carries the tunnel password, so this adds no new trust boundary.
-	id, err := newServerIdentity()
-	if err != nil {
-		return fmt.Errorf("deploy: generate server identity: %w", err)
+	srv := Server{Name: name, Region: region, Port: uint16(port), Proto: proto}
+	var script string
+
+	// Identity material is minted here, not on the VPS, for both protocols: the
+	// client needs its half in order to connect at all, and anything generated
+	// on the far side could only be read back over the very channel it is meant
+	// to secure. The secret half does transit the provisioning API — which
+	// already mints and carries the tunnel password, so this adds no new trust
+	// boundary.
+	if proto == protoReality {
+		id, err := newRealityIdentity(dest)
+		if err != nil {
+			return fmt.Errorf("deploy: generate reality identity: %w", err)
+		}
+		script = realityBootScript(port, id)
+		srv.UUID = id.UUID
+		srv.RealityPubKey = id.PublicKey
+		srv.RealityShortID = id.ShortID
+		srv.RealityDest = id.Dest
+	} else {
+		id, err := newServerIdentity()
+		if err != nil {
+			return fmt.Errorf("deploy: generate server identity: %w", err)
+		}
+		password, err := randomHexString(16)
+		if err != nil {
+			return fmt.Errorf("deploy: generate tunnel password: %w", err)
+		}
+		script = hy2BootScript(password, port, id)
+		srv.Password = password
+		srv.TLSCertPEM = id.CertPEM
+		srv.SNI = id.SNI
+		srv.Obfs = "salamander"
+		srv.ObfsPassword = id.ObfsPassword
 	}
 
 	// Provisioning talks to Vultr from this machine, and only from here. The
@@ -367,65 +484,56 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 	// Worker has no stable egress to allowlist, so every call from it came back
 	// 403. Keeping it as an alternative meant every deploy could fail in two
 	// different ways, one of them silently.
-	instanceID, password, err := deployViaVultr(name, region, plan, port, id)
+	instanceID, err := deployViaVultr(name, region, plan, script)
 	if err != nil {
 		return fmt.Errorf("deploy: %w", err)
 	}
-	return finishDeploy(name, region, port, instanceID, password, id, true)
+	srv.InstanceID = instanceID
+	return finishDeploy(srv)
 }
 
 // finishDeploy records a freshly created instance locally, waits for its IP and
 // reports the result.
 //
-// identityApplied must reflect what the far end actually installed. Recording a
-// pin or an obfs key the server never received doesn't leave the tunnel merely
-// unverified — it blackholes it, on a box reachable no other way.
-func finishDeploy(name, region string, port int, instanceID, password string, id *serverIdentity, identityApplied bool) error {
-	fmt.Printf("✅ Instance %s created — waiting for IP...\n", instanceID)
+// srv arrives carrying everything protocol-specific the caller minted — the
+// identity the boot script was rendered from, and nothing the far end did not
+// receive. That ordering matters: recording a pin, an obfs key or a REALITY
+// public key the server never installed doesn't leave the tunnel merely
+// unverified, it blackholes it, on a box reachable no other way.
+func finishDeploy(srv Server) error {
+	fmt.Printf("✅ Instance %s created — waiting for IP...\n", srv.InstanceID)
 
-	srv := Server{
-		Name: name, InstanceID: instanceID, Region: region,
-		Port: uint16(port), Password: password,
-		CreatedAt: time.Now().Format(time.RFC3339),
+	srv.CreatedAt = time.Now().Format(time.RFC3339)
+	if srv.isReality() {
+		fmt.Printf("🎭 REALITY handshake borrowed from %s — no certificate to pin, no obfs key to match\n", srv.RealityDest)
+	} else {
 		// Write the ceiling out explicitly rather than leaning on the defaults.
 		// A server entry that describes its own ladder is inspectable in
 		// servers.json and survives any future change to what "unset" means —
 		// which is the exact hazard this replaced: entries with no ceiling at all
 		// ran at the top rung while `mole ceiling` refused to run.
-		UpMbps: core.DefaultUpMbps, DownMbps: core.DefaultDownMbps,
-		PeakUpMbps: core.DefaultPeakUpMbps, PeakDownMbps: core.DefaultPeakDownMbps,
-		PeakStartHour: defaultPeakStartHour, PeakEndHour: defaultPeakEndHour,
+		srv.UpMbps, srv.DownMbps = core.DefaultUpMbps, core.DefaultDownMbps
+		srv.PeakUpMbps, srv.PeakDownMbps = core.DefaultPeakUpMbps, core.DefaultPeakDownMbps
+		srv.PeakStartHour, srv.PeakEndHour = defaultPeakStartHour, defaultPeakEndHour
 		// HopPorts is deliberately NOT set. The boot script opens the range and
 		// NATs it onto Port so the capability is there the moment it is wanted,
 		// but leaving it unset is what keeps it off: measured, hopping costs
-		// 28% of throughput at 120s and 90% at 30s, against a failure the stall
-		// kick already handles for a few seconds a day. See Server.HopPorts.
-	}
-	// Prefer what this region was last measured to carry. The defaults above are
-	// deliberately timid — right for a path nobody has tested, wrong for one that
-	// has been laddered up by hand — and destroy-on-lid-close means most deploys
-	// land in a region that was measured only yesterday. See ladder_memory.go.
-	if l, ok := recallLadder(region); ok {
-		srv.UpMbps, srv.DownMbps = l.UpMbps, l.DownMbps
-		srv.PeakUpMbps, srv.PeakDownMbps = l.PeakUpMbps, l.PeakDownMbps
-		srv.PeakStartHour, srv.PeakEndHour = l.PeakStartHour, l.PeakEndHour
-		fmt.Printf("📶 Ceiling %d↓/%d↑ Mbps (peak %d↓/%d↑) carried over from the last %s server — %s\n",
-			l.DownMbps, l.UpMbps, l.PeakDownMbps, l.PeakUpMbps, region, describeAge(l, time.Now()))
-	}
-	// Record the identity only once the server confirms it installed it.
-	// Pinning a certificate the far end never received, or turning on obfs it
-	// isn't running, blackholes the tunnel completely — and does so on a box
-	// that has no other way in.
-	if identityApplied {
-		srv.TLSCertPEM = id.CertPEM
-		srv.SNI = id.SNI
-		srv.Obfs = "salamander"
-		srv.ObfsPassword = id.ObfsPassword
+		// 28% of throughput at 120s and 90% at 30s. See Server.HopPorts.
+		// Prefer what this region was last measured to carry. The defaults above
+		// are deliberately timid — right for a path nobody has tested, wrong for
+		// one that has been laddered up by hand — and destroy-on-lid-close means
+		// most deploys land in a region that was measured only yesterday. See
+		// ladder_memory.go.
+		if l, ok := recallLadder(srv.Region); ok {
+			srv.UpMbps, srv.DownMbps = l.UpMbps, l.DownMbps
+			srv.PeakUpMbps, srv.PeakDownMbps = l.PeakUpMbps, l.PeakDownMbps
+			srv.PeakStartHour, srv.PeakEndHour = l.PeakStartHour, l.PeakEndHour
+			fmt.Printf("📶 Ceiling %d↓/%d↑ Mbps (peak %d↓/%d↑) carried over from the last %s server — %s\n",
+				l.DownMbps, l.UpMbps, l.PeakDownMbps, l.PeakUpMbps, srv.Region, describeAge(l, time.Now()))
+		}
 		fmt.Println("🔒 Pinned certificate + salamander obfs installed")
-	} else {
-		fmt.Println("⚠️  Server provisioned without the pinned-cert/obfs identity")
-		fmt.Println("    (the boot script did not report installing it — redeploy to get a pinned node)")
 	}
+	name, instanceID := srv.Name, srv.InstanceID
 	servers, _ := loadServers()
 	if len(servers) == 0 {
 		srv.Active = true
@@ -434,7 +542,7 @@ func finishDeploy(name, region string, port int, instanceID, password string, id
 	if err := saveServers(servers); err != nil {
 		fmt.Printf("⚠️  Could not record %s locally: %v\n", instanceID, err)
 		fmt.Printf("    The instance IS running. Recover it with:\n")
-		fmt.Printf("        mole server adopt %s --password %s --port %d\n", instanceID, password, port)
+		fmt.Printf("        mole server adopt %s --password %s --port %d\n", instanceID, srv.Password, srv.Port)
 		return err
 	}
 
@@ -468,12 +576,16 @@ func finishDeploy(name, region string, port int, instanceID, password string, id
 	}
 
 	fmt.Printf("\n🔗 %s\n", srv.URI())
-	// The range is open on the node either way, so say so — otherwise the only
-	// record that this is a one-line switch is a comment in the source.
-	fmt.Printf("\n🔀 Port hopping is available but off (it costs ~28%% throughput at %ds).\n", hopIntervalSeconds)
-	fmt.Printf("   Turn it on for this server by setting \"hop_ports\": %q, \"hop_seconds\": %d in servers.json.\n",
-		hopRangeURI, hopIntervalSeconds)
-	fmt.Println("\n⏳ Hysteria2 boot script is installing in the background (~2 min).")
+	if srv.isReality() {
+		fmt.Println("\n⏳ VLESS+REALITY boot script is installing in the background (~2 min).")
+	} else {
+		// The range is open on the node either way, so say so — otherwise the only
+		// record that this is a one-line switch is a comment in the source.
+		fmt.Printf("\n🔀 Port hopping is available but off (it costs ~28%% throughput at %ds).\n", hopIntervalSeconds)
+		fmt.Printf("   Turn it on for this server by setting \"hop_ports\": %q, \"hop_seconds\": %d in servers.json.\n",
+			hopRangeURI, hopIntervalSeconds)
+		fmt.Println("\n⏳ Hysteria2 boot script is installing in the background (~2 min).")
+	}
 	if srv.Active {
 		fmt.Println("   This is now the active server — run `mole up` once it's ready.")
 	} else {
@@ -964,6 +1076,56 @@ func runImport(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// realityServerFromURI is the inverse of Server.realityURI(). It accepts any
+// standard vless:// REALITY link, not only ones mole emitted, which is what
+// makes a node provisioned by hand or by another tool usable here.
+//
+// It refuses a link that is not REALITY. Plain VLESS over TLS to a bare IP has
+// no certificate that verifies and no borrowed handshake to hide behind — mole
+// would be importing an outbound it has no way to authenticate.
+func realityServerFromURI(u *url.URL) (*Server, error) {
+	q := u.Query()
+	if q.Get("security") != "reality" {
+		return nil, fmt.Errorf("vless link is not REALITY (security=%q): mole imports vless://…?security=reality links only", q.Get("security"))
+	}
+	uuid := u.User.Username()
+	if uuid == "" {
+		return nil, fmt.Errorf("URI missing uuid")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return nil, fmt.Errorf("URI missing host")
+	}
+	pbk := q.Get("pbk")
+	if pbk == "" {
+		return nil, fmt.Errorf("URI missing ?pbk= (the server's REALITY public key)")
+	}
+	port, _ := strconv.Atoi(u.Port())
+	if port == 0 {
+		port = 443
+	}
+	srv := &Server{
+		Proto:          protoReality,
+		UUID:           uuid,
+		Port:           uint16(port),
+		RealityPubKey:  pbk,
+		RealityShortID: q.Get("sid"),
+		RealityDest:    q.Get("sni"),
+	}
+	if srv.RealityDest == "" {
+		srv.RealityDest = defaultRealityDest
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		srv.IPv6 = host
+	} else {
+		srv.IP = host
+	}
+	if frag := u.Fragment; frag != "" {
+		srv.Name = frag
+	}
+	return srv, nil
+}
+
 // serverHost returns the effective connect address (IPv4 preferred, else IPv6)
 // so dedupe and display don't trip over the IP/IPv6 split in the struct.
 func serverHost(s Server) string {
@@ -982,8 +1144,12 @@ func serverFromURI(raw string) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid URI: %w", err)
 	}
-	if u.Scheme != "hy2" && u.Scheme != "hysteria2" {
-		return nil, fmt.Errorf("unsupported scheme %q: import supports hysteria2:// links only", u.Scheme)
+	switch u.Scheme {
+	case "hy2", "hysteria2":
+	case "vless":
+		return realityServerFromURI(u)
+	default:
+		return nil, fmt.Errorf("unsupported scheme %q: import supports hysteria2:// and vless:// links only", u.Scheme)
 	}
 	password := u.User.Username()
 	if password == "" {

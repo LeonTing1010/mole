@@ -112,6 +112,33 @@ type TLSConfig struct {
 	// unverified peer — anyone able to steer the UDP flow completes TLS with a
 	// cert of their choosing and harvests both password and plaintext.
 	Certificate []string `json:"certificate,omitempty"`
+
+	// UTLS forges the ClientHello of a real browser. REALITY requires it: the
+	// authentication data is hidden inside a ClientHello field, so the hello has
+	// to be one the borrowed site would plausibly receive. Go's own TLS stack
+	// has a fingerprint nothing else on the internet produces.
+	UTLS *UTLSConfig `json:"utls,omitempty"`
+
+	// Reality turns the handshake into a borrowed one. The server completes TLS
+	// against Reality's target on the client's behalf, so what a prober sees is
+	// that site's real certificate — nothing self-signed, nothing to pin, and
+	// nothing that contradicts the destination's ASN.
+	Reality *RealityConfig `json:"reality,omitempty"`
+}
+
+type UTLSConfig struct {
+	Enabled     bool   `json:"enabled"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+}
+
+// RealityConfig is the client half of REALITY. PublicKey's private half never
+// leaves the VPS, and ShortID is one of the ids that server accepts — neither is
+// a secret in the sense the hysteria2 password is, which is why a vless:// link
+// can be shared where a hy2:// one cannot.
+type RealityConfig struct {
+	Enabled   bool   `json:"enabled"`
+	PublicKey string `json:"public_key,omitempty"`
+	ShortID   string `json:"short_id,omitempty"`
 }
 
 type TransportConfig struct {

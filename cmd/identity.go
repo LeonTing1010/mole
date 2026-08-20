@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/curve25519"
 )
 
 // serverIdentity is the per-server secret material that makes the tunnel both
@@ -153,4 +156,107 @@ func randomHexString(n int) (string, error) {
 		return "", fmt.Errorf("read random: %w", err)
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// ── REALITY identity ───────────────────────────────────────────
+
+// realityIdentity is the per-server secret material for a VLESS+REALITY node.
+//
+// REALITY needs no certificate of its own: the server borrows a real one, live,
+// from a third-party site it forwards the client's ClientHello to. That removes
+// everything the hysteria2 leg has to carry — no self-signed leaf, no pin, no
+// SAN that has to match — and replaces it with an X25519 keypair plus a short
+// id, which together let the server recognise its own clients inside what is
+// otherwise an ordinary TLS 1.3 handshake to Dest.
+type realityIdentity struct {
+	UUID       string // VLESS user id
+	PrivateKey string // base64url X25519 scalar, installed on the VPS only
+	PublicKey  string // base64url X25519 point, carried by the client
+	ShortID    string // 8-byte hex, must be one of the server's short_id list
+	Dest       string // the site whose TLS handshake the server steals
+	SSHPubKey  string // as in serverIdentity: key-only root, or "" when absent
+}
+
+// defaultRealityDest is the borrowed handshake target.
+//
+// The choice is load-bearing and silently fatal when wrong. REALITY completes
+// the TLS 1.3 handshake against Dest and needs to derive the same keys the
+// target negotiated — so a target that picks a hybrid post-quantum group
+// (X25519MLKEM768), which modern browsers offer and an increasing number of
+// large sites now select, leaves the server unable to finish. It shows up as
+// `handshake did not complete successfully` on the server and a bare EOF on the
+// client, with the REALITY authentication itself reported as fine: the failure
+// looks exactly like a broken protocol implementation rather than a bad
+// hostname. www.microsoft.com is one such target, and cost this project an
+// afternoon; www.apple.com was measured working from an icn node.
+//
+// Requirements for any replacement: TLS 1.3, HTTP/2, a certificate chain it
+// serves itself (no redirect to another host), no PQ hybrid group, and traffic
+// to it from the VPS's region that looks unremarkable.
+const defaultRealityDest = "www.apple.com"
+
+// newRealityIdentity mints the material for one REALITY node. Like
+// newServerIdentity, the secret is generated here rather than on the VPS: the
+// client needs the public half to connect at all, and material generated on the
+// far side could only be read back over the very channel it is meant to secure.
+func newRealityIdentity(dest string) (*realityIdentity, error) {
+	if dest == "" {
+		dest = defaultRealityDest
+	}
+	uuid, err := randomUUID()
+	if err != nil {
+		return nil, err
+	}
+	// Eight bytes is REALITY's maximum short id. Shorter ones are legal and
+	// carry less entropy for no gain, since the id is never visible on the wire.
+	shortID, err := randomHexString(8)
+	if err != nil {
+		return nil, err
+	}
+	priv := make([]byte, 32)
+	if _, err := rand.Read(priv); err != nil {
+		return nil, fmt.Errorf("read random: %w", err)
+	}
+	// Clamp the scalar before it is ever encoded. Go's curve25519 clamps
+	// internally, so the public key below comes out the same either way and
+	// the two halves look perfectly consistent from here — but the private
+	// half is what gets installed on the VPS, and REALITY's server side uses
+	// it as given. Ship an unclamped scalar and the server derives a shared
+	// secret the client never agreed to: every handshake is rejected, and
+	// rejection in REALITY means silently relaying the client to the borrowed
+	// site. The client then reports the borrowed site's certificate failing
+	// its pin, which reads as a wrong ?sni= rather than a bad key, and the
+	// server says only "processed invalid connection". This cost an evening.
+	priv[0] &= 248
+	priv[31] &= 127
+	priv[31] |= 64
+	pub, err := curve25519.X25519(priv, curve25519.Basepoint)
+	if err != nil {
+		return nil, fmt.Errorf("derive reality public key: %w", err)
+	}
+	sshPub, err := localSSHPubKey()
+	if err != nil {
+		return nil, err
+	}
+	return &realityIdentity{
+		UUID:       uuid,
+		PrivateKey: base64.RawURLEncoding.EncodeToString(priv),
+		PublicKey:  base64.RawURLEncoding.EncodeToString(pub),
+		ShortID:    shortID,
+		Dest:       dest,
+		SSHPubKey:  sshPub,
+	}, nil
+}
+
+// randomUUID returns a RFC 4122 version-4 UUID. Hand-rolled to keep the
+// dependency list where it is — mole ships with cobra and x/crypto and nothing
+// else, and a UUID is sixteen random bytes with six of them masked.
+func randomUUID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("read random: %w", err)
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }

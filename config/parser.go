@@ -370,6 +370,11 @@ func parseServerURL(serverURL string) (*OutboundConfig, error) {
 	return nil, fmt.Errorf("unsupported protocol: %s", u.Scheme)
 }
 
+// defaultRealityDest is the handshake target assumed when a vless:// link omits
+// ?sni=. It must stay in step with cmd's constant of the same name; the two are
+// separate because config must not import cmd.
+const defaultRealityDest = "www.apple.com"
+
 func parseVLESS(u *url.URL) (*OutboundConfig, error) {
 	port, _ := strconv.Atoi(u.Port())
 	if port == 0 {
@@ -384,11 +389,42 @@ func parseVLESS(u *url.URL) (*OutboundConfig, error) {
 	if flow := q.Get("flow"); flow != "" {
 		o.Flow = flow
 	}
-	if network := q.Get("type"); network != "" {
+	if network := q.Get("type"); network != "" && network != "tcp" {
+		// sing-box treats an empty network as TCP; spelling it out would be
+		// rejected for outbounds that don't take the field.
 		o.Network = network
 	}
 	if sec := q.Get("security"); sec == "tls" || sec == "reality" {
 		o.TLS = &TLSConfig{Enabled: true, ServerName: q.Get("sni"), Insecure: q.Get("allowInsecure") == "1"}
+	}
+	if q.Get("security") == "reality" && o.TLS != nil {
+		// REALITY replaces certificate trust outright: the certificate the
+		// client sees is the borrowed site's real one, and the proof that the
+		// peer is the intended server is the ?pbk= keypair, not the chain. So
+		// insecure must be off — it would mean nothing here anyway — and the
+		// pin the hysteria2 leg needs has no counterpart.
+		o.TLS.Insecure = false
+		o.TLS.Reality = &RealityConfig{
+			Enabled:   true,
+			PublicKey: q.Get("pbk"),
+			ShortID:   q.Get("sid"),
+		}
+		// A forged browser hello is mandatory, not decorative: REALITY hides its
+		// authentication inside the ClientHello, and Go's native hello is one no
+		// browser produces. Default to Chrome, which is what the borrowed sites
+		// see most of.
+		fp := q.Get("fp")
+		if fp == "" {
+			fp = "chrome"
+		}
+		o.TLS.UTLS = &UTLSConfig{Enabled: true, Fingerprint: fp}
+		// The handshake is a TLS 1.3 one to the borrowed site, so the SNI is
+		// that site's name and there is no sensible fallback if the link omits
+		// it — an empty server_name would send no SNI at all and the borrowed
+		// server would answer with a default vhost the client then rejects.
+		if o.TLS.ServerName == "" {
+			o.TLS.ServerName = defaultRealityDest
+		}
 	}
 	if o.Network == "ws" {
 		o.Transport = &TransportConfig{Type: "ws", Path: q.Get("path")}
