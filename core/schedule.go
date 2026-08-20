@@ -53,7 +53,7 @@ func BandwidthRungMbps(tag string) int {
 // symmetric: one rung short is a few Mbps unused, one rung long is Brutal
 // declaring more than the path can carry and flooding it into ENOBUFS. Near the
 // measured cap, step carefully.
-var standardRungs = []int{1, 2, 3, 5, 8, 12, 20, 30, 50, 65, 80}
+var standardRungs = []int{1, 2, 3, 5, 8, 12, 20, 30, 50, 65, 80, 100}
 
 // Default Brutal ceiling for a server that carries no explicit one. Lives here
 // because both the config builder and the server list must resolve "unset" to

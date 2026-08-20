@@ -225,6 +225,19 @@ EOF
 if command -v ufw >/dev/null 2>&1; then ufw allow %d/udp; ufw allow %d/tcp; fi
 iptables -I INPUT -p udp --dport %d -j ACCEPT 2>/dev/null || true
 iptables -I INPUT -p tcp --dport %d -j ACCEPT 2>/dev/null || true
+cat > /etc/sysctl.d/99-mole.conf << 'SYSCTL_EOF'
+# QUIC carries its whole receive window in one UDP socket buffer, and Linux
+# defaults that buffer to 208KB. On this path — ~107ms to Seoul — the
+# bandwidth-delay product at 100 Mbps is 1.34MB, so the default clamps the
+# tunnel long before the link does. Measured 2026-08-20 on the icn node: the
+# ceiling sweep plateaued at ~77 Mbps with the default and at ~85 with 16MB,
+# and the rungs above 100 stopped adding anything either way. Hysteria raises
+# the buffer itself at startup but cannot exceed rmem_max, and it does not
+# always say so in the log.
+net.core.rmem_max=16777216
+net.core.wmem_max=16777216
+SYSCTL_EOF
+sysctl -p /etc/sysctl.d/99-mole.conf >/dev/null 2>&1 || true
 systemctl enable --now hysteria-server
 %s`,
 		strings.TrimSpace(id.CertPEM),
