@@ -248,11 +248,13 @@ func runDaemon() error {
 	}
 	defer utils.RestoreDNS()
 
-	// Raise UDP socket buffers so hy2/QUIC can saturate the link on macOS.
-	if err := utils.TuneUDPBuffers(); err != nil {
-		fmt.Printf("⚠️  UDP buffer tuning failed: %v\n", err)
+	// Raise UDP socket buffers so hy2/QUIC can saturate the link on macOS, and
+	// stop the interface AQM from turning Wi-Fi congestion into a killed QUIC
+	// connection. See netTuning.
+	if err := utils.TuneNetworkStack(); err != nil {
+		fmt.Printf("⚠️  network stack tuning failed: %v\n", err)
 	}
-	defer utils.RestoreUDPBuffers()
+	defer utils.RestoreNetworkStack()
 
 	// Arm the PF kill switch BEFORE sing-box starts: foreign egress is only
 	// allowed through the tunnel, so there is no window — not even during

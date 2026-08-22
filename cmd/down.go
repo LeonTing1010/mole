@@ -147,7 +147,7 @@ func runDown(cmd *cobra.Command, args []string) error {
 			utils.UnloadKillSwitch()
 		}
 		utils.RestoreDNS()
-		utils.RestoreUDPBuffers()
+		utils.RestoreNetworkStack()
 		utils.RemovePID()
 		utils.RemoveState()
 		fmt.Println("✅ VPN stopped")
@@ -192,7 +192,7 @@ func runDown(cmd *cobra.Command, args []string) error {
 	// always disarm here.
 	utils.UnloadKillSwitch()
 	utils.RestoreDNS()
-	utils.RestoreUDPBuffers()
+	utils.RestoreNetworkStack()
 	utils.RemovePID()
 	utils.RemoveState()
 
