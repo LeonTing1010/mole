@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -59,8 +60,13 @@ func Start(configPath string) error {
 		processMutex.Unlock()
 		return fmt.Errorf("open log file: %w", err)
 	}
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+	// Splice the flood sensor into sing-box's output instead of tailing the log
+	// file, which rotates. Assigning the *same* writer to both streams matters:
+	// os/exec reuses one pipe when Stdout and Stderr are the same value, so
+	// lines cannot interleave mid-write the way two independent copiers would.
+	sink := io.MultiWriter(logFile, &singboxFlood)
+	cmd.Stdout = sink
+	cmd.Stderr = sink
 	cmd.Env = append(os.Environ(),
 		"ENABLE_DEPRECATED_LEGACY_DNS_SERVERS=true",
 		"ENABLE_DEPRECATED_MISSING_DOMAIN_RESOLVER=true",
@@ -308,4 +314,3 @@ func findSingbox() (string, error) {
 	}
 	return "", fmt.Errorf("sing-box not found — reinstall mole")
 }
-

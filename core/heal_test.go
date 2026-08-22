@@ -41,10 +41,10 @@ func TestStepDownWithNoLadder(t *testing.T) {
 func TestHealDescendsOnlyAfterSustainedTrouble(t *testing.T) {
 	var h healState
 
-	if got := h.tick(false); got != 0 {
+	if got := h.tick(false, true); got != 0 {
 		t.Fatalf("one bad tick moved the ceiling to backoff %d; it should wait for confirmation", got)
 	}
-	if got := h.tick(false); got != 1 {
+	if got := h.tick(false, true); got != 1 {
 		t.Fatalf("backoff after %d bad ticks = %d, want 1", healBackoffTicks, got)
 	}
 }
@@ -54,15 +54,15 @@ func TestHealDescendsOnlyAfterSustainedTrouble(t *testing.T) {
 // up into the same failure every couple of minutes.
 func TestHealDoesNotClimbOnABriefRecovery(t *testing.T) {
 	var h healState
-	h.tick(false)
-	h.tick(false) // backoff 1
+	h.tick(false, true)
+	h.tick(false, true) // backoff 1
 
 	for i := 0; i < healRecoverTicks-1; i++ {
-		if got := h.tick(true); got != 1 {
+		if got := h.tick(true, false); got != 1 {
 			t.Fatalf("backoff dropped to %d after only %d clean ticks", got, i+1)
 		}
 	}
-	if got := h.tick(true); got != 0 {
+	if got := h.tick(true, false); got != 0 {
 		t.Fatalf("backoff after %d clean ticks = %d, want 0", healRecoverTicks, got)
 	}
 }
@@ -73,7 +73,7 @@ func TestHealDoesNotClimbOnABriefRecovery(t *testing.T) {
 func TestHealIgnoresFlapping(t *testing.T) {
 	var h healState
 	for i := 0; i < 40; i++ {
-		if got := h.tick(i%2 == 0); got != 0 {
+		if got := h.tick(i%2 == 0, true); got != 0 {
 			t.Fatalf("alternating health moved the ceiling to backoff %d at tick %d", got, i)
 		}
 	}
@@ -85,7 +85,7 @@ func TestHealDescentIsBounded(t *testing.T) {
 	var h healState
 	got := 0
 	for i := 0; i < 200; i++ {
-		got = h.tick(false)
+		got = h.tick(false, true)
 	}
 	if got != healMaxBackoff {
 		t.Errorf("backoff under continuous failure = %d, want it capped at %d", got, healMaxBackoff)
@@ -97,16 +97,16 @@ func TestHealDescentIsBounded(t *testing.T) {
 func TestHealReturnsToTheTargetAndStops(t *testing.T) {
 	var h healState
 	for i := 0; i < 200; i++ {
-		h.tick(false)
+		h.tick(false, true)
 	}
 	for i := 0; i < healMaxBackoff*healRecoverTicks; i++ {
-		h.tick(true)
+		h.tick(true, false)
 	}
 	if h.backoff != 0 {
 		t.Fatalf("backoff after a long clean stretch = %d, want 0", h.backoff)
 	}
 	for i := 0; i < 100; i++ {
-		if got := h.tick(true); got != 0 {
+		if got := h.tick(true, false); got != 0 {
 			t.Fatalf("backoff went negative (%d) — the ceiling climbed above its target", got)
 		}
 	}
@@ -120,7 +120,7 @@ func TestHealReturnsToTheTargetAndStops(t *testing.T) {
 func TestHealBackoffResetsWhenTheCeilingTargetChanges(t *testing.T) {
 	h := healState{target: 30}
 	for i := 0; i < healBackoffTicks*2; i++ {
-		h.tick(false)
+		h.tick(false, true)
 	}
 	if h.backoff == 0 {
 		t.Fatal("setup failed: the path was unhealthy long enough to descend, but backoff is 0")
@@ -145,7 +145,7 @@ func TestHealBackoffResetsWhenTheCeilingTargetChanges(t *testing.T) {
 func TestHealBackoffResetsWhenThePinIsRetired(t *testing.T) {
 	h := healState{target: 30}
 	for i := 0; i < healBackoffTicks*2; i++ {
-		h.tick(false)
+		h.tick(false, true)
 	}
 	h.retarget(0)
 	if h.backoff != 0 {
@@ -159,9 +159,76 @@ func TestHealRetargetIsInertWhenTheTargetIsUnchanged(t *testing.T) {
 	h := healState{target: 30}
 	for i := 0; i < healBackoffTicks*2; i++ {
 		h.retarget(30)
-		h.tick(false)
+		h.tick(false, true)
 	}
 	if h.backoff == 0 {
 		t.Error("repeated retarget with the same pin wiped the descent; a steady pin must not block self-healing")
+	}
+}
+
+// The regression this exists for: on 2026-08-22 the tunnel went dark 25 times
+// and self-healing lowered the ceiling for 24 of them. Only one of those events
+// carried any ENOBUFS — the other 24 were a dark path, which no rung on the
+// ladder can fix. Each descent cost half the bandwidth for at least
+// healRecoverTicks minutes and bought nothing.
+func TestHealHoldsTheCeilingOnADarkPath(t *testing.T) {
+	var h healState
+	for i := 0; i < 200; i++ {
+		if got := h.tick(false, false); got != 0 {
+			t.Fatalf("a dark path with no flooding descended to backoff %d at tick %d; the ceiling is not what is wrong", got, i)
+		}
+	}
+}
+
+// Holding is not the same as calling the path healthy. A dark stretch must not
+// count toward the clean streak either, or a ceiling that really was too high
+// climbs straight back up while the link is still down.
+func TestHealDoesNotClimbWhileThePathIsDark(t *testing.T) {
+	var h healState
+	h.tick(false, true)
+	h.tick(false, true) // backoff 1, earned against real flooding
+	if h.backoff != 1 {
+		t.Fatalf("setup failed: backoff = %d, want 1", h.backoff)
+	}
+	for i := 0; i < healRecoverTicks*3; i++ {
+		if got := h.tick(false, false); got != 1 {
+			t.Fatalf("dark ticks moved the ceiling to backoff %d at tick %d; they must hold it", got, i)
+		}
+	}
+}
+
+// One burst of ENOBUFS inside a single tick is not evidence of a ceiling that is
+// too high — a blackhole produces some as the buffer backs up too. Descending
+// still needs healBackoffTicks worth of it.
+func TestHealDoesNotDescendOnASingleFloodingTick(t *testing.T) {
+	var h healState
+	h.tick(false, true)
+	for i := 0; i < 50; i++ {
+		if got := h.tick(false, false); got != 0 {
+			t.Fatalf("one flooding tick descended to backoff %d; it takes %d", got, healBackoffTicks)
+		}
+	}
+}
+
+// Evidence accumulates across a gap rather than resetting on it: flooding that
+// keeps recurring through a bad stretch is a ceiling problem even when
+// individual minutes come back quiet.
+func TestHealDescendsOnFloodingSpreadAcrossABadStretch(t *testing.T) {
+	var h healState
+	h.tick(false, true)
+	h.tick(false, false)
+	if got := h.tick(false, true); got != 1 {
+		t.Errorf("backoff after two flooding ticks either side of a dark one = %d, want 1", got)
+	}
+}
+
+// A clean minute is the one thing that does clear the evidence — the ceiling
+// proved itself at that rung, so the next descent starts from scratch.
+func TestHealFloodEvidenceIsClearedByARecovery(t *testing.T) {
+	var h healState
+	h.tick(false, true)
+	h.tick(true, false)
+	if got := h.tick(false, true); got != 0 {
+		t.Errorf("backoff = %d after a healthy minute reset the count, want 0", got)
 	}
 }

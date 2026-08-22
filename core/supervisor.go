@@ -430,6 +430,9 @@ func (s *Supervisor) probeOnce() {
 // was just failing, so it waits for a long clean stretch. healMaxBackoff bounds
 // the descent — past a few rungs the ceiling is no longer what is wrong, and the
 // ladder's own bottom rung is the real floor.
+//
+// "Bad" here means unhealthy *and flooding*, never unhealthy alone; see
+// healState.tick.
 const (
 	healBackoffTicks = 2
 	healRecoverTicks = 15
@@ -448,6 +451,10 @@ type healState struct {
 	// target is the ceiling the descent was accumulated against, so a change of
 	// intent can be told apart from a change of health.
 	target int
+	// held records that the last tick was an unhealthy one with no flood
+	// evidence, so the hold is logged once per dark stretch instead of once a
+	// minute for as long as it lasts.
+	held bool
 }
 
 // retarget restarts the descent when the ceiling target changes under it.
@@ -470,8 +477,20 @@ func (h *healState) retarget(pin int) {
 }
 
 // tick folds in one observation and returns the backoff to apply now.
-func (h *healState) tick(healthy bool) int {
+//
+// flooding is what makes the descent honest. "Unhealthy" alone does not mean
+// the ceiling is too high — it is equally the signature of a path that has gone
+// dark, and no rung on the ladder passes traffic through a dark path. Descending
+// there buys nothing and costs half the bandwidth for at least healRecoverTicks
+// minutes afterwards. Only the flood evidence (see floodMarker) says the ceiling
+// itself is the thing that is wrong, so only the flood evidence moves it down.
+//
+// A dark tick still clears the clean streak — the path is not well, so the
+// ceiling must not climb either. It just holds where it is and waits, which for
+// a blackhole is the only thing that has ever worked.
+func (h *healState) tick(healthy, flooding bool) int {
 	if healthy {
+		h.held = false
 		h.bad, h.good = 0, h.good+1
 		if h.backoff > 0 && h.good >= healRecoverTicks {
 			h.backoff, h.good = h.backoff-1, 0
@@ -479,13 +498,22 @@ func (h *healState) tick(healthy bool) int {
 		}
 		return h.backoff
 	}
-	h.good, h.bad = 0, h.bad+1
+	h.good = 0
+	if !flooding {
+		if !h.held {
+			h.held = true
+			log.Printf("self-heal: path unhealthy but sing-box is not flooding (no ENOBUFS) — holding the ceiling; this is a dark path, not a ceiling that is too high")
+		}
+		return h.backoff
+	}
+	h.held = false
+	h.bad++
 	// Stop descending at healMaxBackoff. Below that the ceiling is no longer the
 	// problem and dropping further only throttles a recovery we still want to be
 	// ready for.
 	if h.bad >= healBackoffTicks && h.backoff < healMaxBackoff {
 		h.backoff, h.bad = h.backoff+1, 0
-		log.Printf("self-heal: path unhealthy %d min — lowering the ceiling one rung (backoff %d)", healBackoffTicks, h.backoff)
+		log.Printf("self-heal: path unhealthy and flooding %d min — lowering the ceiling one rung (backoff %d)", healBackoffTicks, h.backoff)
 	}
 	return h.backoff
 }
@@ -691,7 +719,11 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 		s.stateMu.Lock()
 		healthy := s.state.Health() == utils.HealthOK
 		s.stateMu.Unlock()
-		backoff = heal.tick(healthy)
+		// Drained every tick whether or not it is read, so the count never
+		// straddles two ticks and one short burst cannot descend a rung by
+		// itself.
+		flooding := TakeFloodSightings() > 0
+		backoff = heal.tick(healthy, flooding)
 	}
 
 	apply()
