@@ -158,6 +158,28 @@ func ensureFirewallGroup() (string, error) {
 	return id, nil
 }
 
+// The port-hopping range a fresh node is provisioned with, in the three
+// spellings that need to agree: the client URI (`?ports=`), ufw, and iptables.
+// They are derived from one pair so a change can never leave the client hopping
+// onto ports the firewall drops.
+const (
+	hopPortLow  = 20000
+	hopPortHigh = 50000
+)
+
+var (
+	hopRangeURI = fmt.Sprintf("%d-%d", hopPortLow, hopPortHigh) // hysteria/`?ports=` spelling
+	hopRangeUFW = fmt.Sprintf("%d:%d", hopPortLow, hopPortHigh) // ufw wants a colon
+	hopRangeIPT = fmt.Sprintf("%d:%d", hopPortLow, hopPortHigh) // iptables --dport wants a colon
+)
+
+// hopIntervalSeconds is how often a client moves port when hopping is switched
+// on. Not hysteria's 30s default: measured on this path, 30s cost 90% of
+// throughput and 120s cost 28%, because every hop is a peer-address change the
+// server's QUIC re-validates and Brutal restarts from. 120s is the least-bad
+// setting for anyone who needs hopping at all.
+const hopIntervalSeconds = 120
+
 // hy2BootScript renders the first-boot script for a hysteria2 node carrying a
 // client-minted identity: the certificate the client will pin, and salamander
 // obfuscation keyed to a secret they share.
@@ -222,9 +244,37 @@ obfs:
   salamander:
     password: %s
 EOF
-if command -v ufw >/dev/null 2>&1; then ufw allow %d/udp; ufw allow %d/tcp; fi
+if command -v ufw >/dev/null 2>&1; then ufw allow %d/udp; ufw allow %d/tcp; ufw allow %s/udp; fi
 iptables -I INPUT -p udp --dport %d -j ACCEPT 2>/dev/null || true
 iptables -I INPUT -p tcp --dport %d -j ACCEPT 2>/dev/null || true
+# Port hopping. The listen port is left exactly as it was and the range is NAT'd
+# onto it, so a client that hops and a client that doesn't both keep working —
+# which is what makes this safe to roll out before any client knows about it.
+# (hysteria's own "listen: :LOW-HIGH" would move the listener off %d instead,
+# breaking every existing client the moment the server restarts.)
+#
+# Conntrack rewrites the reply source back to the port the client addressed, so
+# the hop is invisible from the other end. See Server.HopPorts for why hopping
+# earns its keep: an established five-tuple can stop being carried while new
+# ones are fine, and no restart or ceiling change reaches that.
+cat > /etc/systemd/system/mole-porthop.service << 'HOP_EOF'
+[Unit]
+Description=mole: redirect the hysteria2 port-hopping range to the listen port
+After=network-online.target
+Wants=network-online.target
+Before=hysteria-server.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'iptables -t nat -C PREROUTING -p udp --dport %s -j REDIRECT --to-ports %d 2>/dev/null || iptables -t nat -A PREROUTING -p udp --dport %s -j REDIRECT --to-ports %d'
+ExecStop=/bin/sh -c 'iptables -t nat -D PREROUTING -p udp --dport %s -j REDIRECT --to-ports %d 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target
+HOP_EOF
+systemctl daemon-reload
+systemctl enable --now mole-porthop.service 2>/dev/null || true
 cat > /etc/sysctl.d/99-mole.conf << 'SYSCTL_EOF'
 # QUIC carries its whole receive window in one UDP socket buffer, and Linux
 # defaults that buffer to 208KB. On this path — ~107ms to Seoul — the
@@ -243,6 +293,14 @@ systemctl enable --now hysteria-server
 		strings.TrimSpace(id.CertPEM),
 		strings.TrimSpace(id.KeyPEM),
 		port, password, id.ObfsPassword,
-		port, port, port, port,
+		// ufw: base udp, base tcp, hop range
+		port, port, hopRangeUFW,
+		// iptables INPUT accepts for the base port
+		port, port,
+		// the porthop unit: base listen port in the config comment, then
+		// check/append/delete triples of (range, port)
+		port,
+		hopRangeIPT, port, hopRangeIPT, port,
+		hopRangeIPT, port,
 		sshHardening)
 }

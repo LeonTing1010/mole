@@ -66,22 +66,30 @@ type InboundConfig struct {
 }
 
 type OutboundConfig struct {
-	Type       string           `json:"type"`
-	Tag        string           `json:"tag"`
-	Server     string           `json:"server,omitempty"`
-	ServerPort int              `json:"server_port,omitempty"`
-	UUID       string           `json:"uuid,omitempty"`
-	Password   string           `json:"password,omitempty"`
-	UpMbps     int              `json:"up_mbps,omitempty"`
-	DownMbps   int              `json:"down_mbps,omitempty"`
-	Obfs       *Hy2Obfs         `json:"obfs,omitempty"`
-	Flow       string           `json:"flow,omitempty"`
-	Network    string           `json:"network,omitempty"`
-	Version    string           `json:"version,omitempty"`
-	Outbounds  []string         `json:"outbounds,omitempty"`
-	Default    string           `json:"default,omitempty"`
-	TLS        *TLSConfig       `json:"tls,omitempty"`
-	Transport  *TransportConfig `json:"transport,omitempty"`
+	Type       string `json:"type"`
+	Tag        string `json:"tag"`
+	Server     string `json:"server,omitempty"`
+	ServerPort int    `json:"server_port,omitempty"`
+	UUID       string `json:"uuid,omitempty"`
+	Password   string `json:"password,omitempty"`
+	UpMbps     int    `json:"up_mbps,omitempty"`
+	DownMbps   int    `json:"down_mbps,omitempty"`
+	// ServerPorts/HopInterval turn on hysteria2 port hopping. sing-quic keeps
+	// ONE QUIC session and swaps the UDP socket under it every HopInterval, so
+	// hopping is invisible to everything above — no reconnect, no dropped
+	// streams. Format is sing-box's: ["20000:50000"], colon-separated, and a Go
+	// duration string. Both must be omitted together; a range the server does
+	// not answer on blackholes the tunnel on the first hop.
+	ServerPorts []string         `json:"server_ports,omitempty"`
+	HopInterval string           `json:"hop_interval,omitempty"`
+	Obfs        *Hy2Obfs         `json:"obfs,omitempty"`
+	Flow        string           `json:"flow,omitempty"`
+	Network     string           `json:"network,omitempty"`
+	Version     string           `json:"version,omitempty"`
+	Outbounds   []string         `json:"outbounds,omitempty"`
+	Default     string           `json:"default,omitempty"`
+	TLS         *TLSConfig       `json:"tls,omitempty"`
+	Transport   *TransportConfig `json:"transport,omitempty"`
 }
 
 // Hy2Obfs enables hysteria2 salamander obfuscation. Without it the raw QUIC

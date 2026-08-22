@@ -65,6 +65,31 @@ type Server struct {
 	PeakDownMbps  int `json:"peak_down_mbps,omitempty"`
 	PeakStartHour int `json:"peak_start_hour,omitempty"`
 	PeakEndHour   int `json:"peak_end_hour,omitempty"`
+
+	// Port hopping, OFF by default — set these two to turn it on for a server.
+	// HopPorts is an inclusive UDP range ("20000-50000") the server also answers
+	// on; the client moves between those ports every HopSeconds. Every node mole
+	// deploys has the range open and NAT'd already, so switching it on is an
+	// edit here and a reconnect, with nothing to do server-side.
+	//
+	// It is off by default because it is not free, which measurement settled
+	// rather than intuition. A/B on the icn node, 2026-08-22, eight sequential
+	// 100MB downloads each way, same link, same ceiling (median seconds):
+	//
+	//	hopping off       17.4s   (~48 Mbps)
+	//	hop every 120s    25.0s   (~33 Mbps, -28%)
+	//	hop every 30s     ~90s+   (~4 Mbps, -90%)
+	//
+	// The cost is per hop, so it scales with how often you hop: each new source
+	// port is a peer-address change the server's QUIC has to re-validate, and
+	// Brutal's send rate restarts from that point. The tunnel's own defence
+	// against a throttled five-tuple is the supervisor's stall kick, which pays
+	// this cost ONLY when the keepalive says an established session has actually
+	// stopped being carried — a few seconds a day rather than a quarter of the
+	// bandwidth all day. Turn hopping on when a path is throttling five-tuples
+	// faster than the kick can react, and expect to trade throughput for it.
+	HopPorts   string `json:"hop_ports,omitempty"`
+	HopSeconds int    `json:"hop_seconds,omitempty"`
 }
 
 // Default Brutal ceiling and peak window (local 24h) for a server that carries
@@ -199,6 +224,14 @@ func (s *Server) URI() string {
 	if peakDown > 0 {
 		q += fmt.Sprintf("&peakdownmbps=%d&peakupmbps=%d&peakstart=%d&peakend=%d",
 			peakDown, peakUp, start, end)
+	}
+	// Port hopping, when the server was set up to answer on a range. Omitted
+	// entirely otherwise, so servers without it keep their exact old URI.
+	if s.HopPorts != "" {
+		q += "&ports=" + url.QueryEscape(s.HopPorts)
+		if s.HopSeconds > 0 {
+			q += fmt.Sprintf("&hop=%d", s.HopSeconds)
+		}
 	}
 	return fmt.Sprintf("hy2://%s@%s:%d?%s#%s", s.Password, host, s.Port, q, s.Name)
 }
@@ -362,6 +395,11 @@ func finishDeploy(name, region string, port int, instanceID, password string, id
 		UpMbps: core.DefaultUpMbps, DownMbps: core.DefaultDownMbps,
 		PeakUpMbps: core.DefaultPeakUpMbps, PeakDownMbps: core.DefaultPeakDownMbps,
 		PeakStartHour: defaultPeakStartHour, PeakEndHour: defaultPeakEndHour,
+		// HopPorts is deliberately NOT set. The boot script opens the range and
+		// NATs it onto Port so the capability is there the moment it is wanted,
+		// but leaving it unset is what keeps it off: measured, hopping costs
+		// 28% of throughput at 120s and 90% at 30s, against a failure the stall
+		// kick already handles for a few seconds a day. See Server.HopPorts.
 	}
 	// Prefer what this region was last measured to carry. The defaults above are
 	// deliberately timid — right for a path nobody has tested, wrong for one that
@@ -430,6 +468,11 @@ func finishDeploy(name, region string, port int, instanceID, password string, id
 	}
 
 	fmt.Printf("\n🔗 %s\n", srv.URI())
+	// The range is open on the node either way, so say so — otherwise the only
+	// record that this is a one-line switch is a comment in the source.
+	fmt.Printf("\n🔀 Port hopping is available but off (it costs ~28%% throughput at %ds).\n", hopIntervalSeconds)
+	fmt.Printf("   Turn it on for this server by setting \"hop_ports\": %q, \"hop_seconds\": %d in servers.json.\n",
+		hopRangeURI, hopIntervalSeconds)
 	fmt.Println("\n⏳ Hysteria2 boot script is installing in the background (~2 min).")
 	if srv.Active {
 		fmt.Println("   This is now the active server — run `mole up` once it's ready.")

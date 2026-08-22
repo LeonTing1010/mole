@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -127,5 +128,34 @@ func TestDescribeAge(t *testing.T) {
 	// A record written before the timestamp existed still has to render.
 	if got := describeAge(regionLadder{}, now); got == "" {
 		t.Error("a record with no timestamp rendered as empty")
+	}
+}
+
+// Port hopping has to survive the URI round trip, because the URI is the only
+// channel between servers.json and the sing-box config. It must also stay
+// absent for servers that never got a range — emitting ?ports= for those would
+// point the client at ports the node's firewall drops.
+func TestURICarriesPortHopping(t *testing.T) {
+	s := Server{
+		Name: "icn-1", IP: "1.2.3.4", Port: 443, Password: "pw",
+		UpMbps: 5, DownMbps: 65,
+		HopPorts: "20000-50000", HopSeconds: 30,
+	}
+	uri := s.URI()
+	if !strings.Contains(uri, "ports=20000-50000") {
+		t.Errorf("URI dropped the hop range: %s", uri)
+	}
+	if !strings.Contains(uri, "hop=30") {
+		t.Errorf("URI dropped the hop interval: %s", uri)
+	}
+	// The base port must still be the URI's port: it is what the server always
+	// listens on and the fallback if hopping is ever turned off.
+	if !strings.Contains(uri, "@1.2.3.4:443?") {
+		t.Errorf("URI lost the base port: %s", uri)
+	}
+
+	s.HopPorts, s.HopSeconds = "", 0
+	if plain := s.URI(); strings.Contains(plain, "ports=") || strings.Contains(plain, "hop=") {
+		t.Errorf("a server with no range must not advertise one: %s", plain)
 	}
 }

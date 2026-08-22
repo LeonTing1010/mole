@@ -546,3 +546,46 @@ func TestDNSRuleMatchersNotMixed(t *testing.T) {
 		}
 	}
 }
+
+// Port hopping is opt-in and must stay off unless the URI asks for it AND the
+// range is sane — a client hopping onto ports the server never agreed to answer
+// on blackholes the tunnel on the first hop, which is strictly worse than not
+// hopping at all.
+func TestParseHysteria2PortHopping(t *testing.T) {
+	base := "hy2://pw@1.2.3.4:443?sni=x"
+	cases := []struct {
+		name      string
+		query     string
+		wantPorts []string
+		wantHop   string
+	}{
+		{"absent leaves hopping off", "", nil, ""},
+		{"dash form is translated to sing-box colons", "&ports=20000-50000", []string{"20000:50000"}, "30s"},
+		{"colon form is accepted as-is", "&ports=20000:50000", []string{"20000:50000"}, "30s"},
+		{"custom interval", "&ports=20000-50000&hop=45", []string{"20000:50000"}, "45s"},
+		{"interval below hysteria's 5s floor falls back", "&ports=20000-50000&hop=2", []string{"20000:50000"}, "30s"},
+		{"reversed range is refused", "&ports=50000-20000", nil, ""},
+		{"out-of-range port is refused", "&ports=20000-99999", nil, ""},
+		{"garbage is refused", "&ports=lots", nil, ""},
+		{"empty is refused", "&ports=", nil, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			o, err := parseServerURL(base + c.query)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(o.ServerPorts) != len(c.wantPorts) || (len(c.wantPorts) > 0 && o.ServerPorts[0] != c.wantPorts[0]) {
+				t.Errorf("ServerPorts = %v, want %v", o.ServerPorts, c.wantPorts)
+			}
+			if o.HopInterval != c.wantHop {
+				t.Errorf("HopInterval = %q, want %q", o.HopInterval, c.wantHop)
+			}
+			// The base port must survive either way: it is the fallback the
+			// server always answers on.
+			if o.ServerPort != 443 {
+				t.Errorf("ServerPort = %d, want 443 preserved", o.ServerPort)
+			}
+		})
+	}
+}

@@ -466,6 +466,26 @@ func parseHysteria2(u *url.URL) (*OutboundConfig, error) {
 		o.Obfs = &Hy2Obfs{Type: obfsType, Password: q.Get("obfs-password")}
 	}
 
+	// Port hopping. ?ports=20000-50000 is the server-facing spelling (it matches
+	// hysteria's own `listen:` range syntax and the firewall rule); sing-box
+	// wants colons, so translate rather than making the operator remember two
+	// formats for one number.
+	//
+	// Silently ignoring a malformed range would be the worst outcome — the
+	// tunnel would look configured for hopping and quietly never hop — so an
+	// unparseable value simply leaves hopping off, which is the safe shape and
+	// is what Validate can then be asked about.
+	if ports := q.Get("ports"); ports != "" {
+		if lo, hi, ok := parsePortRange(ports); ok {
+			o.ServerPorts = []string{fmt.Sprintf("%d:%d", lo, hi)}
+			hop := 30
+			if n, err := strconv.Atoi(q.Get("hop")); err == nil && n >= 5 {
+				hop = n // hysteria refuses anything under 5s
+			}
+			o.HopInterval = fmt.Sprintf("%ds", hop)
+		}
+	}
+
 	// Pinned server certificate, base64 of the leaf PEM. Deliberately parsed
 	// last so it can overrule ?insecure=1: a pin is strictly stronger than any
 	// verification the flag could have skipped, and a URI carrying both is a
@@ -725,4 +745,24 @@ func insecureProxyTLS(cfg *SingboxConfig) bool {
 		}
 	}
 	return false
+}
+
+// parsePortRange reads "20000-50000" (and the colon form sing-box uses) into an
+// inclusive pair. Returns ok=false for anything that isn't a sane UDP range, so
+// a typo turns port hopping off rather than pointing the tunnel at ports the
+// server never agreed to answer on.
+func parsePortRange(s string) (lo, hi int, ok bool) {
+	sep := strings.IndexAny(s, "-:")
+	if sep <= 0 {
+		return 0, 0, false
+	}
+	lo, err1 := strconv.Atoi(strings.TrimSpace(s[:sep]))
+	hi, err2 := strconv.Atoi(strings.TrimSpace(s[sep+1:]))
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	if lo < 1 || hi > 65535 || lo >= hi {
+		return 0, 0, false
+	}
+	return lo, hi, true
 }
