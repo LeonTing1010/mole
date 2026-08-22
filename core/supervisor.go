@@ -3,8 +3,11 @@ package core
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
+	"net"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -65,6 +68,23 @@ type Supervisor struct {
 	// verdict, kept so flips get one durable log line — state.json is
 	// overwritten in place, so the log is the only history of transitions.
 	lastHealth utils.Health
+
+	// The keepalive's HTTP client, built lazily and kept so its connections
+	// survive between beats; see tunnelClient.
+	tunnelClientOnce sync.Once
+	tunnelHTTP       *http.Client
+
+	// Stall-kick bookkeeping: which rung a kick is parked on and until when.
+	// Its own mutex because the keepalive goroutine sets it and the bandwidth
+	// scheduler reads it every tick. Never taken while stateMu is held.
+	kickMu    sync.Mutex
+	kickUntil time.Time
+	kickRung  int
+
+	// linkPoke carries "the local address changed, re-dial now" from the link
+	// watcher to the keepalive. Buffered so the watcher never blocks and a
+	// second change while one is queued collapses into the same re-dial.
+	linkPoke chan struct{}
 
 	stopCh chan struct{}
 	doneCh chan struct{}
@@ -134,7 +154,7 @@ func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervis
 		// Must beat the shortest thing that kills an idle UDP/QUIC flow — a home
 		// router's UDP NAT mapping (commonly ~30s) or the QUIC idle timeout. 15s
 		// gives two beats per 30s window, so one missed/failed beat still keeps
-		// the mapping alive. The payload is a single generate_204, so the cost is
+		// the mapping alive. The payload is a single ~200-byte fetch, so the cost is
 		// negligible.
 		opts.KeepaliveEvery = 15 * time.Second
 	}
@@ -157,6 +177,7 @@ func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervis
 		lidOffReason:      opts.LidDestroyOffReason,
 		lidClosedFn:       lidClosed,
 		lidDestroyed:      make(chan struct{}),
+		linkPoke:          make(chan struct{}, 1),
 		clash:             NewClashClient(opts.ClashAddr),
 		state: &utils.State{
 			Mode:      utils.ModeProxy,
@@ -222,7 +243,9 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	// +1 = 规则热更监听（见 ruleswatch.go）：改 custom-rules.json 即时生效，
 	// 无需任何命令、不重启进程、不断 TUN。
-	n := 4
+	// +1 = 本机上行地址监听（见 runLinkWatch）：macOS 自己重连 Wi-Fi 换 IP 后
+	// 立刻重拨，不等 keepalive 的下一拍。
+	n := 5
 	if scheduleOn {
 		n++
 	}
@@ -262,6 +285,16 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		defer wg.Done()
 		defer recoverPanic("keepalive")
 		s.runKeepalive(ctx)
+	}()
+
+	// Goroutine C2: watch this machine's uplink address. macOS re-associates
+	// Wi-Fi on its own; every session bound to the old address dies with it, and
+	// waiting for the next keepalive beat to notice turned a few seconds of link
+	// loss into 30–80s of dark tunnel.
+	go func() {
+		defer wg.Done()
+		defer recoverPanic("link-watch")
+		s.runLinkWatch(ctx)
 	}()
 
 	// Goroutine D (optional): drive the Brutal ceiling — follow the local clock
@@ -476,6 +509,23 @@ func (h *healState) retarget(pin int) {
 	*h = healState{target: pin}
 }
 
+// freeze folds in a tick that carries no evidence about the tunnel, and returns
+// the unchanged backoff.
+//
+// The case is a local uplink that is gone (utils.HealthNoLink): no probe can
+// leave the machine and no keepalive can reach the far end, so "unhealthy" would
+// be a statement about Wi-Fi wearing the costume of a statement about the path.
+// Ticking it as unhealthy did real damage — it cleared the clean streak, so a
+// 60-second DHCP re-association cost fifteen more minutes before the ceiling
+// could climb one rung back.
+//
+// The streak is preserved rather than advanced: the link was not proven good
+// either.
+func (h *healState) freeze() int {
+	h.held = false
+	return h.backoff
+}
+
 // tick folds in one observation and returns the backoff to apply now.
 //
 // flooding is what makes the descent honest. "Unhealthy" alone does not mean
@@ -489,6 +539,34 @@ func (h *healState) retarget(pin int) {
 // ceiling must not climb either. It just holds where it is and waits, which for
 // a blackhole is the only thing that has ever worked.
 func (h *healState) tick(healthy, flooding bool) int {
+	// Flooding is decisive on its own, and is checked BEFORE health. ENOBUFS
+	// means this machine could not push the declared rate into the link — a
+	// statement about the local send path that is equally true whether or not
+	// the tunnel happens to be answering right now.
+	//
+	// Gating it on "unhealthy" was a hole. The keepalive recovers between
+	// failures, so health spends most of a bad stretch reading OK, and the
+	// healthy branch resets h.bad to zero: on 2026-08-22 a link whose Wi-Fi rate
+	// had collapsed to 14-47 Mbps against a 65 Mbps ceiling produced 45 ENOBUFS
+	// in 45 minutes and not one descent, because no two consecutive ticks ever
+	// found the tunnel unhealthy at the same moment they found it flooding.
+	//
+	// This is not a reversal of the rule that flooding is REQUIRED to descend
+	// (see the doc comment above); it is dropping the second, unrelated
+	// condition that was silently ANDed onto it.
+	if flooding {
+		h.held = false
+		h.good = 0
+		h.bad++
+		// Stop descending at healMaxBackoff. Below that the ceiling is no longer
+		// the problem and dropping further only throttles a recovery we still
+		// want to be ready for.
+		if h.bad >= healBackoffTicks && h.backoff < healMaxBackoff {
+			h.backoff, h.bad = h.backoff+1, 0
+			log.Printf("self-heal: sing-box flooding (ENOBUFS) %d min — lowering the ceiling one rung (backoff %d)", healBackoffTicks, h.backoff)
+		}
+		return h.backoff
+	}
 	if healthy {
 		h.held = false
 		h.bad, h.good = 0, h.good+1
@@ -499,21 +577,9 @@ func (h *healState) tick(healthy, flooding bool) int {
 		return h.backoff
 	}
 	h.good = 0
-	if !flooding {
-		if !h.held {
-			h.held = true
-			log.Printf("self-heal: path unhealthy but sing-box is not flooding (no ENOBUFS) — holding the ceiling; this is a dark path, not a ceiling that is too high")
-		}
-		return h.backoff
-	}
-	h.held = false
-	h.bad++
-	// Stop descending at healMaxBackoff. Below that the ceiling is no longer the
-	// problem and dropping further only throttles a recovery we still want to be
-	// ready for.
-	if h.bad >= healBackoffTicks && h.backoff < healMaxBackoff {
-		h.backoff, h.bad = h.backoff+1, 0
-		log.Printf("self-heal: path unhealthy and flooding %d min — lowering the ceiling one rung (backoff %d)", healBackoffTicks, h.backoff)
+	if !h.held {
+		h.held = true
+		log.Printf("self-heal: path unhealthy but sing-box is not flooding (no ENOBUFS) — holding the ceiling; this is a dark path, not a ceiling that is too high")
 	}
 	return h.backoff
 }
@@ -568,23 +634,134 @@ func (s *Supervisor) runKeepalive(ctx context.Context) {
 			return
 		case <-s.stopCh:
 			return
+		case <-s.linkPoke:
+			// The local address just changed. Every established session is bound
+			// to an address that no longer exists, so beat now instead of waiting
+			// out the rest of the tick: the request is what makes sing-box notice
+			// and re-dial.
 		case <-t.C:
 		}
 	}
 }
 
-// keepaliveOnce sends one request through the proxy outbound and records the
+// runLinkWatch notices when this machine's physical uplink address changes and
+// pokes the keepalive to re-dial immediately.
+//
+// Why it exists: macOS releases and re-acquires the DHCP lease on its own —
+// when symptomsd decides an interface has stalled it re-associates Wi-Fi, which
+// on 2026-08-22 happened five times. Each one left every hy2 session bound to a
+// source address that no longer existed, which sing-box reports as
+// `write: can't assign requested address` and quic-go answers by destroying the
+// connection. Recovery then waited on the next keepalive beat to trigger a
+// re-dial, and the outages ran 30–80 seconds when the link itself was back in a
+// few.
+//
+// Polling rather than a route-socket subscription: this needs to be dependable
+// and boring across macOS releases, and a 2s poll of an in-kernel table costs
+// nothing measurable.
+func (s *Supervisor) runLinkWatch(ctx context.Context) {
+	last, _ := currentUplink()
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.stopCh:
+			return
+		case <-t.C:
+		}
+		now, _ := currentUplink()
+		if now == last {
+			continue
+		}
+		switch {
+		case now == "":
+			log.Printf("uplink lost (was %s) — the tunnel cannot recover until it returns; this is local, not the path", last)
+		case last == "":
+			log.Printf("uplink back (%s) — re-dialing the tunnel", now)
+		default:
+			log.Printf("uplink changed (%s → %s) — sessions are bound to the old address; re-dialing", last, now)
+		}
+		last = now
+		if now != "" {
+			select {
+			case s.linkPoke <- struct{}{}:
+			default: // a poke is already queued; one re-dial covers both
+			}
+		}
+	}
+}
+
+// currentUplink identifies the physical interface and IPv4 address traffic
+// currently leaves from, as a comparable string. Empty means there is none —
+// which is a state, not an error.
+func currentUplink() (string, error) {
+	ifi, err := utils.DefaultPhysicalInterface()
+	if err != nil {
+		return "", err
+	}
+	addrs, err := ifi.Addrs()
+	if err != nil {
+		return "", err
+	}
+	for _, a := range addrs {
+		ipnet, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		if v4 := ipnet.IP.To4(); v4 != nil && !v4.IsLoopback() && !v4.IsLinkLocalUnicast() {
+			return ifi.Name + "/" + v4.String(), nil
+		}
+	}
+	return "", fmt.Errorf("%s has no usable IPv4", ifi.Name)
+}
+
+// keepaliveURL is what the in-tunnel keepalive fetches. Two properties matter
+// and neither is the latency:
+//
+//   - it returns a BODY. The old keepalive drove a Clash delay probe at a
+//     generate_204, which completes with an empty response — so it proved a
+//     request could be issued and answered, and proved nothing about whether the
+//     tunnel moves bytes. A session that connects but carries nothing looked
+//     perfectly healthy through that check.
+//   - it is small (~200 bytes) and stable, so doing it every 15s costs nothing.
+//
+// As a bonus for anyone debugging by hand: the body names the exit IP, so
+// `curl https://cloudflare.com/cdn-cgi/trace` is also the one-liner that says
+// whether traffic is leaving through the VPS at all.
+const keepaliveURL = "https://cloudflare.com/cdn-cgi/trace"
+
+// Stall-kick thresholds. See requestStallKick.
+const (
+	// stallKickThreshold: consecutive keepalive failures before concluding the
+	// established session is the problem. At the 15s cadence, 2 ≈ 30s — early
+	// enough to act before KeepaliveFailThreshold declares the path dead.
+	stallKickThreshold = 2
+	// stallKickHold: how long to stay off the original rung. Must exceed
+	// hysteria's MaxIdleTimeout (30s), or returning would reuse the very session
+	// we are trying to shed instead of dialing a fresh one.
+	stallKickHold = 45 * time.Second
+)
+
+// keepaliveOnce drives one real request through the tunnel and records the
 // result. A single failure stays informational — this path runs through
 // sing-box's DNS engine, so one hiccup must not flip the verdict. But a streak
-// of failures while the direct-UDP probe stays green is exactly the path-
-// blackhole signature (probe proves the VPS process answers; keepalive proves
-// the path passes traffic), so consecutive failures feed State.Health via
-// KeepaliveFails. The vps-down verdict remains the probe's exclusive call.
+// of failures is the signature users actually feel, so consecutive failures feed
+// State.Health via KeepaliveFails. The vps-down verdict remains the probe's
+// exclusive call.
+//
+// The request follows the selector rather than naming an outbound, which is the
+// point: it measures the path traffic is really taking, and — because a request
+// routed to a dead hy2 outbound makes sing-box re-dial — it both prevents idle
+// death and re-establishes a session that died anyway (e.g. after sleep/wake).
 func (s *Supervisor) keepaliveOnce() {
-	delay, err := s.clash.TestDelay("proxy", s.probeURL, s.probeTimeMs)
+	start := time.Now()
+	n, err := s.fetchThroughTunnel(keepaliveURL)
+	delay := int(time.Since(start) / time.Millisecond)
 
+	var kick bool
 	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
 	s.state.LastKeepaliveAt = time.Now()
 	if err != nil {
 		s.state.KeepaliveFails++
@@ -594,14 +771,116 @@ func (s *Supervisor) keepaliveOnce() {
 		s.state.LastKeepaliveMs = 0
 		s.state.LastKeepaliveError = err.Error()
 		log.Printf("tunnel keepalive failed (×%d): %v", s.state.KeepaliveFails, err)
+		// The kick is for a stuck SESSION, not a dark path: only worth doing
+		// while a fresh out-of-tunnel datagram still gets answered, which says
+		// the far end and the path are both fine and it is this five-tuple that
+		// has stopped being carried.
+		kick = s.state.KeepaliveFails == stallKickThreshold && s.state.LastProbeVerdict == utils.ProbeAlive
 	} else {
 		s.state.KeepaliveFails = 0
 		s.state.KeepaliveFailingSince = time.Time{}
 		s.state.LastKeepaliveMs = delay
 		s.state.LastKeepaliveError = ""
+		_ = n
 	}
 	s.noteHealthLocked()
 	_ = utils.WriteState(s.stateSnapshotLocked())
+	s.stateMu.Unlock()
+
+	if kick {
+		s.requestStallKick()
+	}
+}
+
+// fetchThroughTunnel performs one GET and returns how many body bytes arrived.
+// An empty body is an error: carrying zero bytes is the failure this exists to
+// catch.
+func (s *Supervisor) fetchThroughTunnel(url string) (int64, error) {
+	resp, err := s.tunnelClient().Get(url)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	n, err := io.Copy(io.Discard, resp.Body)
+	if err != nil {
+		return n, fmt.Errorf("read body after %d bytes: %w", n, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return n, fmt.Errorf("http %s", resp.Status)
+	}
+	if n == 0 {
+		return 0, fmt.Errorf("empty body: tunnel connected but carried nothing")
+	}
+	return n, nil
+}
+
+// tunnelClient is the HTTP client the keepalive uses, built once and reused so
+// its connections persist between beats.
+//
+// The reuse is deliberate. A fresh connection every 15s would test only what the
+// direct probe already tests — whether a NEW flow can be established — and that
+// is precisely the case that stays healthy while established flows are being
+// throttled to death. Holding the connection means the keepalive is riding the
+// same kind of long-lived flow as the user's actual traffic.
+func (s *Supervisor) tunnelClient() *http.Client {
+	s.tunnelClientOnce.Do(func() {
+		s.tunnelHTTP = &http.Client{
+			Timeout: time.Duration(s.probeTimeMs) * time.Millisecond,
+		}
+	})
+	return s.tunnelHTTP
+}
+
+// requestStallKick moves traffic onto a neighbouring ladder rung for
+// stallKickHold, then lets the scheduler put it back.
+//
+// The failure it answers: the keepalive stops passing traffic while the
+// out-of-tunnel probe keeps getting answers. That combination is not a dark
+// path — it is this particular five-tuple being throttled or blackholed while
+// the host and the route are fine. Measured 2026-08-22: 13 such events, each
+// lasting 27–42 seconds, which is hysteria's 30s MaxIdleTimeout plus change —
+// i.e. they ended when the session finally timed out and was re-dialed, and the
+// whole outage was time spent waiting for that.
+//
+// There is no Clash call that resets an outbound's session, so the kick works by
+// routing through a different outbound, which dials its own. See Sibling.
+func (s *Supervisor) requestStallKick() {
+	s.kickMu.Lock()
+	if time.Now().Before(s.kickUntil) {
+		s.kickMu.Unlock()
+		return // one already running; let it finish before judging it
+	}
+	s.stateMu.Lock()
+	down := s.state.BandwidthDownMbps
+	s.stateMu.Unlock()
+
+	sib := s.schedule.Sibling(down)
+	if sib == 0 {
+		s.kickMu.Unlock()
+		return // no ladder to step onto
+	}
+	s.kickUntil = time.Now().Add(stallKickHold)
+	s.kickRung = sib
+	s.kickMu.Unlock()
+
+	member := BandwidthRungTag(sib)
+	if err := s.clash.SelectProxy(ProxySelectorTag, member); err != nil {
+		log.Printf("stall kick: select %s failed: %v", member, err)
+		return
+	}
+	log.Printf("stall kick: keepalive dark ×%d while the probe answers — moving to %s for %s to dial a fresh session",
+		stallKickThreshold, member, stallKickHold)
+}
+
+// stallKick reports the rung a running kick is holding, and whether one is
+// running at all.
+func (s *Supervisor) stallKick() (int, bool) {
+	s.kickMu.Lock()
+	defer s.kickMu.Unlock()
+	if time.Now().After(s.kickUntil) {
+		return 0, false
+	}
+	return s.kickRung, true
 }
 
 // runBandwidthScheduler points the `proxy` selector at the ladder rung carrying
@@ -669,6 +948,14 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 				name = fmt.Sprintf("%s↓%d", name, backoff)
 			}
 		}
+		// A running stall kick outranks both the clock and the pin, for as long
+		// as it lasts. Without this the very next tick would select the target
+		// rung again — and with it the session the kick was shedding, since the
+		// outbound is only re-dialed once its old session has idled out.
+		if rung, kicking := s.stallKick(); kicking {
+			member, down = BandwidthRungTag(rung), rung
+			name += "↷kick"
+		}
 		// Compare against what the selector is *actually* pointing at, not against
 		// what we last set. `mole ceiling` drives the same selector directly, so
 		// the two can disagree — and when they do, skipping on the stale cache
@@ -717,13 +1004,22 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 	// between them — see healState.
 	retune := func() {
 		s.stateMu.Lock()
-		healthy := s.state.Health() == utils.HealthOK
+		h := s.state.Health()
 		s.stateMu.Unlock()
 		// Drained every tick whether or not it is read, so the count never
 		// straddles two ticks and one short burst cannot descend a rung by
 		// itself.
 		flooding := TakeFloodSightings() > 0
-		backoff = heal.tick(healthy, flooding)
+		if h == utils.HealthNoLink {
+			backoff = heal.freeze()
+			return
+		}
+		// Usable, not OK: a degraded verdict means the out-of-tunnel probe is
+		// dropping datagrams while the tunnel still carries traffic. Counting
+		// that as unhealthy is what made the ceiling unable to climb — the probe
+		// loses three in a row often enough that the clean streak never survived
+		// to fifteen.
+		backoff = heal.tick(h.Usable(), flooding)
 	}
 
 	apply()

@@ -55,7 +55,9 @@ const ipBoundIf = 25
 func ProbeHy2UDP(addr, obfsPassword string, timeout time.Duration) (time.Duration, utils.ProbeVerdict, error) {
 	ifi, err := utils.DefaultPhysicalInterface()
 	if err != nil {
-		return 0, utils.ProbeError, fmt.Errorf("no physical interface for direct probe: %w", err)
+		// Not ProbeError: this is the local uplink being gone, which says
+		// nothing about the VPS or the path. See utils.ProbeNoLink.
+		return 0, utils.ProbeNoLink, fmt.Errorf("no physical interface for direct probe: %w", err)
 	}
 	d := net.Dialer{
 		Timeout: timeout,

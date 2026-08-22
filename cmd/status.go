@@ -70,16 +70,28 @@ func printSupervisorState() {
 		case utils.HealthVPSDown:
 			// ICMP port unreachable round-tripped: path fine, nothing listening.
 			fmt.Printf("   Mode:    🔴 proxy — hy2 process down on VPS (probe refused): %s\n", st.LastProbeError)
+		case utils.HealthNoLink:
+			// Nothing to say about the VPS: this machine has no uplink. Naming
+			// the real culprit matters — reported as a path blackhole, this sent
+			// people hunting the tunnel while the Wi-Fi was re-associating.
+			fmt.Printf("   Mode:    🔴 proxy — this Mac has no uplink (%s); the tunnel resumes on its own when the network returns\n",
+				st.LastProbeError)
 		case utils.HealthPathDead:
 			// Two flavors, same advice: restarting won't help, it usually
 			// clears on its own in ~10–15min.
 			if st.ConsecutiveFails >= utils.ProbeSilentThreshold {
-				fmt.Printf("   Mode:    🟡 proxy — UDP path to VPS dark (probe %s ×%d); wait it out or `mole down`, restarting won't help\n",
-					st.LastProbeVerdict, st.ConsecutiveFails)
+				fmt.Printf("   Mode:    🟡 proxy — UDP path to VPS dark (probe %s ×%d, keepalive ×%d); wait it out or `mole down`, restarting won't help\n",
+					st.LastProbeVerdict, st.ConsecutiveFails, st.KeepaliveFails)
 			} else {
-				fmt.Printf("   Mode:    🟡 proxy — VPS reachable but tunnel dark for %s (keepalive ×%d); wait it out or `mole down`, restarting won't help\n",
+				fmt.Printf("   Mode:    🟡 proxy — VPS answers fresh probes but the established tunnel is dark for %s (keepalive ×%d); a stall kick is dialing a new session\n",
 					humanize(time.Since(st.KeepaliveFailingSince)), st.KeepaliveFails)
 			}
+		case utils.HealthDegraded:
+			// Explicitly not an outage. The probe opens a new five-tuple each
+			// time and this path loses ~20% of those first packets; the tunnel
+			// underneath is passing traffic.
+			fmt.Printf("   Mode:    🟢 proxy — carrying traffic; out-of-tunnel probe missing replies (%s ×%d), new connections may be slow to open\n",
+				st.LastProbeVerdict, st.ConsecutiveFails)
 		default:
 			if st.LastLatencyMs > 0 {
 				fmt.Printf("   Mode:    🟢 proxy — VPS healthy (%dms)\n", st.LastLatencyMs)

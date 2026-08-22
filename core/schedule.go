@@ -189,6 +189,37 @@ func (s BandwidthSchedule) StepDown(down, steps int) int {
 	return rungs[i]
 }
 
+// Sibling returns a rung adjacent to `down`, or 0 when the ladder has nothing
+// else to offer.
+//
+// This is not a bandwidth decision — it is how the supervisor gets a FRESH QUIC
+// session. An outbound's session is not addressable through the Clash API: there
+// is no "reconnect" call, only a selector that says which outbound carries
+// traffic. So when the established session is the thing that has gone bad — the
+// keepalive failing while a fresh out-of-tunnel probe still gets answers, which
+// is per-five-tuple throttling — the only lever is to route through a different
+// outbound, which dials its own session on its own source port.
+//
+// Prefers one rung DOWN, because the alternative is momentarily declaring more
+// bandwidth than the rung that was already struggling. Falls back to one rung up
+// when there is nothing below.
+func (s BandwidthSchedule) Sibling(down int) int {
+	rungs := s.Rungs()
+	if len(rungs) < 2 {
+		return 0
+	}
+	i := 0
+	for j, n := range rungs {
+		if n <= down {
+			i = j
+		}
+	}
+	if i > 0 {
+		return rungs[i-1]
+	}
+	return rungs[i+1]
+}
+
 // HasRung reports whether the ladder carries a given DOWN ceiling — i.e. whether
 // selecting it would name an outbound the config actually defines.
 func (s BandwidthSchedule) HasRung(down int) bool {

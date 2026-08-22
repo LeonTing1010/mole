@@ -25,6 +25,18 @@ const (
 	ProbeRefused ProbeVerdict = "refused" // ICMP port unreachable — hy2 process dead
 	ProbeSilent  ProbeVerdict = "silent"  // no response — path blackholed or host gone
 	ProbeError   ProbeVerdict = "error"   // probe couldn't run; says nothing about the VPS
+	// ProbeNoLink: the probe could not run because this machine currently has
+	// no physical interface carrying an IPv4 address. Split out of ProbeError
+	// because it is the one probe failure that is definitely NOT about the VPS
+	// or the path — the local uplink is gone, and nothing at the far end can be
+	// measured, blamed, or fixed until it comes back.
+	//
+	// It has its own verdict because it has its own remedy (wait for DHCP, then
+	// re-dial), and because folding it into the path verdict actively hurt: a
+	// 60-second Wi-Fi re-association was logged as "path-blackhole", counted as
+	// unhealthy by self-healing, and threw away the clean streak the ceiling
+	// needed to climb back.
+	ProbeNoLink ProbeVerdict = "no-link"
 )
 
 // State is the supervisor's live view of the connection, persisted so that
@@ -128,17 +140,46 @@ const (
 //   - the in-tunnel keepalive (Keepalive*) proves the established hy2
 //     session end-to-end actually passes traffic.
 //
-// Probe refused → HealthVPSDown (immediate — ICMP unreachable is
-// unambiguous). Probe failing ≥ ProbeSilentThreshold, or keepalive failing
-// ≥ KeepaliveFailThreshold, → HealthPathDead (path blackhole: wait it out or
-// `mole down`; restarting does nothing). Otherwise → HealthOK.
+// The two disagree more often than they agree, and which one is failing is the
+// whole diagnosis:
+//
+//   - probe silent, keepalive fine → HealthDegraded. The probe opens a NEW
+//     five-tuple with a 1200-byte datagram every time; on this path ~20% of
+//     those first packets are lost even while the tunnel carries 50 Mbps
+//     (measured 2026-08-22: 30 probes, 24 answered, tunnel healthy throughout).
+//     Three consecutive losses is a 0.8% event — unremarkable over a day, and it
+//     used to flip the verdict to path-blackhole 21 times, each one clearing
+//     self-healing's clean streak and painting `mole status` red through a
+//     working tunnel.
+//   - keepalive failing → HealthPathDead, whatever the probe says. This is the
+//     failure users actually feel: established flows stop passing traffic while
+//     new ones are fine, which is the signature of per-five-tuple throttling and
+//     shows up as ~30s outages (hysteria's MaxIdleTimeout) on an otherwise live
+//     path.
+//   - both failing → HealthPathDead, the genuine blackout.
+//
+// Probe refused → HealthVPSDown (immediate — ICMP unreachable is unambiguous).
+// Probe reporting no local link → HealthNoLink, which is about this machine and
+// not about the tunnel at all.
 type Health string
 
 const (
 	HealthOK       Health = "healthy"
 	HealthVPSDown  Health = "vps-down"
 	HealthPathDead Health = "path-blackhole"
+	// HealthDegraded: the out-of-tunnel probe is missing replies but the tunnel
+	// itself is still passing traffic. Worth showing and worth refusing to raise
+	// the ceiling on; not worth calling an outage.
+	HealthDegraded Health = "degraded"
+	// HealthNoLink: this machine has no usable uplink. Nothing about the VPS or
+	// the path is known — or knowable — until it returns.
+	HealthNoLink Health = "no-link"
 )
+
+// Usable reports whether the tunnel is expected to carry traffic right now.
+// HealthDegraded is deliberately usable: that is the entire point of splitting
+// it out of HealthPathDead.
+func (h Health) Usable() bool { return h == HealthOK || h == HealthDegraded }
 
 // KeepaliveFailThreshold is how many consecutive keepalive failures flip
 // Health to HealthPathDead. At the 15s default cadence, 4 ≈ one minute dark —
@@ -147,8 +188,10 @@ const (
 const KeepaliveFailThreshold = 4
 
 // ProbeSilentThreshold is how many consecutive direct-probe failures flip
-// Health to HealthPathDead. Single probe datagrams do get lost on this lossy
-// CN path; three in a row (30s at the 10s cadence) is not luck.
+// Health to HealthDegraded. Single probe datagrams do get lost on this lossy
+// CN path — measured at ~20% for the probe's fresh five-tuple — so three in a
+// row is a ~1-in-125 event rather than luck, but it is still only evidence
+// about NEW flows. Promoting it to an outage is the keepalive's job.
 const ProbeSilentThreshold = 3
 
 // Health synthesizes the current verdict; see the Health type for semantics.
@@ -156,11 +199,21 @@ func (s *State) Health() Health {
 	if s.ConsecutiveFails > 0 && s.LastProbeVerdict == ProbeRefused {
 		return HealthVPSDown
 	}
-	if s.ConsecutiveFails >= ProbeSilentThreshold {
-		return HealthPathDead
+	// Checked before anything path-related: with no local IPv4 the probe cannot
+	// run and the keepalive cannot reach the tunnel, so every other signal on
+	// this struct is measuring the absence of an uplink, not the state of the
+	// far end.
+	if s.ConsecutiveFails > 0 && s.LastProbeVerdict == ProbeNoLink {
+		return HealthNoLink
 	}
+	// The keepalive is the authority on whether the tunnel passes traffic: it
+	// rides an established session end to end. When it is failing, the path is
+	// dead no matter how healthy a fresh probe datagram looks.
 	if s.KeepaliveFails >= KeepaliveFailThreshold {
 		return HealthPathDead
+	}
+	if s.ConsecutiveFails >= ProbeSilentThreshold {
+		return HealthDegraded
 	}
 	return HealthOK
 }

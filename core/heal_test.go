@@ -70,11 +70,21 @@ func TestHealDoesNotClimbOnABriefRecovery(t *testing.T) {
 // Alternating good/bad — the exact pattern the logs showed during a flapping
 // afternoon — must not oscillate the ceiling. Neither counter should ever reach
 // its threshold, so the ceiling stays put.
+//
+// The FLOOD signal is what alternates here. This test used to hold flooding
+// true on every tick and alternate only health, which made it assert something
+// nobody wanted: that a sustained flood should never lower the ceiling as long
+// as the health verdict kept flapping. That is exactly the hole found on
+// 2026-08-22 — 45 ENOBUFS in 45 minutes against a ceiling the Wi-Fi could not
+// carry, and not one descent, because the keepalive kept recovering between
+// failures. Flooding is now decisive on its own (see healState.tick), so the
+// anti-oscillation property has to be stated in terms of the evidence that
+// actually moves the ceiling.
 func TestHealIgnoresFlapping(t *testing.T) {
 	var h healState
 	for i := 0; i < 40; i++ {
-		if got := h.tick(i%2 == 0, true); got != 0 {
-			t.Fatalf("alternating health moved the ceiling to backoff %d at tick %d", got, i)
+		if got := h.tick(true, i%2 == 0); got != 0 {
+			t.Fatalf("alternating flood evidence moved the ceiling to backoff %d at tick %d", got, i)
 		}
 	}
 }
@@ -230,5 +240,165 @@ func TestHealFloodEvidenceIsClearedByARecovery(t *testing.T) {
 	h.tick(true, false)
 	if got := h.tick(false, true); got != 0 {
 		t.Errorf("backoff = %d after a healthy minute reset the count, want 0", got)
+	}
+}
+
+// The stall kick needs a rung that is NOT the one it is leaving — the whole
+// point is to route through a different outbound so a fresh QUIC session gets
+// dialed. Returning the same rung would select the stuck session again.
+func TestSiblingAlwaysMoves(t *testing.T) {
+	// Rungs: 1, 2, 3, 5, 8, 12, 20
+	s := BandwidthSchedule{OffUp: 5, OffDown: 20, PeakUp: 2, PeakDown: 5, StartHour: 12, EndHour: 2}
+
+	for _, down := range s.Rungs() {
+		got := s.Sibling(down)
+		if got == 0 {
+			t.Errorf("Sibling(%d) = 0, want a rung to step onto", down)
+			continue
+		}
+		if got == down {
+			t.Errorf("Sibling(%d) = %d — the kick would re-select the stuck session", down, got)
+		}
+		if !s.HasRung(got) {
+			t.Errorf("Sibling(%d) = %d, which is not a rung the config carries", down, got)
+		}
+	}
+	// Prefers stepping down: momentarily declaring MORE bandwidth than the rung
+	// that was already struggling is the wrong direction.
+	if got := s.Sibling(20); got != 12 {
+		t.Errorf("Sibling(20) = %d, want 12 (one rung down)", got)
+	}
+	// ...except at the bottom, where down is not available.
+	if got := s.Sibling(1); got != 2 {
+		t.Errorf("Sibling(1) = %d, want 2 (nothing below to step to)", got)
+	}
+}
+
+// With no ladder there is nothing to kick onto, and saying so is what keeps the
+// supervisor from selecting a member sing-box never defined.
+func TestSiblingWithNoLadder(t *testing.T) {
+	if got := (BandwidthSchedule{}).Sibling(20); got != 0 {
+		t.Errorf("Sibling with no ladder = %d, want 0", got)
+	}
+}
+
+// A local uplink outage carries no evidence about the ceiling, so it must not
+// consume the clean streak. This is the regression that made a 60-second Wi-Fi
+// re-association cost fifteen extra minutes at half bandwidth.
+func TestFreezePreservesTheCleanStreak(t *testing.T) {
+	var h healState
+	h.target = 20
+
+	// Earn a backoff the honest way: unhealthy AND flooding.
+	for i := 0; i < healBackoffTicks; i++ {
+		h.tick(false, true)
+	}
+	if h.backoff != 1 {
+		t.Fatalf("setup: backoff = %d, want 1", h.backoff)
+	}
+
+	// Bank most of the clean run needed to climb back.
+	for i := 0; i < healRecoverTicks-1; i++ {
+		h.tick(true, false)
+	}
+	banked := h.good
+
+	// The uplink drops for a few ticks. Nothing is known about the path.
+	for i := 0; i < 3; i++ {
+		if got := h.freeze(); got != 1 {
+			t.Errorf("freeze() = %d, want the backoff left untouched (1)", got)
+		}
+	}
+	if h.good != banked {
+		t.Errorf("clean streak = %d after freezing, want it preserved at %d", h.good, banked)
+	}
+
+	// One more good tick and the ceiling climbs — the frozen ticks neither
+	// helped nor hurt.
+	if got := h.tick(true, false); got != 0 {
+		t.Errorf("tick after the link returned = %d, want 0 (climbed a rung)", got)
+	}
+}
+
+// Degraded means the tunnel is still carrying traffic, so it must not be fed to
+// tick() as unhealthy — that clears the streak, and the probe loses three in a
+// row often enough that the ceiling could never climb back.
+func TestDegradedTicksAsUsable(t *testing.T) {
+	var h healState
+	h.target = 20
+	for i := 0; i < healBackoffTicks; i++ {
+		h.tick(false, true)
+	}
+
+	// utils.HealthDegraded.Usable() is true, so this is what retune passes.
+	for i := 0; i < healRecoverTicks; i++ {
+		h.tick(true, false)
+	}
+	if h.backoff != 0 {
+		t.Errorf("backoff = %d after %d usable ticks, want 0", h.backoff, healRecoverTicks)
+	}
+}
+
+// Flood evidence must survive a flapping health verdict. The keepalive recovers
+// between failures, so a bad stretch reads "healthy" on most ticks; when the
+// descent was gated on unhealthy AND flooding, those healthy ticks reset the
+// counter and the ceiling never came down. Measured 2026-08-22: a link whose
+// Wi-Fi rate had collapsed to 14-47 Mbps against a 65 Mbps ceiling produced 45
+// ENOBUFS in 45 minutes and not one descent.
+func TestFloodingDescendsThroughFlappingHealth(t *testing.T) {
+	var h healState
+	h.target = 65
+
+	// Alternate healthy/unhealthy while flooding throughout — the exact shape
+	// that used to produce no descent at all.
+	for i := 0; i < healBackoffTicks*2; i++ {
+		h.tick(i%2 == 0, true)
+	}
+	if h.backoff == 0 {
+		t.Fatal("flooding through a flapping health verdict produced no descent")
+	}
+}
+
+// ...but flooding must still be REQUIRED. An unhealthy path with no ENOBUFS is
+// a dark path, and descending there buys nothing while costing half the
+// bandwidth for healRecoverTicks minutes afterwards. This is the regression
+// 074274f fixed and it must not come back.
+func TestUnhealthyWithoutFloodingStillHolds(t *testing.T) {
+	var h healState
+	h.target = 65
+	for i := 0; i < healRecoverTicks*3; i++ {
+		if got := h.tick(false, false); got != 0 {
+			t.Fatalf("dark path descended to backoff %d — no rung passes traffic through a blackhole", got)
+		}
+	}
+}
+
+// A healthy, non-flooding link must still climb back, and flooding must reset
+// the clean streak that climbing depends on.
+func TestFloodingResetsTheClimb(t *testing.T) {
+	var h healState
+	h.target = 65
+	for i := 0; i < healBackoffTicks; i++ {
+		h.tick(true, true)
+	}
+	if h.backoff != 1 {
+		t.Fatalf("setup: backoff = %d, want 1", h.backoff)
+	}
+	for i := 0; i < healRecoverTicks-1; i++ {
+		h.tick(true, false)
+	}
+	h.tick(true, true) // one flood mid-recovery
+	if h.good != 0 {
+		t.Errorf("clean streak = %d after a flood, want it reset", h.good)
+	}
+	for i := 0; i < healRecoverTicks-1; i++ {
+		h.tick(true, false)
+	}
+	if h.backoff != 1 {
+		t.Errorf("backoff = %d — the climb must restart from the flood, not resume", h.backoff)
+	}
+	h.tick(true, false)
+	if h.backoff != 0 {
+		t.Errorf("backoff = %d after a full clean run, want 0", h.backoff)
 	}
 }
