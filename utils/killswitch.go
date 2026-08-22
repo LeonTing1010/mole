@@ -164,11 +164,35 @@ func physicalInterfaces() []string {
 	return out
 }
 
+// appleRange is Apple's own IPv4 allocation, and the one deliberate hole in an
+// otherwise fail-closed ruleset.
+//
+// It is here because of a feedback loop that cost more downtime than the GFW
+// did. Apple's background services — apsd, cloudd, accountsd, AddressBook
+// sync — were routed through the tunnel, so every tunnel hiccup hung THEIR
+// connections; macOS's symptomsd watches exactly those, calls the interface
+// stalled, and answers by releasing the DHCP lease and re-associating Wi-Fi.
+// That took the uplink out from under every hy2 session (which then died with
+// `can't assign requested address`) and turned a 10–20 second wobble into a
+// 60–190 second outage. Measured 2026-08-22: five such events, the three
+// longest outages of the day among them.
+//
+// Routing those services direct is what breaks the loop, and this rule is what
+// makes "direct" actually work — without it sing-box sends them to the physical
+// interface and PF drops them, which is a stall too, just a quieter one.
+//
+// The security trade is small and deliberate. 17.0.0.0/8 is Apple's own
+// registered space, the traffic is already authenticated to Apple by the
+// device's identity, and this is the same path every Mac in the country uses
+// when no VPN is running at all. What it does concede: if sing-box dies, Apple
+// services keep talking from the real IP instead of failing closed.
+const appleRange = "17.0.0.0/8"
+
 // buildPFRules renders the anchor ruleset. Per physical interface, first
 // match wins (quick): VPS endpoints (the tunnel itself + the health probe),
-// local/broadcast infrastructure, DHCP, Chinese IPv4 space, IPv6 link-local
-// — then block everything else, both families. utun/lo are never mentioned,
-// so tunnel-bound traffic is untouched.
+// local/broadcast infrastructure, DHCP, Apple's own range, Chinese IPv4 space,
+// IPv6 link-local — then block everything else, both families. utun/lo are
+// never mentioned, so tunnel-bound traffic is untouched.
 //
 // Every KNOWN server is passed, not just the active one. Passing only the
 // active endpoint silently breaks any direct contact with a second node: a
@@ -191,6 +215,7 @@ func buildPFRules(vpsIPs []string) string {
 		}
 		fmt.Fprintf(&b, "pass out quick on %s inet to { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 224.0.0.0/4, 255.255.255.255/32 }\n", ifc)
 		fmt.Fprintf(&b, "pass out quick on %s proto udp from any port 68 to any port 67\n", ifc)
+		fmt.Fprintf(&b, "pass out quick on %s inet to %s\n", ifc, appleRange)
 		fmt.Fprintf(&b, "pass out quick on %s inet to <mole_cn4>\n", ifc)
 		fmt.Fprintf(&b, "pass out quick on %s inet6 to { fe80::/10, ff02::/16 }\n", ifc)
 		fmt.Fprintf(&b, "block out quick on %s inet all\n", ifc)

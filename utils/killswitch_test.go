@@ -181,3 +181,26 @@ func TestKillSwitchSeedsTheExemptionAfterTheToken(t *testing.T) {
 			"KillSwitchLoaded() guard is still false and the seed silently does nothing")
 	}
 }
+
+// Apple's range must be passed, and passed BEFORE the block — otherwise
+// routing Apple's background services direct just moves the stall from the
+// tunnel to our own firewall, and the symptomsd feedback loop that the direct
+// routing exists to break fires exactly as before. See appleRange.
+func TestPFRulesPassAppleRange(t *testing.T) {
+	rules := buildPFRules([]string{"45.32.28.60"})
+	for _, ifc := range physicalInterfaces() {
+		apple := strings.Index(rules, "pass out quick on "+ifc+" inet to "+appleRange)
+		blk4 := strings.Index(rules, "block out quick on "+ifc+" inet all")
+		if apple < 0 {
+			t.Fatalf("no Apple pass rule for %s:\n%s", ifc, rules)
+		}
+		if apple > blk4 {
+			t.Fatalf("Apple pass must precede the block for %s (quick = first match wins):\n%s", ifc, rules)
+		}
+	}
+	// The hole is exactly one /8 and nothing wider: a rule that passed all of
+	// inet would silently retire the kill switch.
+	if strings.Contains(rules, "pass out quick on en0 inet all") {
+		t.Error("the Apple exception must not widen into a blanket inet pass")
+	}
+}
