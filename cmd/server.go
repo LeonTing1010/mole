@@ -511,6 +511,28 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 		srv.SNI = id.SNI
 		srv.Obfs = "salamander"
 		srv.ObfsPassword = id.ObfsPassword
+
+		// Every hysteria2 node also gets the REALITY leg, on TCP/443 beside it.
+		// Not a flag: the failure it answers — UDP/443 throttled per-flow while
+		// the link tests clean — is a property of the PATH, so it will be just
+		// as true of the node that replaces this one, and with
+		// destroy-on-lid-close that is most mornings. A standby leg you have to
+		// remember to ask for is one that is missing on the morning it matters.
+		//
+		// It costs nothing until used: sing-box sits idle on a port the firewall
+		// group already opens, and the client's selector only routes to it once
+		// the supervisor has measured hy2 carrying nothing.
+		if rid, err := newRealityIdentity(dest); err != nil {
+			// Not fatal. A node with one working leg is worth having; a deploy
+			// that aborted over the spare would leave none.
+			fmt.Printf("⚠️  Standby REALITY leg skipped: %v (the hysteria2 leg is unaffected)\n", err)
+		} else {
+			script += realityServerSnippet(port, rid)
+			srv.UUID = rid.UUID
+			srv.RealityPubKey = rid.PublicKey
+			srv.RealityShortID = rid.ShortID
+			srv.RealityDest = rid.Dest
+		}
 	}
 
 	// Provisioning talks to Vultr from this machine, and only from here. The
@@ -619,7 +641,11 @@ func finishDeploy(srv Server) error {
 		fmt.Printf("\n🔀 Port hopping is available but off (it costs ~28%% throughput at %ds).\n", hopIntervalSeconds)
 		fmt.Printf("   Turn it on for this server by setting \"hop_ports\": %q, \"hop_seconds\": %d in servers.json.\n",
 			hopRangeURI, hopIntervalSeconds)
-		fmt.Println("\n⏳ Hysteria2 boot script is installing in the background (~2 min).")
+		if srv.hasStandbyLeg() {
+			fmt.Println("\n🎭 Standby leg: VLESS+REALITY on TCP/443, beside hysteria2 on UDP/443.")
+			fmt.Println("   mole moves traffic to it on its own when this path starts throttling UDP.")
+		}
+		fmt.Println("\n⏳ Boot script is installing in the background (~2 min).")
 	}
 	if srv.Active {
 		fmt.Println("   This is now the active server — run `mole up` once it's ready.")

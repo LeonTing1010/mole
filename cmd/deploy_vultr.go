@@ -391,8 +391,26 @@ systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 // The only secrets are the VLESS uuid and the REALITY private key, and the
 // client never needs the latter.
 func realityBootScript(port int, id *realityIdentity) string {
-	return fmt.Sprintf(`#!/bin/bash
-set -e
+	return "#!/bin/bash\nset -e\n" + realityServerSnippet(port, id) + sshHardeningScript(id.SSHPubKey)
+}
+
+// realityServerSnippet installs and starts the REALITY server, with no shebang
+// and no SSH hardening, so it can be appended to a hysteria2 boot script as well
+// as standing on its own.
+//
+// Appending it is the normal case: every node mole deploys runs BOTH legs.
+// hysteria2 owns UDP/443 and REALITY owns TCP/443 — different protocols, so
+// they never contend for the port — and the cloud firewall group opens both on
+// every node for exactly this reason. A standby leg that only existed on nodes
+// deployed with a flag would be missing on the node that replaces this one, and
+// with destroy-on-lid-close that is most mornings.
+//
+// The two servers are separate units (hysteria-server and sing-box) rather than
+// one sing-box carrying both inbounds. That keeps the hysteria2 leg — the one
+// carrying traffic almost all the time — byte-identical to what it was, so
+// adding the standby cannot regress it.
+func realityServerSnippet(port int, id *realityIdentity) string {
+	return fmt.Sprintf(`
 curl -fsSL https://sing-box.app/install.sh | sh
 mkdir -p /etc/sing-box
 cat > /etc/sing-box/config.json << 'EOF'
@@ -423,8 +441,7 @@ EOF
 if command -v ufw >/dev/null 2>&1; then ufw allow %d/tcp; fi
 iptables -I INPUT -p tcp --dport %d -j ACCEPT 2>/dev/null || true
 systemctl enable --now sing-box
-%s`,
+`,
 		port, id.UUID, id.Dest, id.Dest, id.PrivateKey, id.ShortID,
-		port, port,
-		sshHardeningScript(id.SSHPubKey))
+		port, port)
 }

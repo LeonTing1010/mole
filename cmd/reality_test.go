@@ -177,3 +177,75 @@ func TestRealityPrivateKeyIsClamped(t *testing.T) {
 		}
 	}
 }
+
+// Every hysteria2 node carries the REALITY leg too, so the URI the client needs
+// for it has to render from the same Server entry.
+func TestStandbyURIRendersForADualLegNode(t *testing.T) {
+	srv := Server{
+		Name: "icn-1", IP: "1.2.3.4", Port: 443, Proto: protoHysteria2,
+		Password: "pw", UUID: "u-1", RealityPubKey: "pbk-1",
+		RealityShortID: "abcd1234", RealityDest: "www.apple.com",
+	}
+	if !srv.hasStandbyLeg() {
+		t.Fatal("a hysteria2 node with REALITY material should report a standby leg")
+	}
+	got := srv.StandbyURI()
+	if !strings.HasPrefix(got, "vless://u-1@1.2.3.4:443?") {
+		t.Fatalf("standby URI = %q", got)
+	}
+	for _, want := range []string{"security=reality", "pbk=pbk-1", "sid=abcd1234", "sni=www.apple.com", "flow=xtls-rprx-vision"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("standby URI missing %q: %s", want, got)
+		}
+	}
+	// The primary URI must be untouched by any of this — an existing node's hy2
+	// link is what every deployed client already holds.
+	if !strings.HasPrefix(srv.URI(), "hy2://pw@1.2.3.4:443?") {
+		t.Errorf("primary URI changed shape: %s", srv.URI())
+	}
+}
+
+// A node with no REALITY material — anything deployed before this existed — must
+// report no standby rather than a half-formed URI that cannot connect.
+func TestStandbyURIEmptyWithoutRealityMaterial(t *testing.T) {
+	srv := Server{Name: "old", IP: "1.2.3.4", Port: 443, Password: "pw"}
+	if srv.hasStandbyLeg() || srv.StandbyURI() != "" {
+		t.Fatalf("legacy node reported a standby leg: %q", srv.StandbyURI())
+	}
+}
+
+// A REALITY-only node is already the leg that survives a UDP block; it has
+// nothing to fall back to and must not claim otherwise.
+func TestRealityNodeHasNoStandbyOfItsOwn(t *testing.T) {
+	srv := Server{
+		Name: "r", IP: "1.2.3.4", Port: 443, Proto: protoReality,
+		UUID: "u", RealityPubKey: "k",
+	}
+	if srv.hasStandbyLeg() {
+		t.Fatal("a REALITY node must not report a standby leg")
+	}
+}
+
+// The dual-leg boot script has to carry BOTH servers: hysteria2's config and the
+// REALITY inbound. Appending the snippet is what makes that true, and a shebang
+// or a second `set -e` in the middle would break the composed script.
+func TestRealityServerSnippetComposesOntoAHy2Script(t *testing.T) {
+	rid := &realityIdentity{
+		UUID: "u", PrivateKey: "priv", PublicKey: "pub",
+		ShortID: "aabbccdd", Dest: "www.apple.com",
+	}
+	snip := realityServerSnippet(443, rid)
+	if strings.Contains(snip, "#!/bin/bash") || strings.Contains(snip, "set -e") {
+		t.Fatal("snippet carries a shebang or set -e; it cannot be appended")
+	}
+	for _, want := range []string{"sing-box", `"type": "vless"`, `"private_key": "priv"`, "systemctl enable --now sing-box"} {
+		if !strings.Contains(snip, want) {
+			t.Errorf("snippet missing %q", want)
+		}
+	}
+	// And the standalone script must still be a valid script on its own.
+	full := realityBootScript(443, rid)
+	if !strings.HasPrefix(full, "#!/bin/bash\nset -e\n") {
+		t.Errorf("standalone reality boot script lost its header: %.40q", full)
+	}
+}
