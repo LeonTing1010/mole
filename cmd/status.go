@@ -112,11 +112,18 @@ func printSupervisorState() {
 	// name the disagreement instead of hiding it: past the settling window a
 	// standing mismatch means the scheduler has lost the selector.
 	if st.BandwidthProfile != "" {
-		live := 0
+		live, onStandby := 0, false
 		if now, err := core.NewClashClient("127.0.0.1:9090").Selection(core.ProxySelectorTag); err == nil {
 			live = core.BandwidthRungMbps(now)
+			onStandby = now == core.RealityStandbyTag
 		}
 		switch {
+		// The standby leg has no Brutal ceiling to report — it is TCP, so
+		// congestion control belongs to the kernel at both ends. Printing "↓0
+		// Mbps" here would read as a broken ceiling rather than a deliberate
+		// change of transport, so say which leg is carrying traffic instead.
+		case onStandby:
+			fmt.Println("   Profile: 🎭 standby leg — VLESS+REALITY over TCP/443 (hy2 was throttled; no Brutal ceiling applies)")
 		case live == 0 || live == st.BandwidthDownMbps:
 			fmt.Printf("   Profile: %s (Brutal ↓%d Mbps)\n", st.BandwidthProfile, st.BandwidthDownMbps)
 		default:

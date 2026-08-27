@@ -111,6 +111,11 @@ type Server struct {
 	RealityPubKey  string `json:"reality_public_key,omitempty"`
 	RealityShortID string `json:"reality_short_id,omitempty"`
 	RealityDest    string `json:"reality_dest,omitempty"`
+	// RealityPort is the TCP port the REALITY leg listens on, when it differs
+	// from Port. Zero means the same number — which is the normal case, because
+	// a dual-leg node runs hysteria2 on UDP/443 and REALITY on TCP/443 and the
+	// two never collide.
+	RealityPort uint16 `json:"reality_port,omitempty"`
 }
 
 // Tunnel protocols. protoHysteria2 is also what an empty Proto means.
@@ -286,7 +291,37 @@ func (s *Server) URI() string {
 // an identifier the server accepts, neither of which is enough to impersonate
 // the server. That is the practical difference from the hysteria2 link, which
 // carries the tunnel password and the obfs key.
+// hasStandbyLeg reports whether this hysteria2 node ALSO runs the REALITY leg.
+//
+// It is the dual-leg shape: one VPS, hysteria2 on UDP/443 and VLESS+REALITY on
+// TCP/443. A node whose Proto IS reality has no standby — it is already the leg
+// that survives a UDP block, and there is nothing to fall back to.
+func (s *Server) hasStandbyLeg() bool {
+	return !s.isReality() && s.UUID != "" && s.RealityPubKey != ""
+}
+
+// StandbyURI renders the vless:// link for the co-hosted REALITY leg, or "" when
+// this node has none. It is what config.BuildWithStandby turns into the second
+// member of the proxy selector.
+func (s *Server) StandbyURI() string {
+	if !s.hasStandbyLeg() {
+		return ""
+	}
+	host := s.IP
+	if host == "" {
+		host = s.IPv6
+	}
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		host = "[" + host + "]"
+	}
+	return s.realityURI(host)
+}
+
 func (s *Server) realityURI(host string) string {
+	port := s.RealityPort
+	if port == 0 {
+		port = s.Port
+	}
 	dest := s.RealityDest
 	if dest == "" {
 		dest = defaultRealityDest
@@ -310,7 +345,7 @@ func (s *Server) realityURI(host string) string {
 	if s.RealityShortID != "" {
 		q.Set("sid", s.RealityShortID)
 	}
-	return fmt.Sprintf("vless://%s@%s:%d?%s#%s", s.UUID, host, s.Port, q.Encode(), s.Name)
+	return fmt.Sprintf("vless://%s@%s:%d?%s#%s", s.UUID, host, port, q.Encode(), s.Name)
 }
 
 // ── Commands ──────────────────────────────────────────────────

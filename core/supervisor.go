@@ -81,6 +81,14 @@ type Supervisor struct {
 	kickUntil time.Time
 	kickRung  int
 
+	// Standby-leg bookkeeping. hasStandby records that the config carries a
+	// RealityStandbyTag member at all — without one there is nothing to fail
+	// over TO, and every check below short-circuits. standbyMu guards the
+	// policy value and, like kickMu, is never taken while stateMu is held.
+	hasStandby bool
+	standbyMu  sync.Mutex
+	standby    standbyState
+
 	// linkPoke carries "the local address changed, re-dial now" from the link
 	// watcher to the keepalive. Buffered so the watcher never blocks and a
 	// second change while one is queued collapses into the same re-dial.
@@ -106,6 +114,13 @@ type SupervisorOpts struct {
 	ProbeEvery     time.Duration
 	KeepaliveEvery time.Duration // in-tunnel keepalive cadence; 0 → default
 	ProbeTimeMs    int
+
+	// HasStandbyLeg arms the automatic failover onto the VLESS+REALITY member
+	// of the proxy selector. It must agree with the config: setting it without
+	// a RealityStandbyTag outbound would select a member sing-box never heard
+	// of, which fails the call and leaves traffic on a leg already proven dark.
+	// Both come from Server.StandbyURI for exactly that reason.
+	HasStandbyLeg bool
 
 	// Schedule enables the time-of-day Brutal ceiling. Gated by Schedule.Enabled()
 	// (a peak profile must be configured); the config must also carry the
@@ -170,6 +185,7 @@ func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervis
 		keepaliveEvery:    opts.KeepaliveEvery,
 		probeTimeMs:       opts.ProbeTimeMs,
 		schedule:          opts.Schedule,
+		hasStandby:        opts.HasStandbyLeg,
 		destroyOnLidClose: opts.DestroyOnLidClose,
 		onIdleDestroy:     opts.OnIdleDestroy,
 		onRulesChanged:    opts.OnRulesChanged,
@@ -760,7 +776,7 @@ func (s *Supervisor) keepaliveOnce() {
 	n, err := s.fetchThroughTunnel(keepaliveURL)
 	delay := int(time.Since(start) / time.Millisecond)
 
-	var kick bool
+	var kick, escalate bool
 	s.stateMu.Lock()
 	s.state.LastKeepaliveAt = time.Now()
 	if err != nil {
@@ -776,6 +792,12 @@ func (s *Supervisor) keepaliveOnce() {
 		// the far end and the path are both fine and it is this five-tuple that
 		// has stopped being carried.
 		kick = s.state.KeepaliveFails == stallKickThreshold && s.state.LastProbeVerdict == utils.ProbeAlive
+		// Same evidence, further along: the kick has had its 45s and the tunnel
+		// is still carrying nothing while single datagrams to the same ip:port
+		// keep coming back. At that point the five-tuple rotation the kick
+		// performs has been tried and refused, and what is left is to stop
+		// using UDP. See standbyEnterFails.
+		escalate = s.state.KeepaliveFails >= standbyEnterFails && s.state.LastProbeVerdict == utils.ProbeAlive
 	} else {
 		s.state.KeepaliveFails = 0
 		s.state.KeepaliveFailingSince = time.Time{}
@@ -787,7 +809,10 @@ func (s *Supervisor) keepaliveOnce() {
 	_ = utils.WriteState(s.stateSnapshotLocked())
 	s.stateMu.Unlock()
 
-	if kick {
+	switch {
+	case escalate:
+		s.enterStandby()
+	case kick:
 		s.requestStallKick()
 	}
 }
@@ -883,6 +908,112 @@ func (s *Supervisor) stallKick() (int, bool) {
 	return s.kickRung, true
 }
 
+// onStandby reports whether traffic is on the REALITY leg right now.
+func (s *Supervisor) onStandby() bool {
+	if !s.hasStandby {
+		return false
+	}
+	s.standbyMu.Lock()
+	defer s.standbyMu.Unlock()
+	return s.standby.active()
+}
+
+// enterStandby moves traffic off UDP entirely, onto the co-hosted VLESS+REALITY
+// leg over TCP/443.
+//
+// This is the lever of last resort and it is deliberately the only one that
+// changes transport. Everything above it — the ceiling ladder, the self-heal
+// backoff, the stall kick — assumes the path can still carry UDP and only
+// argues about how fast. When the keepalive says an established flow carries
+// nothing while the direct probe says fresh datagrams to that same ip:port are
+// answered, that assumption is what is wrong, and no rung of the ladder is an
+// answer to it.
+//
+// The switch itself is one Clash API call, because the REALITY outbound is a
+// member of the same selector the ceilings live in. sing-box is not restarted,
+// the TUN is not rebuilt, and connections that were already established over
+// the direct route are untouched.
+func (s *Supervisor) enterStandby() {
+	if !s.hasStandby {
+		return
+	}
+	s.standbyMu.Lock()
+	changed := s.standby.enter(time.Now())
+	dwell := s.standby.dwell
+	s.standbyMu.Unlock()
+	if !changed {
+		return
+	}
+	// Pre-warm, but do not gate on it: the leg we are on is carrying nothing, so
+	// even an unproven alternative is the better bet.
+	if _, err := s.clash.TestDelay(RealityStandbyTag, s.probeURL, s.probeTimeMs); err != nil {
+		log.Printf("standby: pre-warm %s failed: %v — switching anyway, the current leg is carrying nothing", RealityStandbyTag, err)
+	}
+	if err := s.clash.SelectProxy(ProxySelectorTag, RealityStandbyTag); err != nil {
+		log.Printf("standby: select %s failed: %v — staying on hy2", RealityStandbyTag, err)
+		s.standbyMu.Lock()
+		s.standby.leave(time.Now())
+		s.standbyMu.Unlock()
+		return
+	}
+	log.Printf("standby: keepalive dark ×%d while the probe still answers and the stall kick did not take — moving to %s (TCP/443) for %s; this path is throttling UDP, which no ceiling can fix",
+		standbyEnterFails, RealityStandbyTag, dwell)
+	s.resetKeepaliveCount()
+}
+
+// tryReturnFromStandby re-tests hy2 once the dwell has elapsed and hands traffic
+// back if it will dial.
+//
+// target is the ladder rung traffic would return to, computed by the caller from
+// the clock and the pin, so the return lands on the ceiling that should be in
+// force rather than on whatever was selected when the failover happened.
+//
+// A passing delay probe is weaker evidence than it looks: establishing a NEW
+// flow is precisely what keeps working while established flows are being killed,
+// which is the whole shape of this failure. So the probe GATES the attempt
+// rather than proving the path — if UDP is still being throttled, the keepalive
+// says so within ~90s, the failover fires again, and standbyState doubles the
+// dwell so the next test costs less often.
+func (s *Supervisor) tryReturnFromStandby(target string) {
+	if !s.hasStandby {
+		return
+	}
+	s.standbyMu.Lock()
+	due := s.standby.dueBack(time.Now())
+	s.standbyMu.Unlock()
+	if !due {
+		return
+	}
+	if _, err := s.clash.TestDelay(target, s.probeURL, s.probeTimeMs); err != nil {
+		s.standbyMu.Lock()
+		s.standby.extend(time.Now())
+		dwell := s.standby.dwell
+		s.standbyMu.Unlock()
+		log.Printf("standby: %s still will not dial (%v) — holding REALITY another %s", target, err, dwell)
+		return
+	}
+	s.standbyMu.Lock()
+	left := s.standby.leave(time.Now())
+	s.standbyMu.Unlock()
+	if left {
+		log.Printf("standby: %s dials again — handing traffic back to hy2, on probation for %s", target, standbyProbation)
+		s.resetKeepaliveCount()
+	}
+}
+
+// resetKeepaliveCount clears the failure streak after a transport change. The
+// count measured the leg just left; carrying it across would make the first beat
+// on the new one read as a continuing failure and could re-trip the very
+// threshold that caused the switch.
+func (s *Supervisor) resetKeepaliveCount() {
+	s.stateMu.Lock()
+	s.state.KeepaliveFails = 0
+	s.state.KeepaliveFailingSince = time.Time{}
+	s.state.LastKeepaliveError = ""
+	s.noteHealthLocked()
+	s.stateMu.Unlock()
+}
+
 // runBandwidthScheduler points the `proxy` selector at the ladder rung carrying
 // the ceiling that should be in force. It never restarts sing-box: the switch is
 // a single Clash-API call, so the TUN and in-flight connections survive untouched.
@@ -955,6 +1086,17 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 		if rung, kicking := s.stallKick(); kicking {
 			member, down = BandwidthRungTag(rung), rung
 			name += "↷kick"
+		}
+		// The standby leg outranks the kick and everything under it. REALITY is
+		// TCP, so no Brutal ceiling applies to it and none of the reasoning
+		// above — clock, pin, backoff — has anything to say about the rung to
+		// use. The return is attempted first so a recovered path is handed back
+		// on this same tick rather than one later, and it is given `member`:
+		// the rung that SHOULD be in force now, not the one that was selected
+		// when the failover fired.
+		s.tryReturnFromStandby(member)
+		if s.onStandby() {
+			member, name, down = RealityStandbyTag, "standby-reality", 0
 		}
 		// Compare against what the selector is *actually* pointing at, not against
 		// what we last set. `mole ceiling` drives the same selector directly, so

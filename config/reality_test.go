@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/LeonTing1010/mole/core"
+)
 
 // The client half of REALITY is three things sing-box will not infer: the
 // borrowed target as SNI, a forged browser hello, and the keypair. Miss any one
@@ -67,8 +71,95 @@ func TestRealityOutboundIsNotLaddered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outs := buildProxyOutbounds(uri, o)
+	outs := buildProxyOutbounds(uri, "", o)
 	if len(outs) != 1 || outs[0].Type != "vless" {
 		t.Fatalf("expected a single vless outbound, got %+v", outs)
+	}
+}
+
+// The dual-leg shape: one box, hysteria2 on UDP/443 and REALITY on TCP/443. The
+// standby must land in the SAME selector as the ladder rungs, because that is
+// what makes the failover a single Clash call instead of a sing-box restart.
+func TestStandbyLegJoinsTheLadderSelector(t *testing.T) {
+	hy2 := "hy2://pw@1.2.3.4:443?upmbps=5&downmbps=65&peakdownmbps=50&peakupmbps=5&peakstart=12&peakend=2"
+	reality := "vless://u@1.2.3.4:443?security=reality&pbk=k&sni=www.apple.com"
+	o, err := parseServerURL(hy2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outs := buildProxyOutbounds(hy2, reality, o)
+	if outs[0].Type != "selector" || outs[0].Tag != core.ProxySelectorTag {
+		t.Fatalf("first outbound should be the proxy selector, got %+v", outs[0])
+	}
+	var found bool
+	for _, m := range outs[0].Outbounds {
+		if m == core.RealityStandbyTag {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("standby leg missing from selector members: %v", outs[0].Outbounds)
+	}
+	// And it must exist as a real outbound, not just a name in the member list —
+	// selecting a member sing-box has no definition for fails the API call.
+	var def *OutboundConfig
+	for i := range outs {
+		if outs[i].Tag == core.RealityStandbyTag {
+			def = &outs[i]
+		}
+	}
+	if def == nil {
+		t.Fatal("standby named in the selector but never defined as an outbound")
+	}
+	if def.Type != "vless" {
+		t.Errorf("standby outbound type = %q, want vless", def.Type)
+	}
+	// The default must stay on the ladder: REALITY is where traffic goes once
+	// hy2 has been PROVEN dark, and a fresh config has proven nothing.
+	if outs[0].Default == core.RealityStandbyTag {
+		t.Error("a fresh config must not default to the standby leg")
+	}
+}
+
+// A malformed standby must not take the tunnel down with it — the primary leg is
+// what the user is trying to bring up.
+func TestBadStandbyURIDegradesToSingleLeg(t *testing.T) {
+	hy2 := "hy2://pw@1.2.3.4:443?upmbps=5&downmbps=65&peakdownmbps=50&peakupmbps=5&peakstart=12&peakend=2"
+	o, err := parseServerURL(hy2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outs := buildProxyOutbounds(hy2, "://nonsense", o)
+	for _, out := range outs {
+		if out.Tag == core.RealityStandbyTag {
+			t.Fatal("a malformed standby URI produced a standby member")
+		}
+	}
+	if outs[0].Type != "selector" {
+		t.Fatalf("ladder selector should survive a bad standby, got %+v", outs[0])
+	}
+}
+
+// A ceiling so low the ladder collapses to one rung would, without a standby,
+// skip the selector entirely and hand the route a bare outbound. Once there is a
+// second leg the selector has to exist anyway, or there is nothing to fail over
+// to.
+func TestStandbyBuildsASelectorEvenWhenTheLadderCollapses(t *testing.T) {
+	hy2 := "hy2://pw@1.2.3.4:443?upmbps=1&downmbps=1" // no standard rung sits below 1
+	reality := "vless://u@1.2.3.4:443?security=reality&pbk=k&sni=www.apple.com"
+	o, err := parseServerURL(hy2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outs := buildProxyOutbounds(hy2, reality, o)
+	if outs[0].Type != "selector" {
+		t.Fatalf("expected a selector for the two legs, got %+v", outs[0])
+	}
+	want := []string{core.BandwidthRungTag(1), core.RealityStandbyTag}
+	if len(outs[0].Outbounds) != 2 || outs[0].Outbounds[0] != want[0] || outs[0].Outbounds[1] != want[1] {
+		t.Fatalf("members = %v, want %v", outs[0].Outbounds, want)
+	}
+	if outs[0].Default != want[0] {
+		t.Errorf("default = %q, want the hy2 rung %q", outs[0].Default, want[0])
 	}
 }

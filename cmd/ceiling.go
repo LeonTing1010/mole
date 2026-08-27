@@ -86,6 +86,17 @@ func runCeiling(_ *cobra.Command, args []string) error {
 	// here keeps the first post-switch connection from eating it.
 	member := core.BandwidthRungTag(target)
 	clash := core.NewClashClient("127.0.0.1:9090")
+	// Don't yank traffic off the standby leg. While the supervisor is holding
+	// REALITY it has already measured hy2 carrying nothing, and selecting a rung
+	// here would move live traffic back onto a leg proven dark — which the
+	// scheduler would then undo on its next tick, so the only lasting effect
+	// would be the outage in between. The pin is saved either way and takes
+	// effect the moment the tunnel comes back to hy2.
+	if now, err := clash.Selection(core.ProxySelectorTag); err == nil && now == core.RealityStandbyTag {
+		fmt.Printf("✔ Ceiling pinned to %d Mbps — held, because traffic is on the standby leg (VLESS+REALITY over TCP).\n", target)
+		fmt.Println("  It applies automatically when the supervisor hands traffic back to hy2.")
+		return nil
+	}
 	if _, err := clash.TestDelay(member, "https://www.gstatic.com/generate_204", 5000); err != nil {
 		fmt.Printf("   (pre-warm of %s failed: %v — switching anyway)\n", member, err)
 	}

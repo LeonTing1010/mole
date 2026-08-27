@@ -156,6 +156,13 @@ func runParent() error {
 
 	uri := srv.URI()
 	fmt.Printf("🔗 URI: %s\n", maskURI(uri))
+	// The co-hosted REALITY leg, when this node runs one. It becomes a second
+	// member of the same proxy selector, so the supervisor can move traffic off
+	// UDP without restarting sing-box. Empty on a single-leg node.
+	standby := srv.StandbyURI()
+	if standby != "" {
+		fmt.Println("🎭 Standby leg: VLESS+REALITY over TCP/443 (auto-failover armed)")
+	}
 
 	// Pre-cache geo rule-sets locally so sing-box can start even if the VPS
 	// is unreachable. Without this, a dead VPS becomes a hard startup failure
@@ -174,7 +181,7 @@ func runParent() error {
 		utils.EnsureCNCIDRs()
 	}
 
-	cfg, err := config.Build(uri)
+	cfg, err := config.BuildWithStandby(uri, standby)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)
 	}
@@ -299,6 +306,12 @@ func runDaemon() error {
 		// when set, the config (built from the same server URI) carries the
 		// peak/off-peak selector and the supervisor flips it by the clock.
 		Schedule: srv.Schedule(),
+		// Arms the automatic failover to the REALITY leg. Derived from the same
+		// StandbyURI the parent built the config from, so the flag and the
+		// selector member it names can never disagree — selecting a member
+		// sing-box never heard of would fail the call and strand traffic on a
+		// leg already proven dark.
+		HasStandbyLeg: srv.StandbyURI() != "",
 		// Idle-destroy. Off unless asked for; when on, the watcher deletes this
 		// server once nothing has gone abroad for the configured window and then
 		// stops the daemon, so the deferred DNS restore and kill-switch unload

@@ -20,6 +20,22 @@ import (
 
 // Build assembles a sing-box config from a server URI (vless://, hy2://).
 func Build(serverURI string) (*SingboxConfig, error) {
+	return BuildWithStandby(serverURI, "")
+}
+
+// BuildWithStandby is Build plus a second, co-hosted transport for the route to
+// fall back to.
+//
+// standbyURI is a vless://…security=reality link, normally pointing at the very
+// same box as serverURI: hysteria2 owns UDP/443 and REALITY owns TCP/443, so one
+// VPS carries both legs and the failover costs no second server. Empty means the
+// historical single-leg layout, byte for byte.
+//
+// The point of pre-materializing it — rather than rebuilding the config when it
+// is needed — is that swapping transports must not restart sing-box. A restart
+// rebuilds the TUN, which is a real outage, and it would land in the middle of
+// the exact episode the standby leg exists to survive.
+func BuildWithStandby(serverURI, standbyURI string) (*SingboxConfig, error) {
 	outbound, err := parseServerURL(serverURI)
 	if err != nil {
 		return nil, err
@@ -263,7 +279,7 @@ func Build(serverURI string) (*SingboxConfig, error) {
 				ListenPort: 53,
 			},
 		},
-		Outbounds: append(buildProxyOutbounds(serverURI, outbound),
+		Outbounds: append(buildProxyOutbounds(serverURI, standbyURI, outbound),
 			OutboundConfig{Type: "direct", Tag: "direct"}),
 		Route: RouteConfig{
 			Rules:               routeRules,
@@ -307,13 +323,48 @@ func Save(cfg *SingboxConfig, path string) error {
 // Falls back to a single outbound tagged `proxy` — the historical layout — for
 // non-hy2 protocols and for BBR mode (down_mbps<=0), where there is no ceiling
 // to ladder. The route always targets `proxy` either way.
-func buildProxyOutbounds(serverURI string, outbound *OutboundConfig) []OutboundConfig {
+func buildProxyOutbounds(serverURI, standbyURI string, outbound *OutboundConfig) []OutboundConfig {
+	// standby is the REALITY member, or nil when there is no second leg. Parsed
+	// up front so a malformed standby URI degrades to the single-leg layout
+	// instead of taking the whole tunnel down with it — the primary is what the
+	// user is trying to bring up.
+	var standby *OutboundConfig
+	if standbyURI != "" {
+		if o, err := parseServerURL(standbyURI); err == nil && o.Type == "vless" {
+			o.Tag = core.RealityStandbyTag
+			standby = o
+		} else {
+			log.Printf("⚠️  standby leg ignored — %q is not a usable vless://…security=reality URI", standbyURI)
+		}
+	}
 	single := func() []OutboundConfig {
 		outbound.Tag = core.ProxySelectorTag
 		return []OutboundConfig{*outbound}
 	}
+	// A selector is only worth building when there is something to switch
+	// between. With a standby leg there always is, even on a server with no
+	// ladder at all, so that path builds a two-member selector rather than
+	// falling back to the bare outbound the route would otherwise target.
+	selectOver := func(members []string, rungs []OutboundConfig, def string) []OutboundConfig {
+		out := make([]OutboundConfig, 1, len(rungs)+2)
+		out = append(out, rungs...)
+		if standby != nil {
+			members = append(members, standby.Tag)
+			out = append(out, *standby)
+		}
+		out[0] = OutboundConfig{
+			Type: "selector", Tag: core.ProxySelectorTag,
+			Outbounds: members, Default: def,
+		}
+		return out
+	}
 	if outbound.Type != "hysteria2" {
-		return single()
+		if standby == nil {
+			return single()
+		}
+		primary := *outbound
+		primary.Tag = "proxy-primary"
+		return selectOver([]string{primary.Tag}, []OutboundConfig{primary}, primary.Tag)
 	}
 	u, err := url.Parse(serverURI)
 	if err != nil {
@@ -333,27 +384,30 @@ func buildProxyOutbounds(serverURI string, outbound *OutboundConfig) []OutboundC
 	rungs := sched.Rungs()
 	if len(rungs) < 2 {
 		// No ceiling configured, or the ceiling is so low the ladder collapses to
-		// one rung — nothing to switch between, so keep the simpler shape.
-		return single()
+		// one rung — nothing on the ladder to switch between, so keep the simpler
+		// shape unless the standby leg gives the selector a reason to exist.
+		if standby == nil {
+			return single()
+		}
+		primary := *outbound
+		primary.Tag = core.BandwidthRungTag(outbound.DownMbps)
+		return selectOver([]string{primary.Tag}, []OutboundConfig{primary}, primary.Tag)
 	}
 
 	members := make([]string, 0, len(rungs))
-	out := make([]OutboundConfig, 1, len(rungs)+1)
+	ladder := make([]OutboundConfig, 0, len(rungs))
 	for _, down := range rungs {
 		rung := *outbound
 		rung.Tag = core.BandwidthRungTag(down)
 		rung.UpMbps = sched.RungUp(down)
 		rung.DownMbps = down
 		members = append(members, rung.Tag)
-		out = append(out, rung)
+		ladder = append(ladder, rung)
 	}
-	out[0] = OutboundConfig{
-		Type:      "selector",
-		Tag:       core.ProxySelectorTag,
-		Outbounds: members,
-		Default:   sched.Member(time.Now()),
-	}
-	return out
+	// The default stays a ladder rung even with a standby present: REALITY is
+	// where traffic goes when hy2 has been PROVEN dark, and a fresh config has
+	// proven nothing yet.
+	return selectOver(members, ladder, sched.Member(time.Now()))
 }
 
 func parseServerURL(serverURL string) (*OutboundConfig, error) {
