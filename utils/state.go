@@ -69,6 +69,29 @@ type State struct {
 	KeepaliveFails        int       `json:"keepalive_fails,omitempty"`
 	KeepaliveFailingSince time.Time `json:"keepalive_failing_since,omitempty"`
 
+	// Fresh-dial keepalive — the SECOND arm, added 2026-09-01. The keepalive
+	// above reuses one warm connection, which is the right way to catch an
+	// established session being throttled to death, and is structurally blind
+	// to the opposite failure: measured that day, 15% of NEW connections
+	// through the tunnel took 1–20s or timed out while the warm keepalive
+	// reported a flat 120ms and the daemon logged nothing for hours.
+	//
+	// The out-of-tunnel probe does not cover this either. It opens a new UDP
+	// five-tuple to the VPS; this opens a new proxied TCP connection through
+	// the tunnel to a foreign host. On 2026-09-01 the probe was alive 291
+	// times consecutively across the whole episode.
+	LastDialMs    int    `json:"last_dial_ms,omitempty"`
+	LastDialError string `json:"last_dial_error,omitempty"`
+	// DialSamples is the rolling window the latch below is computed from,
+	// newest last, capped at DialWindow. Persisted so `mole status` can show
+	// the shape of the last few minutes rather than one instantaneous number.
+	DialSamples []DialSample `json:"dial_samples,omitempty"`
+	// SlowNewFlows is the latched verdict: new connections are being broken
+	// often enough to be the user's problem. Latched (see UpdateNewFlowLatch)
+	// because the underlying rate sits near the threshold — an unlatched
+	// verdict computed from the same window flaps every beat.
+	SlowNewFlows bool `json:"slow_new_flows,omitempty"`
+
 	// Time-of-day bandwidth scheduler: which Brutal ceiling is currently selected.
 	// Empty when the active server has no peak profile configured.
 	BandwidthProfile  string `json:"bandwidth_profile,omitempty"`
@@ -131,14 +154,18 @@ const (
 	LidDestroyCancelled LidDestroyState = "cancelled"
 )
 
-// Health is the synthesized verdict over both probes. The two measure
+// Health is the synthesized verdict over three measurements. They measure
 // different things and only together tell the truth:
 //   - the direct-UDP probe (LastProbe*/ConsecutiveFails) runs OUTSIDE the
 //     tunnel (interface-bound, QUIC VN elicitation) and can distinguish a
 //     dead hy2 process (refused) from a dark path (silent) from health
 //     (server responds);
-//   - the in-tunnel keepalive (Keepalive*) proves the established hy2
-//     session end-to-end actually passes traffic.
+//   - the in-tunnel keepalive (Keepalive*) reuses ONE warm connection, so it
+//     proves an established hy2 session end-to-end still passes traffic;
+//   - the fresh-dial keepalive (LastDial*/DialSamples) opens a NEW connection
+//     through the tunnel every beat, so it proves new ones can still be
+//     opened. Added 2026-09-01, when the two above were both green for hours
+//     through an episode in which 15% of new connections took 1–20s.
 //
 // The two disagree more often than they agree, and which one is failing is the
 // whole diagnosis:
@@ -151,12 +178,18 @@ const (
 //     used to flip the verdict to path-blackhole 21 times, each one clearing
 //     self-healing's clean streak and painting `mole status` red through a
 //     working tunnel.
-//   - keepalive failing → HealthPathDead, whatever the probe says. This is the
-//     failure users actually feel: established flows stop passing traffic while
-//     new ones are fine, which is the signature of per-five-tuple throttling and
-//     shows up as ~30s outages (hysteria's MaxIdleTimeout) on an otherwise live
-//     path.
-//   - both failing → HealthPathDead, the genuine blackout.
+//   - warm keepalive failing → HealthPathDead, whatever the probe says.
+//     Established flows stop passing traffic while new ones are fine: the
+//     signature of per-five-tuple throttling, showing up as ~30s outages
+//     (hysteria's MaxIdleTimeout) on an otherwise live path.
+//   - fresh dials slow or failing while the warm one is fine → HealthDegraded.
+//     The exact mirror image, and just as user-visible: on 2026-09-01 a warm
+//     connection held a flat 107ms and carried 5MB at 31.6 Mbps while every
+//     newly opened one took seconds. An A/B against the REALITY leg the same
+//     minute — same server, same path, 20 samples each — put TCP at 0/20
+//     failures and UDP at 3/20, so this signal is specifically evidence about
+//     the UDP leg, not about the VPS or the route.
+//   - both keepalive arms failing → HealthPathDead, the genuine blackout.
 //
 // Probe refused → HealthVPSDown (immediate — ICMP unreachable is unambiguous).
 // Probe reporting no local link → HealthNoLink, which is about this machine and
@@ -194,6 +227,88 @@ const KeepaliveFailThreshold = 4
 // about NEW flows. Promoting it to an outage is the keepalive's job.
 const ProbeSilentThreshold = 3
 
+// DialSample is one fresh-connection keepalive result. Ms is time-to-first-byte
+// in milliseconds and is 0 when the attempt failed outright.
+type DialSample struct {
+	Ms int  `json:"ms"`
+	OK bool `json:"ok"`
+}
+
+// Fresh-dial thresholds. The numbers come from the 2026-09-01 measurement, in
+// which a healthy leg and a broken one were cleanly separated by an order of
+// magnitude rather than a judgement call:
+//
+//	hy2 healthy      0.222–0.290s   REALITY healthy  0.440–0.495s
+//	hy2 broken       2.0s, 7.5s, timeout
+//
+// so DialSlowMs sits at 1000 — above every healthy sample ever measured on
+// either leg, below every broken one.
+const (
+	// DialSlowMs: a fresh connection slower than this counts as bad, whether or
+	// not it eventually completed. The user already felt it.
+	DialSlowMs = 1000
+	// DialWindow: how many fresh dials the verdict looks at. At the 15s
+	// keepalive cadence this is ~5 minutes.
+	DialWindow = 20
+	// DialBadEnter / DialBadLeave: the Schmitt trigger. Enter at 4 bad in 20
+	// (20%), leave only at 1 or fewer (5%). A single threshold cannot work
+	// here: the failure rate that day was ~15%, which straddles any fixed cut,
+	// and a verdict recomputed each beat would flap for the entire episode. A
+	// healthy leg measures 0 bad in 20 and never enters.
+	DialBadEnter = 4
+	DialBadLeave = 1
+)
+
+// RecordDial appends one fresh-dial outcome and re-evaluates the latch. Callers
+// pass the elapsed time and the error, if any; a failed dial records Ms 0 rather
+// than the time it spent failing, because how long a timeout took is a property
+// of the timeout, not of the path.
+func (s *State) RecordDial(ms int, err error) {
+	sample := DialSample{Ms: ms, OK: err == nil}
+	if err != nil {
+		s.LastDialMs = 0
+		s.LastDialError = err.Error()
+		sample.Ms = 0
+	} else {
+		s.LastDialMs = ms
+		s.LastDialError = ""
+	}
+	s.DialSamples = append(s.DialSamples, sample)
+	if n := len(s.DialSamples); n > DialWindow {
+		// Copy rather than reslice: the backing array would otherwise grow
+		// without bound behind a window that never does.
+		s.DialSamples = append([]DialSample(nil), s.DialSamples[n-DialWindow:]...)
+	}
+	s.UpdateNewFlowLatch()
+}
+
+// DialBad counts the slow-or-failed dials in the current window.
+func (s *State) DialBad() int {
+	bad := 0
+	for _, d := range s.DialSamples {
+		if !d.OK || d.Ms > DialSlowMs {
+			bad++
+		}
+	}
+	return bad
+}
+
+// UpdateNewFlowLatch applies the Schmitt trigger described at DialBadEnter.
+// Deliberately does nothing until the window is full: entering the verdict off
+// three samples would let one bad minute at startup paint the tunnel yellow.
+func (s *State) UpdateNewFlowLatch() {
+	if len(s.DialSamples) < DialWindow {
+		return
+	}
+	bad := s.DialBad()
+	switch {
+	case bad >= DialBadEnter:
+		s.SlowNewFlows = true
+	case bad <= DialBadLeave:
+		s.SlowNewFlows = false
+	}
+}
+
 // Health synthesizes the current verdict; see the Health type for semantics.
 func (s *State) Health() Health {
 	if s.ConsecutiveFails > 0 && s.LastProbeVerdict == ProbeRefused {
@@ -213,6 +328,18 @@ func (s *State) Health() Health {
 		return HealthPathDead
 	}
 	if s.ConsecutiveFails >= ProbeSilentThreshold {
+		return HealthDegraded
+	}
+	// Degraded, not dead, and deliberately last: the tunnel is passing traffic
+	// — established connections were measured at a flat 107ms and 31.6 Mbps
+	// through the worst of it — but opening new ones keeps failing, which is
+	// every new page, every new app, every new video segment.
+	//
+	// Degraded rather than a verdict of its own because Usable() must stay
+	// true: self-healing reads it, and dropping the ceiling for this does
+	// nothing but cost bandwidth (the tunnel was near-idle at 0.0–0.1 Mbps
+	// with zero ENOBUFS while it happened — there is no flood to back off).
+	if s.SlowNewFlows {
 		return HealthDegraded
 	}
 	return HealthOK

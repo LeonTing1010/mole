@@ -327,6 +327,14 @@ cat > /etc/sysctl.d/99-mole.conf << 'SYSCTL_EOF'
 # always say so in the log.
 net.core.rmem_max=16777216
 net.core.wmem_max=16777216
+# The REALITY leg is plain TCP, so its congestion control is the kernel's, and
+# the kernel default (cubic) halves its window on every loss. On a path that
+# shows 5-8%% loss on a bad evening that is the one place TCP loses to Brutal.
+# BBR paces on measured bandwidth and RTT instead, which is as close to Brutal
+# as a TCP leg gets, and it is what makes REALITY viable as the primary rather
+# than the slow standby. fq is the qdisc BBR's pacing expects.
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
 SYSCTL_EOF
 sysctl -p /etc/sysctl.d/99-mole.conf >/dev/null 2>&1 || true
 systemctl enable --now hysteria-server

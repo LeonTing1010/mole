@@ -311,7 +311,7 @@ func runDaemon() error {
 		// selector member it names can never disagree — selecting a member
 		// sing-box never heard of would fail the call and strand traffic on a
 		// leg already proven dark.
-		HasStandbyLeg: srv.StandbyURI() != "",
+		HasRealityLeg: srv.StandbyURI() != "",
 		// Idle-destroy. Off unless asked for; when on, the watcher deletes this
 		// server once nothing has gone abroad for the configured window and then
 		// stops the daemon, so the deferred DNS restore and kill-switch unload

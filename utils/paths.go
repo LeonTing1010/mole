@@ -116,3 +116,15 @@ func CustomRulesPath() string { return filepath.Join(MoleDir(), "custom-rules.js
 // state.json has a single writer (the daemon), and the ceiling CLI runs as a
 // separate process, so sharing that file would race.
 func CeilingPath() string { return filepath.Join(MoleDir(), "ceiling") }
+
+// LegPath holds a manual transport-leg pin (`mole leg hy2|reality`). Absent
+// means the supervisor chooses. A separate file from the ceiling pin for the
+// same reason that one is separate from state.json — a different writer, and
+// here also a different question: the ceiling asks how fast, the leg asks over
+// what.
+func LegPath() string { return filepath.Join(MoleDir(), "leg") }
+
+// ExperimentPath holds the paired A/B declaration and its accumulated samples
+// (`mole ab`). Absent means no experiment is running and no probe-only
+// outbounds are materialized.
+func ExperimentPath() string { return filepath.Join(MoleDir(), "experiment.json") }

@@ -331,7 +331,7 @@ func buildProxyOutbounds(serverURI, standbyURI string, outbound *OutboundConfig)
 	var standby *OutboundConfig
 	if standbyURI != "" {
 		if o, err := parseServerURL(standbyURI); err == nil && o.Type == "vless" {
-			o.Tag = core.RealityStandbyTag
+			o.Tag = core.RealityLegTag
 			standby = o
 		} else {
 			log.Printf("⚠️  standby leg ignored — %q is not a usable vless://…security=reality URI", standbyURI)
@@ -356,7 +356,13 @@ func buildProxyOutbounds(serverURI, standbyURI string, outbound *OutboundConfig)
 			Type: "selector", Tag: core.ProxySelectorTag,
 			Outbounds: members, Default: def,
 		}
-		return out
+		// A/B arms are appended OUTSIDE the members list on purpose. They are
+		// materialized so the Clash API can delay-probe them — an outbound that
+		// belongs to no selector is still probeable, which is what makes a
+		// probe-only arm possible at all — and kept out of the selector so no
+		// user traffic can ever be routed through an experimental port. An arm
+		// that carried real requests would change the thing it is measuring.
+		return append(out, experimentArms(outbound)...)
 	}
 	if outbound.Type != "hysteria2" {
 		if standby == nil {
@@ -364,7 +370,7 @@ func buildProxyOutbounds(serverURI, standbyURI string, outbound *OutboundConfig)
 		}
 		primary := *outbound
 		primary.Tag = "proxy-primary"
-		return selectOver([]string{primary.Tag}, []OutboundConfig{primary}, primary.Tag)
+		return selectOver([]string{primary.Tag}, []OutboundConfig{primary}, standby.Tag)
 	}
 	u, err := url.Parse(serverURI)
 	if err != nil {
@@ -391,7 +397,7 @@ func buildProxyOutbounds(serverURI, standbyURI string, outbound *OutboundConfig)
 		}
 		primary := *outbound
 		primary.Tag = core.BandwidthRungTag(outbound.DownMbps)
-		return selectOver([]string{primary.Tag}, []OutboundConfig{primary}, primary.Tag)
+		return selectOver([]string{primary.Tag}, []OutboundConfig{primary}, standby.Tag)
 	}
 
 	members := make([]string, 0, len(rungs))
@@ -404,9 +410,12 @@ func buildProxyOutbounds(serverURI, standbyURI string, outbound *OutboundConfig)
 		members = append(members, rung.Tag)
 		ladder = append(ladder, rung)
 	}
-	// The default stays a ladder rung even with a standby present: REALITY is
-	// where traffic goes when hy2 has been PROVEN dark, and a fresh config has
-	// proven nothing yet.
+	// With a REALITY leg present it is the default: it is the primary, and a
+	// tunnel that came up on the ladder would run its first minute — until the
+	// supervisor's first tick — on the leg measured failing ten times a day.
+	if standby != nil {
+		return selectOver(members, ladder, standby.Tag)
+	}
 	return selectOver(members, ladder, sched.Member(time.Now()))
 }
 
@@ -855,4 +864,32 @@ func parsePortRange(s string) (lo, hi int, ok bool) {
 		return 0, 0, false
 	}
 	return lo, hi, true
+}
+
+// experimentArms materializes the declared A/B arms as probe-only outbounds.
+//
+// Each arm is the LIVE outbound with at most a port or host overridden, so
+// everything else — the Brutal ceiling, obfs, the pinned certificate, the
+// password — is identical between arms and cancels out of the comparison.
+// Copying rather than re-parsing is the point: a hand-built arm would drift
+// from the real outbound the first time anything else about the tunnel changed,
+// and then the experiment would be measuring the drift.
+func experimentArms(base *OutboundConfig) []OutboundConfig {
+	e := utils.ReadExperiment()
+	if e == nil || base.Type != "hysteria2" {
+		return nil
+	}
+	arms := make([]OutboundConfig, 0, len(e.Arms))
+	for _, a := range e.Arms {
+		arm := *base
+		arm.Tag = core.ExperimentArmTag(a.Name)
+		if a.Port > 0 {
+			arm.ServerPort = a.Port
+		}
+		if a.Server != "" {
+			arm.Server = a.Server
+		}
+		arms = append(arms, arm)
+	}
+	return arms
 }

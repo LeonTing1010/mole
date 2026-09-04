@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/LeonTing1010/mole/core"
@@ -87,11 +88,22 @@ func printSupervisorState() {
 					humanize(time.Since(st.KeepaliveFailingSince)), st.KeepaliveFails)
 			}
 		case utils.HealthDegraded:
-			// Explicitly not an outage. The probe opens a new five-tuple each
-			// time and this path loses ~20% of those first packets; the tunnel
-			// underneath is passing traffic.
-			fmt.Printf("   Mode:    🟢 proxy — carrying traffic; out-of-tunnel probe missing replies (%s ×%d), new connections may be slow to open\n",
-				st.LastProbeVerdict, st.ConsecutiveFails)
+			// Explicitly not an outage in either flavor — the tunnel underneath
+			// is passing traffic. Which flavor matters, though, because only one
+			// of them is something the user is feeling right now.
+			if st.SlowNewFlows {
+				// Measured, not inferred: this is the state where an open
+				// connection holds ~100ms and full speed while every newly
+				// opened one takes seconds. Say what it looks like from a
+				// browser, since that is where it gets noticed.
+				fmt.Printf("   Mode:    🟡 proxy — established connections fine, but %d of the last %d NEW ones were slow or failed (last %s); pages you already have open are fast, new sites hang\n",
+					st.DialBad(), len(st.DialSamples), dialLast(st))
+			} else {
+				// The probe opens a new five-tuple each time and this path
+				// loses ~20% of those first packets.
+				fmt.Printf("   Mode:    🟢 proxy — carrying traffic; out-of-tunnel probe missing replies (%s ×%d), new connections may be slow to open\n",
+					st.LastProbeVerdict, st.ConsecutiveFails)
+			}
 		default:
 			if st.LastLatencyMs > 0 {
 				fmt.Printf("   Mode:    🟢 proxy — VPS healthy (%dms)\n", st.LastLatencyMs)
@@ -115,17 +127,25 @@ func printSupervisorState() {
 		live, onStandby := 0, false
 		if now, err := core.NewClashClient("127.0.0.1:9090").Selection(core.ProxySelectorTag); err == nil {
 			live = core.BandwidthRungMbps(now)
-			onStandby = now == core.RealityStandbyTag
+			onStandby = now == core.RealityLegTag
 		}
 		switch {
 		// The standby leg has no Brutal ceiling to report — it is TCP, so
 		// congestion control belongs to the kernel at both ends. Printing "↓0
 		// Mbps" here would read as a broken ceiling rather than a deliberate
 		// change of transport, so say which leg is carrying traffic instead.
+		// Why traffic is on REALITY matters more than that it is. One of these
+		// is mole reporting a path problem it worked around; the other is the
+		// user's own instruction still in force, and left unsaid it reads as a
+		// fault that will not clear.
+		case onStandby && utils.ReadLeg() == utils.LegReality:
+			fmt.Println("   Profile: 📌 leg pinned — VLESS+REALITY over TCP/443 (fallback to hy2 disarmed; \"mole leg auto\" to release)")
 		case onStandby:
-			fmt.Println("   Profile: 🎭 standby leg — VLESS+REALITY over TCP/443 (hy2 was throttled; no Brutal ceiling applies)")
+			fmt.Println("   Profile: VLESS+REALITY over TCP/443 (primary; hy2 ladder on standby, no Brutal ceiling applies)")
+		case strings.HasPrefix(st.BandwidthProfile, "fallback-hy2/") && (live == 0 || live == st.BandwidthDownMbps):
+			fmt.Printf("   Profile: 🎭 fallback leg — hysteria2 ladder, Brutal ↓%d Mbps (REALITY was measured dark; returns on its own)\n", st.BandwidthDownMbps)
 		case live == 0 || live == st.BandwidthDownMbps:
-			fmt.Printf("   Profile: %s (Brutal ↓%d Mbps)\n", st.BandwidthProfile, st.BandwidthDownMbps)
+			fmt.Printf("   Profile: %s (Brutal ↓%d Mbps)%s\n", st.BandwidthProfile, st.BandwidthDownMbps, legPinNote())
 		default:
 			fmt.Printf("   Profile: Brutal ↓%d Mbps live — scheduler still on %q (↓%d), reconciles next tick\n",
 				live, st.BandwidthProfile, st.BandwidthDownMbps)
@@ -222,4 +242,27 @@ func humanize(d time.Duration) string {
 		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
 	}
 	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+}
+
+// legPinNote flags a hy2 pin on the profile line. It is worth a few characters
+// because the pin holds traffic off the primary and disarms the automatic
+// return: someone reading this line during a bad night needs to know mole is
+// holding UDP on purpose rather than failing to notice.
+func legPinNote() string {
+	if utils.ReadLeg() == utils.LegHy2 {
+		return " — leg pinned to hy2, REALITY primary bypassed"
+	}
+	return ""
+}
+
+// dialLast renders the most recent fresh-dial result for the status line: the
+// time it took, or why it did not finish.
+func dialLast(st *utils.State) string {
+	if st.LastDialError != "" {
+		return "failed: " + st.LastDialError
+	}
+	if st.LastDialMs > 0 {
+		return fmt.Sprintf("%.2fs", float64(st.LastDialMs)/1000)
+	}
+	return "unknown"
 }

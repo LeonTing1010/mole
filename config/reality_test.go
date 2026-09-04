@@ -93,7 +93,7 @@ func TestStandbyLegJoinsTheLadderSelector(t *testing.T) {
 	}
 	var found bool
 	for _, m := range outs[0].Outbounds {
-		if m == core.RealityStandbyTag {
+		if m == core.RealityLegTag {
 			found = true
 		}
 	}
@@ -104,7 +104,7 @@ func TestStandbyLegJoinsTheLadderSelector(t *testing.T) {
 	// selecting a member sing-box has no definition for fails the API call.
 	var def *OutboundConfig
 	for i := range outs {
-		if outs[i].Tag == core.RealityStandbyTag {
+		if outs[i].Tag == core.RealityLegTag {
 			def = &outs[i]
 		}
 	}
@@ -114,10 +114,10 @@ func TestStandbyLegJoinsTheLadderSelector(t *testing.T) {
 	if def.Type != "vless" {
 		t.Errorf("standby outbound type = %q, want vless", def.Type)
 	}
-	// The default must stay on the ladder: REALITY is where traffic goes once
-	// hy2 has been PROVEN dark, and a fresh config has proven nothing.
-	if outs[0].Default == core.RealityStandbyTag {
-		t.Error("a fresh config must not default to the standby leg")
+	// REALITY is the primary, so a fresh config must come up on it rather than
+	// spend its first minute on the ladder waiting for the supervisor's tick.
+	if outs[0].Default != core.RealityLegTag {
+		t.Errorf("a fresh config must default to the REALITY leg, got %q", outs[0].Default)
 	}
 }
 
@@ -131,7 +131,7 @@ func TestBadStandbyURIDegradesToSingleLeg(t *testing.T) {
 	}
 	outs := buildProxyOutbounds(hy2, "://nonsense", o)
 	for _, out := range outs {
-		if out.Tag == core.RealityStandbyTag {
+		if out.Tag == core.RealityLegTag {
 			t.Fatal("a malformed standby URI produced a standby member")
 		}
 	}
@@ -155,11 +155,11 @@ func TestStandbyBuildsASelectorEvenWhenTheLadderCollapses(t *testing.T) {
 	if outs[0].Type != "selector" {
 		t.Fatalf("expected a selector for the two legs, got %+v", outs[0])
 	}
-	want := []string{core.BandwidthRungTag(1), core.RealityStandbyTag}
+	want := []string{core.BandwidthRungTag(1), core.RealityLegTag}
 	if len(outs[0].Outbounds) != 2 || outs[0].Outbounds[0] != want[0] || outs[0].Outbounds[1] != want[1] {
 		t.Fatalf("members = %v, want %v", outs[0].Outbounds, want)
 	}
-	if outs[0].Default != want[0] {
-		t.Errorf("default = %q, want the hy2 rung %q", outs[0].Default, want[0])
+	if outs[0].Default != want[1] {
+		t.Errorf("default = %q, want the REALITY primary %q", outs[0].Default, want[1])
 	}
 }
