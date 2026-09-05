@@ -23,6 +23,7 @@ var internalDaemon bool
 var noKillSwitch bool
 var noDestroyOnLidClose bool
 var lidCloseDryRun bool
+var lidGrace time.Duration
 
 // maskURI replaces the user:password portion of a URI with "***" for logging.
 func maskURI(s string) string {
@@ -49,6 +50,7 @@ func init() {
 	// It was never accurate about what fired: idle and maintenance sleep counted
 	// too, which is the bug this rename came out of.
 	upCmd.Flags().BoolVar(&noDestroyOnLidClose, "no-destroy-on-sleep", false, "")
+	upCmd.Flags().DurationVar(&lidGrace, "lid-grace", 30*time.Minute, "keep the server this long after the lid shuts; it is destroyed on the first wake after that if the lid is still shut (0 = destroy at lid close)")
 	_ = upCmd.Flags().MarkDeprecated("no-destroy-on-sleep", "use --no-destroy-on-lid-close")
 	// A flag rather than an environment variable on purpose: `mole up` re-execs
 	// itself through sudo, and sudo's env_reset drops anything not on its
@@ -329,6 +331,7 @@ func runDaemon() error {
 		// daemon path.
 		DestroyOnLidClose:   armed,
 		LidCloseDryRun:      dryRun,
+		LidGrace:            lidGrace,
 		LidDestroyOffReason: offReason,
 		// 规则热更：守护进程监听 custom-rules.json，改完即时生效，不需要任何命令，
 		// 也不重启 sing-box / 不断 TUN（见 core/ruleswatch.go 与 config/hotrules.go）。

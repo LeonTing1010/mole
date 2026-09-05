@@ -211,6 +211,9 @@ func printLidDestroy(st *utils.State) {
 	case utils.LidDestroyFired:
 		fmt.Printf("   Lid:     🔴 destroy-on-lid-close FIRED — the server was destroyed (%s)\n", st.LidDestroyReason)
 		fmt.Println("            The daemon is stopping; bring the tunnel back with `mole server deploy` then `mole up`")
+	case utils.LidDestroyDeferred:
+		fmt.Printf("   Lid:     🟡 the lid shut at %s — server kept for the grace period, destroyed on the first wake after it if the lid is still shut\n",
+			st.LidDestroyPendingSince.Format("15:04"))
 	case utils.LidDestroyPending:
 		fmt.Printf("   Lid:     🟠 destroy-on-lid-close FAILED at %s (%d attempts) — the server is STILL BILLING, %s so far\n",
 			st.LidDestroyPendingSince.Format("15:04"), st.LidDestroyAttempts,

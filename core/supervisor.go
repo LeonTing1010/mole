@@ -43,6 +43,8 @@ type Supervisor struct {
 	// lidDryRun logs the lid close and destroys nothing, so the clamshell
 	// detection can be proven on a given Mac without paying a redeploy.
 	lidDryRun bool
+	// lidGrace is SupervisorOpts.LidGrace. See onLidClose.
+	lidGrace time.Duration
 	// lidOffReason is what to tell the operator when the watcher is not armed.
 	lidOffReason string
 	// lidClosedFn reads the clamshell. A field rather than a direct call to
@@ -171,6 +173,10 @@ type SupervisorOpts struct {
 	// "it compiles" is not evidence it fires on this Mac. This is how to get
 	// that evidence without deleting the server to find out.
 	LidCloseDryRun bool
+	// LidGrace holds the destroy for this long after the lid shuts. A lid
+	// that reopens inside it keeps the server; one still shut on the first
+	// wake past it loses it. Zero destroys at the lid close, as before.
+	LidGrace time.Duration
 	// LidDestroyOffReason is why DestroyOnLidClose is false, in the operator's
 	// terms ("no Vultr key", a flag they passed). Recorded in state.json and
 	// logged at startup so a disarmed watcher is discoverable later instead of
@@ -215,6 +221,7 @@ func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervis
 		onIdleDestroy:     opts.OnIdleDestroy,
 		onRulesChanged:    opts.OnRulesChanged,
 		lidDryRun:         opts.LidCloseDryRun,
+		lidGrace:          opts.LidGrace,
 		lidOffReason:      opts.LidDestroyOffReason,
 		lidClosedFn:       lidClosed,
 		lidDestroyed:      make(chan struct{}),
@@ -1669,6 +1676,37 @@ func (s *Supervisor) recordLidDestroyPending(when time.Time, cause error) {
 // opened. Keeps PendingSince and the attempt count: they are the record of how
 // long the server billed unattended, which is the only thing anyone can still
 // learn from this once the tunnel is in use again.
+// recordLidDeferred records that the lid shut and the destroy is being held
+// for the grace period. Not persisted as debt: nothing has failed, and a
+// daemon that dies here leaves a server that was deliberately kept.
+func (s *Supervisor) recordLidDeferred(when time.Time) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.state.LidDestroy = utils.LidDestroyDeferred
+	s.state.LidDestroyPendingSince = when
+	s.state.LidDestroyAttempts = 0
+	s.state.LidDestroyReason = "lid shut; destroy held for the grace period"
+}
+
+// recordLidReopened re-arms the watcher after a lid that reopened inside the
+// grace period. The server was kept on purpose, so this is the armed state
+// again, not a cancelled one.
+func (s *Supervisor) recordLidReopened() {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.state.LidDestroy = utils.LidDestroyArmed
+	s.state.LidDestroyPendingSince = time.Time{}
+	s.state.LidDestroyAttempts = 0
+	s.state.LidDestroyReason = ""
+}
+
+// lidDeferred reports whether a destroy is being held, and since when.
+func (s *Supervisor) lidDeferred() (since time.Time, held bool) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.state.LidDestroyPendingSince, s.state.LidDestroy == utils.LidDestroyDeferred
+}
+
 func (s *Supervisor) recordLidDestroyCancelled(reason string) {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()

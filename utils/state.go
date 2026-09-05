@@ -149,6 +149,13 @@ const (
 	// same read it already makes, instead of showing a frozen "tunnel dark"
 	// through a server that no longer exists.
 	LidDestroyFired LidDestroyState = "fired"
+	// LidDestroyDeferred: the lid shut and the destroy is being held for the
+	// grace period (see Supervisor.onLidClose). A lid that reopens inside it
+	// keeps the server; one still shut on the first wake past it loses it.
+	// 2026-09-04: a lid shut for two minutes cost a destroy, a redeploy, and
+	// a node that came up with one leg — for a saving of nothing, since Vultr
+	// bills the hour either way.
+	LidDestroyDeferred LidDestroyState = "deferred"
 	// LidDestroyPending: the lid shut, the destroy fired, and it failed — the
 	// network was down at the one moment it had to work. The server is still
 	// running and still billing.
