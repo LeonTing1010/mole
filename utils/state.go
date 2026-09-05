@@ -282,6 +282,22 @@ func (s *State) RecordDial(ms int, err error) {
 	s.UpdateNewFlowLatch()
 }
 
+// ResetDials empties the fresh-dial window and drops its latch, for the moment
+// traffic moves to a different leg. The samples describe connections opened on
+// the leg that was in force when each was taken, and a window that survives
+// the switch attributes them to the new one. Measured 2026-09-05: REALITY was
+// handed traffic back at 10:56:29 and thrown off again at 10:57:41 for "12 of
+// the last 20 new connections were slow or failed on proxy-reality" — 15 of
+// those 20 had been dialled on hy2, and an A/B minutes later had REALITY at
+// 0/10 bad. Emptying the window means the first verdict on the new leg waits
+// for DialWindow samples of its own (~5 minutes at the 15s cadence), which is
+// also longer than the fallback probation, so a return that holds is scored
+// on its own evidence.
+func (s *State) ResetDials() {
+	s.DialSamples = nil
+	s.SlowNewFlows = false
+}
+
 // DialBad counts the slow-or-failed dials in the current window.
 func (s *State) DialBad() int {
 	bad := 0

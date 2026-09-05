@@ -1233,6 +1233,10 @@ func (s *Supervisor) resetKeepaliveCount() {
 	s.state.KeepaliveFails = 0
 	s.state.KeepaliveFailingSince = time.Time{}
 	s.state.LastKeepaliveError = ""
+	// The fresh-dial window goes with it: every caller of this is a leg
+	// change, and dials made on the previous leg are not evidence about the
+	// one traffic is on now. See State.ResetDials for the episode.
+	s.state.ResetDials()
 	s.noteHealthLocked()
 	s.stateMu.Unlock()
 }
