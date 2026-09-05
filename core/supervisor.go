@@ -965,7 +965,7 @@ func (s *Supervisor) considerLegFailover() {
 
 	bad, window := s.dialWindow()
 	idle := s.ladderTarget()
-	ms, err := s.clash.TestDelay(idle, s.probeURL, s.probeTimeMs)
+	ms, err := s.legDialsClean(idle)
 	if !legTestSaysTransport(ms, err, utils.DialSlowMs) {
 		if err != nil {
 			log.Printf("new connections failing (%d/%d) but %s will not dial either (%v) — both legs are down, so this is the path or the local link, not the transport; holding %s",
@@ -978,6 +978,39 @@ func (s *Supervisor) considerLegFailover() {
 	}
 	s.enterFallback(fmt.Sprintf("%d of the last %d new connections were slow or failed on %s while %s dialled clean (%dms), which is a difference only the transport explains",
 		bad, window, RealityLegTag, idle, ms))
+}
+
+// Comparative gate: how many probes the idle leg has to pass, and how far
+// apart. One was not enough — 2026-09-04 09:10, a single 431ms probe declared
+// REALITY clean in the middle of a Wi-Fi stall and traffic was moved onto a
+// leg that then timed out 124 times in the hour. Three spaced by four seconds
+// span the ~10s lulls a bad link has between bursts.
+const (
+	legGateProbes  = 3
+	legGateSpacing = 4 * time.Second
+)
+
+// legDialsClean dials the idle leg legGateProbes times and reports the WORST
+// result: the slowest answered probe, or the first failure. A leg is only
+// clean if all of them were.
+func (s *Supervisor) legDialsClean(tag string) (worstMs int, err error) {
+	for i := 0; i < legGateProbes; i++ {
+		if i > 0 {
+			select {
+			case <-s.stopCh:
+				return worstMs, fmt.Errorf("stopping")
+			case <-time.After(legGateSpacing):
+			}
+		}
+		ms, perr := s.clash.TestDelay(tag, s.probeURL, s.probeTimeMs)
+		if perr != nil {
+			return ms, perr
+		}
+		if ms > worstMs {
+			worstMs = ms
+		}
+	}
+	return worstMs, nil
 }
 
 // dialWindow reports the fresh-dial verdict's shape for log lines.
