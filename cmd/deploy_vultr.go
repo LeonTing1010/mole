@@ -419,7 +419,27 @@ func realityBootScript(port int, id *realityIdentity) string {
 // adding the standby cannot regress it.
 func realityServerSnippet(port int, id *realityIdentity) string {
 	return fmt.Sprintf(`
-curl -fsSL https://sing-box.app/install.sh | sh
+# sing-box arrives as a .deb, and on a fresh Ubuntu the first minutes of boot
+# belong to apt-daily/unattended-upgrades, which hold the dpkg frontend lock.
+# The icn-1788515745 node (2026-09-04) lost that race: install.sh printed
+# "dpkg frontend lock was locked by another process", the enable failed with
+# "Unit file sing-box.service does not exist", and the node ran for 17 hours
+# with TCP/443 refusing — the REALITY leg had never existed, and every
+# fallback re-test said "still will not dial". So: wait for the lock, retry
+# the install, and only then write the config (writing it first turns the
+# package's own conffile into an interactive prompt that kills dpkg).
+export DEBIAN_FRONTEND=noninteractive
+for attempt in 1 2 3 4 5; do
+  for i in $(seq 1 90); do
+    fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1 || break
+    sleep 2
+  done
+  if curl -fsSL https://sing-box.app/install.sh | sh && command -v sing-box >/dev/null 2>&1; then break; fi
+  echo "sing-box install attempt $attempt failed; retrying" >&2
+  dpkg --force-confold --configure -a >/dev/null 2>&1 || true
+  sleep 10
+done
+command -v sing-box >/dev/null 2>&1 || echo "REALITY LEG NOT INSTALLED: sing-box missing after retries" >&2
 mkdir -p /etc/sing-box
 cat > /etc/sing-box/config.json << 'EOF'
 {
