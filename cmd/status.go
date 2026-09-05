@@ -142,6 +142,11 @@ func printSupervisorState() {
 			fmt.Println("   Profile: 📌 leg pinned — VLESS+REALITY over TCP/443 (fallback to hy2 disarmed; \"mole leg auto\" to release)")
 		case onStandby:
 			fmt.Println("   Profile: VLESS+REALITY over TCP/443 (primary; hy2 ladder on standby, no Brutal ceiling applies)")
+		case strings.HasPrefix(st.BandwidthProfile, "fallback-hy2/") && st.RealityServerDown != "":
+			// Not "measured dark": the node itself refused the port. Waiting
+			// will not fix this and the line should not suggest it might.
+			fmt.Printf("   Profile: 🎭 fallback leg — hysteria2 ladder, Brutal ↓%d Mbps; REALITY server NOT LISTENING on the node (%s) — `mole server repair` reinstalls it\n",
+				st.BandwidthDownMbps, st.RealityServerDown)
 		case strings.HasPrefix(st.BandwidthProfile, "fallback-hy2/") && (live == 0 || live == st.BandwidthDownMbps):
 			fmt.Printf("   Profile: 🎭 fallback leg — hysteria2 ladder, Brutal ↓%d Mbps (REALITY was measured dark; returns on its own)\n", st.BandwidthDownMbps)
 		case live == 0 || live == st.BandwidthDownMbps:

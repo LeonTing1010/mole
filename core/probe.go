@@ -159,3 +159,52 @@ func isRefused(err error) bool {
 	return errors.Is(err, syscall.ECONNREFUSED) ||
 		(err != nil && strings.Contains(err.Error(), "connection refused"))
 }
+
+// ProbeTCP checks whether something is listening at addr (a REALITY leg on
+// TCP/443), from OUTSIDE the tunnel — the same interface binding as
+// ProbeHy2UDP, for the same reason: an unbound dial rides the TUN and measures
+// the tunnel instead of the node.
+//
+// What it separates is the pair the Clash delay test collapses into one "503":
+// a SYN answered with RST within one RTT (ProbeRefused — the node is up and
+// the server is not listening) from a SYN answered by nothing (ProbeSilent —
+// the path or the firewall). On 2026-09-05 the node had been refusing TCP/443
+// for seventeen hours because sing-box never installed, and every re-test said
+// "still will not dial" as if it were waiting on the path. Refused is not a
+// waiting kind of failure; it is an instruction to repair the node.
+//
+// The connection is closed the moment it opens. No TLS, no REALITY handshake —
+// the question is whether the port answers, and a full handshake is what the
+// keepalive is for.
+func ProbeTCP(addr string, timeout time.Duration) (time.Duration, utils.ProbeVerdict, error) {
+	ifi, err := utils.DefaultPhysicalInterface()
+	if err != nil {
+		return 0, utils.ProbeNoLink, fmt.Errorf("no physical interface for direct probe: %w", err)
+	}
+	d := net.Dialer{
+		Timeout: timeout,
+		Control: func(network, address string, c syscall.RawConn) error {
+			var serr error
+			if cerr := c.Control(func(fd uintptr) {
+				serr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IP, ipBoundIf, ifi.Index)
+			}); cerr != nil {
+				return cerr
+			}
+			return serr
+		},
+	}
+	start := time.Now()
+	conn, err := d.Dial("tcp4", addr)
+	if err == nil {
+		conn.Close()
+		return time.Since(start), utils.ProbeAlive, nil
+	}
+	if isRefused(err) {
+		return time.Since(start), utils.ProbeRefused, fmt.Errorf("dial via %s: %w", ifi.Name, err)
+	}
+	var nerr net.Error
+	if errors.As(err, &nerr) && nerr.Timeout() {
+		return 0, utils.ProbeSilent, fmt.Errorf("no SYN-ACK within %s", timeout)
+	}
+	return 0, utils.ProbeError, fmt.Errorf("dial via %s: %w", ifi.Name, err)
+}

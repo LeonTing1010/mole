@@ -317,6 +317,21 @@ func (s *Server) StandbyURI() string {
 	return s.realityURI(host)
 }
 
+// realityAddr is the REALITY leg's ip:port, or "" when the node has none.
+func (s *Server) realityAddr() string {
+	if !s.hasStandbyLeg() && !s.isReality() {
+		return ""
+	}
+	if s.IP == "" {
+		return ""
+	}
+	port := s.RealityPort
+	if port == 0 {
+		port = s.Port
+	}
+	return fmt.Sprintf("%s:%d", s.IP, port)
+}
+
 func (s *Server) realityURI(host string) string {
 	port := s.RealityPort
 	if port == 0 {

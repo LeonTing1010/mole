@@ -97,6 +97,11 @@ type State struct {
 	BandwidthProfile  string `json:"bandwidth_profile,omitempty"`
 	BandwidthDownMbps int    `json:"bandwidth_down_mbps,omitempty"`
 
+	// RealityServerDown is set when the REALITY re-test got "connection
+	// refused" from the node itself — the server is not listening, which no
+	// amount of waiting on the path will fix. Empty otherwise.
+	RealityServerDown string `json:"reality_server_down,omitempty"`
+
 	// Whether the running daemon's destroy-on-lid-close watcher is actually
 	// armed, and why not when it isn't. Recorded because the feature used to be
 	// silent in both directions: armed logged nothing, and disarmed printed one

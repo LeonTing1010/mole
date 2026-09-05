@@ -91,9 +91,10 @@ type Supervisor struct {
 	// cannot be the primary, and every failover check below short-circuits.
 	// fallbackMu guards the policy value and, like kickMu, is never taken
 	// while stateMu is held.
-	hasReality bool
-	fallbackMu sync.Mutex
-	fallback   fallbackState
+	hasReality  bool
+	realityAddr string
+	fallbackMu  sync.Mutex
+	fallback    fallbackState
 
 	// legTest rate-limits the comparative leg test in considerLegFailover.
 	// The fresh-dial latch can stay set for an hour; without this the test
@@ -136,6 +137,10 @@ type SupervisorOpts struct {
 	// RealityLegTag outbound sing-box never heard of would fail the call and
 	// strand traffic on a leg already proven dark.
 	HasRealityLeg bool
+	// RealityAddr is the REALITY leg's ip:port, for the out-of-tunnel TCP probe
+	// that tells a node refusing the port from a path dropping it. Empty when
+	// there is no such leg.
+	RealityAddr string
 
 	// Schedule enables the time-of-day Brutal ceiling. Gated by Schedule.Enabled()
 	// (a peak profile must be configured); the config must also carry the
@@ -201,6 +206,7 @@ func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervis
 		probeTimeMs:       opts.ProbeTimeMs,
 		schedule:          opts.Schedule,
 		hasReality:        opts.HasRealityLeg,
+		realityAddr:       opts.RealityAddr,
 		destroyOnLidClose: opts.DestroyOnLidClose,
 		onIdleDestroy:     opts.OnIdleDestroy,
 		onRulesChanged:    opts.OnRulesChanged,
@@ -1168,6 +1174,7 @@ func (s *Supervisor) enterFallback(cause string) {
 	}
 	log.Printf("fallback: %s — moving to the hy2 ladder (%s, UDP/443) for %s; TCP/443 is what stopped carrying, and Brutal on UDP is the other bet",
 		cause, target, dwell)
+	go s.diagnoseRealityPort()
 	s.resetKeepaliveCount()
 }
 
@@ -1189,6 +1196,26 @@ func (s *Supervisor) tryReturnToPrimary() {
 	if !due {
 		return
 	}
+	// The port first, then the leg. A refused SYN is the node saying nothing
+	// is listening — the one answer that does not get better with waiting —
+	// and it is told apart here from a silent one, which the delay test
+	// below folds into the same generic error.
+	if s.realityAddr != "" {
+		rtt, v, perr := ProbeTCP(s.realityAddr, time.Duration(s.probeTimeMs)*time.Millisecond)
+		switch v {
+		case utils.ProbeRefused:
+			s.noteRealityServerDown(fmt.Sprintf("connection refused in %dms", int(rtt/time.Millisecond)))
+			s.fallbackMu.Lock()
+			s.fallback.extend(time.Now())
+			dwell := s.fallback.dwell
+			s.fallbackMu.Unlock()
+			log.Printf("fallback: %s REFUSED at %s (%v) — the node is up and nothing is listening on the port; this is the server, not the path. `mole server repair` reinstalls it. Re-testing in %s",
+				RealityLegTag, s.realityAddr, perr, dwell)
+			return
+		case utils.ProbeAlive:
+			s.noteRealityServerDown("")
+		}
+	}
 	if _, err := s.clash.TestDelay(RealityLegTag, s.probeURL, s.probeTimeMs); err != nil {
 		s.fallbackMu.Lock()
 		s.fallback.extend(time.Now())
@@ -1203,6 +1230,40 @@ func (s *Supervisor) tryReturnToPrimary() {
 	if left {
 		log.Printf("fallback: %s dials again — handing traffic back to it, on probation for %s", RealityLegTag, fallbackProbation)
 		s.resetKeepaliveCount()
+	}
+}
+
+// noteRealityServerDown records (or clears, with "") the out-of-tunnel
+// finding that the REALITY port refuses, so `mole status` can say "the server
+// is not installed" instead of "measured dark".
+func (s *Supervisor) noteRealityServerDown(reason string) {
+	s.stateMu.Lock()
+	changed := s.state.RealityServerDown != reason
+	s.state.RealityServerDown = reason
+	s.stateMu.Unlock()
+	if changed {
+		_ = utils.WriteState(s.snapshot())
+	}
+}
+
+// diagnoseRealityPort runs the TCP probe once, off the caller's goroutine, so
+// the first fallback of a node whose REALITY server never came up says so in
+// the log within seconds rather than after the first dwell.
+func (s *Supervisor) diagnoseRealityPort() {
+	if s.realityAddr == "" {
+		return
+	}
+	rtt, v, err := ProbeTCP(s.realityAddr, time.Duration(s.probeTimeMs)*time.Millisecond)
+	switch v {
+	case utils.ProbeRefused:
+		s.noteRealityServerDown(fmt.Sprintf("connection refused in %dms", int(rtt/time.Millisecond)))
+		log.Printf("fallback: diagnosis — %s REFUSES TCP at %s (%v): the node is up and no REALITY server is listening. Not a path problem; `mole server repair` reinstalls it",
+			RealityLegTag, s.realityAddr, err)
+	case utils.ProbeSilent:
+		log.Printf("fallback: diagnosis — %s is silent on TCP at %s: SYNs are being dropped on the path (or by the cloud firewall), the server may well be fine", RealityLegTag, s.realityAddr)
+	case utils.ProbeAlive:
+		s.noteRealityServerDown("")
+		log.Printf("fallback: diagnosis — %s accepts TCP at %s in %dms: the port answers, so it is the flow that is being killed, not the listener", RealityLegTag, s.realityAddr, int(rtt/time.Millisecond))
 	}
 }
 

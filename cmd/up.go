@@ -312,6 +312,9 @@ func runDaemon() error {
 		// sing-box never heard of would fail the call and strand traffic on a
 		// leg already proven dark.
 		HasRealityLeg: srv.StandbyURI() != "",
+		// For the out-of-tunnel TCP probe that separates "the node refuses the
+		// port" from "the path drops it" when the leg is being re-tested.
+		RealityAddr: srv.realityAddr(),
 		// Idle-destroy. Off unless asked for; when on, the watcher deletes this
 		// server once nothing has gone abroad for the configured window and then
 		// stops the daemon, so the deferred DNS restore and kill-switch unload
