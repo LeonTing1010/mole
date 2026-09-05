@@ -71,6 +71,16 @@ func printSupervisorState() {
 		case utils.HealthVPSDown:
 			// ICMP port unreachable round-tripped: path fine, nothing listening.
 			fmt.Printf("   Mode:    🔴 proxy — hy2 process down on VPS (probe refused): %s\n", st.LastProbeError)
+		case utils.HealthLocalLink:
+			// The first hop is dropping packets. Say so before anything about
+			// the tunnel, because everything about the tunnel is suspect while
+			// this holds — and because "your Wi-Fi" is the single most useful
+			// thing mole can say on a bad evening.
+			fmt.Printf("   Mode:    🟡 proxy — LOCAL LINK BAD: gateway %s lost %d/%d echoes, median %dms, for %s; this is the Wi-Fi, not the tunnel — both legs will be slow and mole is changing nothing until it clears\n",
+				st.LinkGateway, st.LinkLoss(), utils.LinkWindow, st.LinkMedianMs(), humanize(time.Since(st.LinkBadSince)))
+			if st.LinkPHY != "" {
+				fmt.Printf("            radio: %s\n", st.LinkPHY)
+			}
 		case utils.HealthNoLink:
 			// Nothing to say about the VPS: this machine has no uplink. Naming
 			// the real culprit matters — reported as a path blackhole, this sent
@@ -157,6 +167,16 @@ func printSupervisorState() {
 		}
 	}
 	printLidDestroy(st)
+	// The first hop, whenever it has been measured. One line, so the reader
+	// who sees a yellow tunnel can check the radio without leaving status.
+	if !st.LinkLastAt.IsZero() && st.LinkGateway != "" {
+		mark := "🟢"
+		if st.LinkBad {
+			mark = "🔴"
+		}
+		fmt.Printf("   Link:    %s gateway %s — %d/%d echoes lost, median %dms\n",
+			mark, st.LinkGateway, st.LinkLoss(), utils.LinkWindow, st.LinkMedianMs())
+	}
 	if !st.LastProbeAt.IsZero() {
 		fmt.Printf("   Probed:  %s ago\n", humanize(time.Since(st.LastProbeAt)))
 	}

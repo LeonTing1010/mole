@@ -135,8 +135,19 @@ func TestKeepaliveLegActionPolicy(t *testing.T) {
 		{"below the threshold on REALITY: hold", fallbackEnterFails - 1, true, false, false, "", legHold},
 	}
 	for _, c := range cases {
-		if got := keepaliveLegAction(c.fails, c.probe, c.hy2, c.onFB, c.pin); got != c.want {
+		if got := keepaliveLegAction(c.fails, c.probe, true, c.hy2, c.onFB, c.pin); got != c.want {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// A bad local link holds every move, whatever the streak says.
+func TestKeepaliveLegActionHoldsOnBadLink(t *testing.T) {
+	for _, fails := range []int{stallKickThreshold, fallbackEnterFails, fallbackEnterFails * 3} {
+		for _, onHy2 := range []bool{true, false} {
+			if got := keepaliveLegAction(fails, true, false, onHy2, false, ""); got != legHold {
+				t.Errorf("fails=%d onHy2=%v with a bad link: got %v, want hold", fails, onHy2, got)
+			}
 		}
 	}
 }

@@ -92,6 +92,17 @@ type State struct {
 	// verdict computed from the same window flaps every beat.
 	SlowNewFlows bool `json:"slow_new_flows,omitempty"`
 
+	// Local-link instrument — the echo to the default gateway. See link.go.
+	// LinkGateway names what is being echoed so a reader can tell a home
+	// router from a phone hotspot; LinkBad is the latched verdict and
+	// LinkBadSince when it latched.
+	LinkGateway  string       `json:"link_gateway,omitempty"`
+	LinkSamples  []LinkSample `json:"link_samples,omitempty"`
+	LinkLastAt   time.Time    `json:"link_last_at,omitempty"`
+	LinkBad      bool         `json:"link_bad,omitempty"`
+	LinkBadSince time.Time    `json:"link_bad_since,omitempty"`
+	LinkPHY      string       `json:"link_phy,omitempty"`
+
 	// Time-of-day bandwidth scheduler: which Brutal ceiling is currently selected.
 	// Empty when the active server has no peak profile configured.
 	BandwidthProfile  string `json:"bandwidth_profile,omitempty"`
@@ -212,6 +223,11 @@ const (
 	// HealthNoLink: this machine has no usable uplink. Nothing about the VPS or
 	// the path is known — or knowable — until it returns.
 	HealthNoLink Health = "no-link"
+	// HealthLocalLink: the uplink exists but the first hop is dropping or
+	// delaying packets — the Wi-Fi, not the path. Every path-side verdict is
+	// suspect while this holds, and every remedy mole has (a leg, a rung, a
+	// kick) is aimed at the wrong side of the fault. See link.go.
+	HealthLocalLink Health = "local-link"
 )
 
 // Usable reports whether the tunnel is expected to carry traffic right now.
@@ -341,6 +357,14 @@ func (s *State) Health() Health {
 	// far end.
 	if s.ConsecutiveFails > 0 && s.LastProbeVerdict == ProbeNoLink {
 		return HealthNoLink
+	}
+	// The local link outranks every path verdict below for the same reason
+	// no-link does: with the first hop dropping packets, a dark keepalive and
+	// a failing fresh dial are measurements of the radio, and acting on them
+	// as if they were about the path is how one bad evening became four leg
+	// changes and a three-rung descent.
+	if s.LinkBad {
+		return HealthLocalLink
 	}
 	// The keepalive is the authority on whether the tunnel passes traffic: it
 	// rides an established session end to end. When it is failing, the path is

@@ -104,6 +104,10 @@ type Supervisor struct {
 	legTestMu sync.Mutex
 	legTestAt time.Time
 
+	// dialsPaused records that fresh-dial sampling is suspended for a bad
+	// local link, so the suspension is logged once per stretch.
+	dialsPaused bool
+
 	// linkPoke carries "the local address changed, re-dial now" from the link
 	// watcher to the keepalive. Buffered so the watcher never blocks and a
 	// second change while one is queued collapses into the same re-dial.
@@ -282,7 +286,9 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	// 无需任何命令、不重启进程、不断 TUN。
 	// +1 = 本机上行地址监听（见 runLinkWatch）：macOS 自己重连 Wi-Fi 换 IP 后
 	// 立刻重拨，不等 keepalive 的下一拍。
-	n := 5
+	// +1 = the gateway echo (runLinkProbe): the one instrument on this side of
+	// the Wi-Fi, which is where a third of the bad minutes turned out to be.
+	n := 6
 	if scheduleOn {
 		n++
 	}
@@ -338,6 +344,13 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		defer wg.Done()
 		defer recoverPanic("link-watch")
 		s.runLinkWatch(ctx)
+	}()
+
+	// Goroutine C3: echo the default gateway and keep the local-link verdict.
+	go func() {
+		defer wg.Done()
+		defer recoverPanic("link-probe")
+		s.runLinkProbe(ctx)
 	}()
 
 	// Goroutine D (optional): drive the Brutal ceiling — follow the local clock
@@ -832,7 +845,7 @@ func (s *Supervisor) keepaliveOnce() {
 		// primary that stayed dark past that; abandoning the fallback is for
 		// an hy2 that turned out dark too. See keepaliveLegAction.
 		action = keepaliveLegAction(s.state.KeepaliveFails,
-			s.state.LastProbeVerdict == utils.ProbeAlive, s.activeOnHy2(), s.onFallback(), utils.ReadLeg())
+			s.state.LastProbeVerdict == utils.ProbeAlive, !s.state.LinkBad, s.activeOnHy2(), s.onFallback(), utils.ReadLeg())
 	} else {
 		s.state.KeepaliveFails = 0
 		s.state.KeepaliveFailingSince = time.Time{}
@@ -896,6 +909,18 @@ func (s *Supervisor) ladderTarget() string {
 // and an A/B during the episode had the LOWER rung failing 25% of new
 // connections against 4% on the higher one, making a descent actively worse).
 func (s *Supervisor) dialOnce() {
+	// A bad first hop makes every fresh dial slow, and a window filled with
+	// those would convict whichever leg is in force the moment the link comes
+	// back. Sample nothing until it clears — the verdict is about the leg, and
+	// the leg is not what is being measured right now.
+	if s.linkBad() {
+		if !s.dialsPaused {
+			s.dialsPaused = true
+			log.Printf("fresh dial: sampling paused while the local link is bad — these would measure the Wi-Fi, not the leg")
+		}
+		return
+	}
+	s.dialsPaused = false
 	start := time.Now()
 	_, err := s.fetchThroughTunnel(s.dialClient(), keepaliveURL)
 	ms := int(time.Since(start) / time.Millisecond)
@@ -955,6 +980,11 @@ func (s *Supervisor) dialOnce() {
 // up, and this is about how traffic is carried rather than whether the far end
 // is there).
 func (s *Supervisor) considerLegFailover() {
+	// Not on a bad local link: the idle leg would be measured through the
+	// same radio and the answer would be about the Wi-Fi.
+	if s.linkBad() {
+		return
+	}
 	s.legTestMu.Lock()
 	if !legTestDue(s.hasReality, s.onFallback(), utils.ReadLeg(), time.Now(), s.legTestAt) {
 		s.legTestMu.Unlock()
@@ -1221,6 +1251,11 @@ func (s *Supervisor) enterFallback(cause string) {
 // again, and fallbackState doubles the dwell so the next test costs less often.
 func (s *Supervisor) tryReturnToPrimary() {
 	if !s.hasReality {
+		return
+	}
+	// Not during a bad local link: the test would fail for the Wi-Fi's
+	// reasons and extend the dwell for the path's.
+	if s.linkBad() {
 		return
 	}
 	s.fallbackMu.Lock()
@@ -1500,7 +1535,9 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 		// straddles two ticks and one short burst cannot descend a rung by
 		// itself.
 		flooding := TakeFloodSightings() > 0
-		if h == utils.HealthNoLink {
+		// No uplink, or an uplink whose first hop is dropping packets: neither
+		// is evidence about the tunnel. See healState.freeze.
+		if h == utils.HealthNoLink || h == utils.HealthLocalLink {
 			backoff = heal.freeze()
 			return
 		}

@@ -178,8 +178,14 @@ const (
 // whether that is because the failover put it there; pin is the `mole leg`
 // pin, which disarms every automatic move. probeAlive is the out-of-tunnel UDP
 // probe: with it dead the host or the route is gone and no leg is an answer.
-func keepaliveLegAction(fails int, probeAlive, onHy2, onFallback bool, pin string) legAction {
-	if !probeAlive || fails == 0 {
+//
+// linkOK is the local-link verdict (utils/link.go). With the first hop
+// dropping packets the streak is a measurement of the radio, and a kick or a
+// leg change would move traffic across transports for nothing — measured
+// 2026-09-04 09:04-09:45: four leg changes in half an hour of bad Wi-Fi, each
+// justified by a keepalive streak the Wi-Fi had produced.
+func keepaliveLegAction(fails int, probeAlive, linkOK, onHy2, onFallback bool, pin string) legAction {
+	if !probeAlive || !linkOK || fails == 0 {
 		return legHold
 	}
 	if onHy2 && fails == stallKickThreshold {
