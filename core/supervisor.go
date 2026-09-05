@@ -603,7 +603,25 @@ func (h *healState) freeze() int {
 // A dark tick still clears the clean streak — the path is not well, so the
 // ceiling must not climb either. It just holds where it is and waits, which for
 // a blackhole is the only thing that has ever worked.
-func (h *healState) tick(healthy, flooding bool) int {
+//
+// dark says the in-tunnel keepalive is failing past its threshold: the path is
+// not carrying traffic at all. Flooding during that is not evidence about the
+// ceiling — nothing is being pushed through, and what ENOBUFS measures then is
+// the send queue backing up behind a link that is not draining. All eighteen
+// ENOBUFS bursts in the 2026-09-03..05 logs fell inside keepalive blackouts,
+// and the nine descents they caused cost 15-45 minutes of bandwidth each for a
+// path no rung could have fixed. So a flood inside a blackout holds, like a
+// dark tick without one; a flood while the tunnel otherwise answers (the
+// 2026-08-22 case this branch was built for) still descends.
+func (h *healState) tick(healthy, flooding, dark bool) int {
+	if flooding && dark {
+		h.good = 0
+		if !h.held {
+			h.held = true
+			log.Printf("self-heal: ENOBUFS during a keepalive blackout — holding the ceiling; the send queue is backing up behind a dark path, not a ceiling that is too high")
+		}
+		return h.backoff
+	}
 	// Flooding is decisive on its own, and is checked BEFORE health. ENOBUFS
 	// means this machine could not push the declared rate into the link — a
 	// statement about the local send path that is equally true whether or not
@@ -1546,7 +1564,7 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 		// that as unhealthy is what made the ceiling unable to climb — the probe
 		// loses three in a row often enough that the clean streak never survived
 		// to fifteen.
-		backoff = heal.tick(h.Usable(), flooding)
+		backoff = heal.tick(h.Usable(), flooding, h == utils.HealthPathDead)
 	}
 
 	apply()
