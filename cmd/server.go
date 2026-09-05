@@ -451,6 +451,7 @@ func init() {
 	// PCCW with a 165ms floor — roughly three times the physical distance — and
 	// that sustained loss is what the tunnel kept collapsing on.
 	serverDeployCmd.Flags().String("region", "icn", "server region (icn, nrt, sgp, lax, ...)")
+	serverDeployCmd.Flags().BoolVar(&deployNoVerify, "no-verify", false, "do not wait for both legs to answer from outside the tunnel")
 	serverDeployCmd.Flags().String("plan", "vc2-1c-1gb", "server plan")
 	serverDeployCmd.Flags().String("name", "", "Server name (auto-generated if empty)")
 	serverDeployCmd.Flags().Int("port", 443, "tunnel port")
@@ -662,6 +663,11 @@ func finishDeploy(srv Server) error {
 		}
 		fmt.Println("\n⏳ Boot script is installing in the background (~2 min).")
 	}
+	// The deploy is not done when the address arrives; it is done when both
+	// servers answer. See verifyNodeLegs for the node that taught us that.
+	if !deployNoVerify {
+		verifyNodeLegs(srv, nodeVerifyBudget)
+	}
 	if srv.Active {
 		fmt.Println("   This is now the active server — run `mole up` once it's ready.")
 	} else {
@@ -669,6 +675,8 @@ func finishDeploy(srv Server) error {
 	}
 	return nil
 }
+
+var deployNoVerify bool
 
 // waitForIP polls until Vultr assigns the instance an address.
 //
