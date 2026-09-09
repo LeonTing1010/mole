@@ -398,8 +398,8 @@ systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 // Note what is NOT in this script: no certificate, no key, no obfs password.
 // The only secrets are the VLESS uuid and the REALITY private key, and the
 // client never needs the latter.
-func realityBootScript(port int, id *realityIdentity) string {
-	return "#!/bin/bash\nset -e\n" + realityServerSnippet(port, id) + sshHardeningScript(id.SSHPubKey)
+func realityBootScript(port, downMbps int, id *realityIdentity) string {
+	return "#!/bin/bash\nset -e\n" + realityServerSnippet(port, downMbps, id) + sshHardeningScript(id.SSHPubKey)
 }
 
 // realityServerSnippet installs and starts the REALITY server, with no shebang
@@ -417,7 +417,7 @@ func realityBootScript(port int, id *realityIdentity) string {
 // one sing-box carrying both inbounds. That keeps the hysteria2 leg — the one
 // carrying traffic almost all the time — byte-identical to what it was, so
 // adding the standby cannot regress it.
-func realityServerSnippet(port int, id *realityIdentity) string {
+func realityServerSnippet(port, downMbps int, id *realityIdentity) string {
 	return fmt.Sprintf(`
 # sing-box arrives as a .deb, and on a fresh Ubuntu the first minutes of boot
 # belong to apt-daily/unattended-upgrades, which hold the dpkg frontend lock.
@@ -468,8 +468,9 @@ cat > /etc/sing-box/config.json << 'EOF'
 EOF
 if command -v ufw >/dev/null 2>&1; then ufw allow %d/tcp; fi
 iptables -I INPUT -p tcp --dport %d -j ACCEPT 2>/dev/null || true
+%s
 systemctl enable --now sing-box
 `,
 		port, id.UUID, id.Dest, id.Dest, id.PrivateKey, id.ShortID,
-		port, port)
+		port, port, brutalKeeperSnippet(downMbps))
 }

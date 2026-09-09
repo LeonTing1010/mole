@@ -20,6 +20,12 @@ import "time"
 // what the fallback is for.
 const RealityLegTag = "proxy-reality"
 
+// brutalGiveUp is how many consecutive unconfirmed rate pushes it takes before
+// the REALITY leg is treated as unpaced. Two, not one: the push rides the leg
+// it describes, so a single miss is as likely to be the blip the fallback
+// exists to survive as it is a missing kernel module.
+const brutalGiveUp = 2
+
 const (
 	// fallbackEnterFails is how many consecutive in-tunnel keepalive failures —
 	// with the out-of-tunnel probe still answering — hand traffic from REALITY

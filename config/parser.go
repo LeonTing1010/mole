@@ -185,11 +185,65 @@ func BuildWithStandby(serverURI, standbyURI string) (*SingboxConfig, error) {
 	// DNS queries to our direct resolvers must bypass hijack-dns so that
 	// mole's own CLI commands (status, etc.) can resolve foreign domains
 	// without getting fake-IP (198.18.x.x) answers from the TUN DNS.
+	// Outbounds are built up here rather than at the struct literal because two
+	// things below need to know whether a REALITY leg actually materialized: a
+	// route rule naming an outbound that does not exist is a config sing-box
+	// refuses to start on, and the Brutal keeper's forwarder is pointless
+	// without the leg it paces.
+	proxyOutbounds := buildProxyOutbounds(serverURI, standbyURI, outbound)
+	hasReality := false
+	for _, o := range proxyOutbounds {
+		if o.Tag == core.RealityLegTag {
+			hasReality = true
+			break
+		}
+	}
+
+	inbounds := []InboundConfig{
+		{
+			Type:        "tun",
+			Tag:         "tun-in",
+			Address:     []string{"172.19.0.1/28"},
+			MTU:         9000,
+			AutoRoute:   true,
+			StrictRoute: true,
+			Stack:       "gvisor",
+		},
+		{
+			Type:       "direct",
+			Tag:        "dns-in",
+			Listen:     "172.19.0.1",
+			ListenPort: 53,
+		},
+	}
+	if hasReality {
+		// A fixed forwarder onto the node's loopback Brutal keeper. Same port
+		// both ends, so the address reads the same on either side of the leg.
+		inbounds = append(inbounds, InboundConfig{
+			Type:            "direct",
+			Tag:             core.BrutalInboundTag,
+			Listen:          "127.0.0.1",
+			ListenPort:      core.BrutalKeeperPort,
+			OverrideAddress: "127.0.0.1",
+			OverridePort:    core.BrutalKeeperPort,
+		})
+	}
+
 	baseRules := []RouteRule{
 		{Action: "sniff"},
 		{Protocol: "dns", IPCIDR: []string{"223.5.5.5/32", "1.1.1.1/32"}, Outbound: "direct"},
 		{Protocol: "dns", Action: "hijack-dns"},
 		{Protocol: "quic", Action: "reject"},
+	}
+	// The Brutal keeper's channel, when there is a REALITY leg to pace. It has
+	// to sit here, ahead of the systemRules below, because those send
+	// 127.0.0.0/8 straight out `direct` — and the whole point of this one is
+	// that a loopback address gets resolved on the far side of the leg.
+	if hasReality {
+		baseRules = append(baseRules, RouteRule{
+			Inbound:  []string{core.BrutalInboundTag},
+			Outbound: core.RealityLegTag,
+		})
 	}
 
 	// System rules: private IPs, DNS resolvers, geoip-cn, catch-all.
@@ -260,27 +314,10 @@ func BuildWithStandby(serverURI, standbyURI string) (*SingboxConfig, error) {
 	ruleSets = append(ruleSets, hotDecls...)
 
 	return &SingboxConfig{
-		Log: LogConfig{Level: "warn"},
-		DNS: DNSConfig{Servers: dnsServers, Rules: dnsRules, Final: "dns-remote", Strategy: "ipv4_only", IndependentCache: true},
-		Inbounds: []InboundConfig{
-			{
-				Type:        "tun",
-				Tag:         "tun-in",
-				Address:     []string{"172.19.0.1/28"},
-				MTU:         9000,
-				AutoRoute:   true,
-				StrictRoute: true,
-				Stack:       "gvisor",
-			},
-			{
-				Type:       "direct",
-				Tag:        "dns-in",
-				Listen:     "172.19.0.1",
-				ListenPort: 53,
-			},
-		},
-		Outbounds: append(buildProxyOutbounds(serverURI, standbyURI, outbound),
-			OutboundConfig{Type: "direct", Tag: "direct"}),
+		Log:       LogConfig{Level: "warn"},
+		DNS:       DNSConfig{Servers: dnsServers, Rules: dnsRules, Final: "dns-remote", Strategy: "ipv4_only", IndependentCache: true},
+		Inbounds:  inbounds,
+		Outbounds: append(proxyOutbounds, OutboundConfig{Type: "direct", Tag: "direct"}),
 		Route: RouteConfig{
 			Rules:               routeRules,
 			RuleSet:             ruleSets,
@@ -356,13 +393,7 @@ func buildProxyOutbounds(serverURI, standbyURI string, outbound *OutboundConfig)
 			Type: "selector", Tag: core.ProxySelectorTag,
 			Outbounds: members, Default: def,
 		}
-		// A/B arms are appended OUTSIDE the members list on purpose. They are
-		// materialized so the Clash API can delay-probe them — an outbound that
-		// belongs to no selector is still probeable, which is what makes a
-		// probe-only arm possible at all — and kept out of the selector so no
-		// user traffic can ever be routed through an experimental port. An arm
-		// that carried real requests would change the thing it is measuring.
-		return append(out, experimentArms(outbound)...)
+		return out
 	}
 	if outbound.Type != "hysteria2" {
 		if standby == nil {
@@ -864,32 +895,4 @@ func parsePortRange(s string) (lo, hi int, ok bool) {
 		return 0, 0, false
 	}
 	return lo, hi, true
-}
-
-// experimentArms materializes the declared A/B arms as probe-only outbounds.
-//
-// Each arm is the LIVE outbound with at most a port or host overridden, so
-// everything else — the Brutal ceiling, obfs, the pinned certificate, the
-// password — is identical between arms and cancels out of the comparison.
-// Copying rather than re-parsing is the point: a hand-built arm would drift
-// from the real outbound the first time anything else about the tunnel changed,
-// and then the experiment would be measuring the drift.
-func experimentArms(base *OutboundConfig) []OutboundConfig {
-	e := utils.ReadExperiment()
-	if e == nil || base.Type != "hysteria2" {
-		return nil
-	}
-	arms := make([]OutboundConfig, 0, len(e.Arms))
-	for _, a := range e.Arms {
-		arm := *base
-		arm.Tag = core.ExperimentArmTag(a.Name)
-		if a.Port > 0 {
-			arm.ServerPort = a.Port
-		}
-		if a.Server != "" {
-			arm.Server = a.Server
-		}
-		arms = append(arms, arm)
-	}
-	return arms
 }

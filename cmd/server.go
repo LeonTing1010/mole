@@ -507,7 +507,7 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return fmt.Errorf("deploy: generate reality identity: %w", err)
 		}
-		script = realityBootScript(port, id)
+		script = realityBootScript(port, srv.DownMbps, id)
 		srv.UUID = id.UUID
 		srv.RealityPubKey = id.PublicKey
 		srv.RealityShortID = id.ShortID
@@ -543,7 +543,7 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 			// that aborted over the spare would leave none.
 			fmt.Printf("⚠️  Standby REALITY leg skipped: %v (the hysteria2 leg is unaffected)\n", err)
 		} else {
-			script += realityServerSnippet(port, rid)
+			script += realityServerSnippet(port, srv.DownMbps, rid)
 			srv.UUID = rid.UUID
 			srv.RealityPubKey = rid.PublicKey
 			srv.RealityShortID = rid.ShortID

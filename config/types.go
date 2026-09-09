@@ -63,6 +63,17 @@ type InboundConfig struct {
 	Stack       string   `json:"stack,omitempty"`
 	Listen      string   `json:"listen,omitempty"`
 	ListenPort  int      `json:"listen_port,omitempty"`
+	// OverrideAddress/OverridePort turn a `direct` inbound into a fixed
+	// forwarder: everything accepted on Listen:ListenPort is sent to
+	// OverrideAddress:OverridePort through whatever outbound the route picks.
+	// That is how the client reaches the node's loopback-only Brutal keeper —
+	// a destination of 127.0.0.1 is meaningless to name from here, because the
+	// TUN never captures loopback, so the address is written on the node's side
+	// of the leg instead. A fixed forwarder rather than a socks/mixed inbound
+	// on purpose: it can reach exactly one address, so no other local process
+	// can borrow it as a general proxy into the tunnel.
+	OverrideAddress string `json:"override_address,omitempty"`
+	OverridePort    int    `json:"override_port,omitempty"`
 }
 
 type OutboundConfig struct {
@@ -183,6 +194,11 @@ type RouteRule struct {
 	// matcher kinds within one rule, so mixing them matches neither alone.
 	DomainKeyword []string `json:"domain_keyword,omitempty"`
 	RuleSet       []string `json:"rule_set,omitempty"`
-	Invert        bool     `json:"invert,omitempty"`
-	Outbound      string   `json:"outbound,omitempty"`
+	// Inbound pins a rule to traffic that arrived on one named inbound,
+	// regardless of where it is going. Used to bind the Brutal keeper's
+	// forwarder to the REALITY leg specifically: the rate has to travel over
+	// the very leg it describes, whichever leg the selector is carrying.
+	Inbound  []string `json:"inbound,omitempty"`
+	Invert   bool     `json:"invert,omitempty"`
+	Outbound string   `json:"outbound,omitempty"`
 }

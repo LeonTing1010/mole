@@ -158,7 +158,7 @@ func runRepair(_ *cobra.Command, args []string) error {
 	}
 
 	fmt.Println("   reinstalling sing-box and re-enabling both units...")
-	out, err = ssh(repairScript(configBlock))
+	out, err = ssh(repairScript(configBlock, srv.DownMbps))
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		if line != "" {
 			fmt.Println("   | " + line)
@@ -188,7 +188,7 @@ func runRepair(_ *cobra.Command, args []string) error {
 // non-interactive stdin leaves the package half-configured with no service
 // user — the 217/USER failure seen 2026-09-05), and the postinst finished
 // before the unit is started.
-func repairScript(configBlock string) string {
+func repairScript(configBlock string, downMbps int) string {
 	return `set -e
 export DEBIAN_FRONTEND=noninteractive
 for i in $(seq 1 90); do
@@ -217,13 +217,16 @@ systemctl enable --now hysteria-server >/dev/null 2>&1 || true
 sleep 2
 echo "sing-box: $(systemctl is-active sing-box)   hysteria-server: $(systemctl is-active hysteria-server)"
 ss -lntup 2>/dev/null | grep -E ':443 ' | awk '{print $1, $5, $7}'
+set +e
+` + brutalKeeperSnippet(downMbps) + `
+echo "brutal: module $(lsmod | grep -q '^brutal' && echo loaded || echo MISSING)   keeper: $(systemctl is-active mole-brutal-keeper)"
 `
 }
 
 // realityConfigSnippet renders just the config-file part of the REALITY
 // server install, for a node whose config is gone.
 func realityConfigSnippet(port int, id *realityIdentity) string {
-	full := realityServerSnippet(port, id)
+	full := realityServerSnippet(port, 0, id)
 	start := strings.Index(full, "mkdir -p /etc/sing-box")
 	end := strings.Index(full, "if command -v ufw")
 	if start < 0 || end < 0 || end < start {

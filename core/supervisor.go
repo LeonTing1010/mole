@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/LeonTing1010/mole/utils"
@@ -93,10 +94,17 @@ type Supervisor struct {
 	// cannot be the primary, and every failover check below short-circuits.
 	// fallbackMu guards the policy value and, like kickMu, is never taken
 	// while stateMu is held.
-	hasReality  bool
-	realityAddr string
-	fallbackMu  sync.Mutex
-	fallback    fallbackState
+	hasReality bool
+	// brutalUnpaced is set when the node will not confirm it is pacing its TCP
+	// toward this client. REALITY without Brutal is not a slower leg, it is a
+	// broken one — 0.15–0.48 Mbps against the ladder's 38–65 on 2026-09-09 —
+	// so this also blocks the return to primary, or the ten-minute re-push
+	// would hand traffic back to an unpaced leg and take it away again for as
+	// long as the module stayed missing.
+	brutalUnpaced atomic.Bool
+	realityAddr   string
+	fallbackMu    sync.Mutex
+	fallback      fallbackState
 
 	// legTest rate-limits the comparative leg test in considerLegFailover.
 	// The fresh-dial latch can stay set for an hour; without this the test
@@ -302,12 +310,6 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	if sleepOn {
 		n++
 	}
-	// +1 = the paired A/B sampler, only while an experiment is declared. Its
-	// absence costs nothing and its presence costs two delay probes per beat.
-	experimentOn := utils.ReadExperiment() != nil
-	if experimentOn {
-		n++
-	}
 	wg.Add(n)
 
 	// Goroutine A: keep sing-box alive.
@@ -368,15 +370,6 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			defer wg.Done()
 			defer recoverPanic("bandwidth-scheduler")
 			s.runBandwidthScheduler(ctx)
-		}()
-	}
-
-	// Goroutine D2 (optional): the paired A/B sampler. See runExperiment.
-	if experimentOn {
-		go func() {
-			defer wg.Done()
-			defer recoverPanic("experiment")
-			s.runExperiment(ctx)
 		}()
 	}
 
@@ -971,7 +964,7 @@ func (s *Supervisor) dialOnce() {
 	_ = utils.WriteState(s.stateSnapshotLocked())
 	s.stateMu.Unlock()
 
-	if slow && probeAlive {
+	if legGateOpen(slow, probeAlive, s.hasReality) {
 		s.considerLegFailover()
 	}
 }
@@ -1283,6 +1276,13 @@ func (s *Supervisor) tryReturnToPrimary() {
 	if s.linkBad() {
 		return
 	}
+	// Not while the node will not confirm it is pacing. A leg that dials
+	// perfectly and then carries 0.4 Mbps passes every test here — dialling is
+	// exactly what stays healthy when Brutal is missing — so the one signal
+	// that separates them has to be consulted before the handback, not after.
+	if s.brutalUnpaced.Load() {
+		return
+	}
 	s.fallbackMu.Lock()
 	due := s.fallback.dueBack(time.Now())
 	s.fallbackMu.Unlock()
@@ -1417,8 +1417,10 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 	}
 
 	applied := ""
-	warnedPin := 0 // last bad pin we complained about, so we complain once per value
-	backoff := 0   // rungs currently stepped down below the clock/pin target
+	pushedRate, pushedAt := 0, time.Time{} // the TCP Brutal rate last CONFIRMED by the node's keeper
+	unconfirmed := 0                       // consecutive pushes the keeper would not confirm
+	warnedPin := 0                         // last bad pin we complained about, so we complain once per value
+	backoff := 0                           // rungs currently stepped down below the clock/pin target
 	var heal healState
 	apply := func() {
 		now := time.Now()
@@ -1488,7 +1490,7 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 			if s.onFallback() {
 				s.releaseFallback("pinned to reality by `mole leg`")
 			}
-			member, name, down = RealityLegTag, "leg-reality", 0
+			member, name = RealityLegTag, "leg-reality"
 		case utils.LegHy2:
 			if s.onFallback() {
 				s.releaseFallback("pinned to hy2 by `mole leg`")
@@ -1502,8 +1504,40 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 				if s.onFallback() {
 					name = "fallback-hy2/" + name
 				} else {
-					member, name, down = RealityLegTag, "reality", 0
+					member, name = RealityLegTag, "reality/"+name
 				}
+			}
+		}
+		// `down` is kept whichever leg carries traffic: since 2026-09-06 the
+		// node paces its TCP toward this client at the same rung (TCP Brutal,
+		// see cmd/brutal.go), so the ceiling governs REALITY too. Push it
+		// through the REALITY leg on change, and every ten minutes regardless
+		// in case the keeper or the node restarted — a GET through a named
+		// outbound is what the delay probe already is, one fresh connection.
+		if s.hasReality && down > 0 && (down != pushedRate || time.Since(pushedAt) > 10*time.Minute) {
+			res, err := PushBrutalRate(down, s.probeTimeMs)
+			switch {
+			case err != nil:
+				unconfirmed++
+				if down != pushedRate || unconfirmed == brutalGiveUp {
+					log.Printf("brutal: no answer from the node's keeper for ↓%d Mbps (%v) — REALITY is unpaced", down, err)
+				}
+			case res.Applied == 0:
+				unconfirmed++
+				log.Printf("brutal: the node heard ↓%d Mbps and did not apply it (%s; %d peer(s)) — REALITY is unpaced",
+					down, res.Detail, res.Peers)
+			default:
+				if down != pushedRate || s.brutalUnpaced.Load() {
+					log.Printf("brutal: node paces TCP toward this client at ↓%d Mbps (%d of %d peer(s))",
+						down, res.Applied, res.Peers)
+				}
+				pushedRate, pushedAt, unconfirmed = down, time.Now(), 0
+				s.brutalUnpaced.Store(false)
+			}
+			if unconfirmed >= brutalGiveUp {
+				s.brutalUnpaced.Store(true)
+				s.enterFallback(fmt.Sprintf("the node would not confirm ↓%d Mbps for the REALITY leg %d times running, so TCP/443 is running unpaced",
+					down, unconfirmed))
 			}
 		}
 		// Compare against what the selector is *actually* pointing at, not against
@@ -1768,61 +1802,4 @@ func closedChan() <-chan struct{} {
 	c := make(chan struct{})
 	close(c)
 	return c
-}
-
-// experimentInterval is how often each arm is sampled. Two arms at 20s is six
-// probes a minute through the tunnel — small next to the keepalive's own two,
-// and the cadence is what decides how long an answer takes: at 90 samples per
-// arm, a full window is half an hour.
-const experimentInterval = 20 * time.Second
-
-// runExperiment drives the paired A/B sampler.
-//
-// One beat probes EVERY arm, back to back, in shuffled order. That pairing is
-// the entire design. This tunnel's failure is intermittent at a scale that
-// swamps sequential trials — 73% of one afternoon and 0% of another day, same
-// node, same route — so an arm measured on Tuesday and an arm measured on
-// Wednesday cannot be compared at all, and every previous verdict on this
-// tunnel (port hopping, obfs) was reached exactly that way. Sampling both arms
-// in the same seconds makes the episode common-mode: whatever the path is doing
-// it is doing to both, and what survives the subtraction is the variable.
-//
-// Probes are sequential rather than concurrent for the same reason the two
-// keepalive arms are: two requests racing through one tunnel measure each other.
-//
-// The sampler never touches the selector, never fails over and never changes a
-// ceiling. It is an instrument, and an instrument that steers is one that
-// cannot be trusted about what it steered.
-func (s *Supervisor) runExperiment(ctx context.Context) {
-	if err := s.waitClashReady(ctx, 10*time.Second); err != nil {
-		log.Printf("experiment: Clash API never came up (%v) — not sampling", err)
-		return
-	}
-	e := utils.ReadExperiment()
-	if e == nil {
-		return
-	}
-	log.Printf("experiment %q: sampling %d arms every %s (%s)", e.Name, len(e.Arms), experimentInterval, e.Note)
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	t := time.NewTicker(experimentInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-s.stopCh:
-			return
-		case <-t.C:
-		}
-		for _, i := range armOrder(len(e.Arms), r) {
-			arm := &e.Arms[i]
-			ms, err := s.clash.TestDelay(ExperimentArmTag(arm.Name), s.probeURL, s.probeTimeMs)
-			arm.Record(ms, err)
-		}
-		// Checkpointed every beat so an evening of samples survives the restart
-		// that any of these experiments is eventually going to involve.
-		if err := utils.WriteExperiment(e); err != nil {
-			log.Printf("experiment: could not persist samples: %v", err)
-		}
-	}
 }

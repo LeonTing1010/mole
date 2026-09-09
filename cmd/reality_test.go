@@ -114,7 +114,7 @@ func TestRealityBootScriptCarriesIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := realityBootScript(8443, id)
+	script := realityBootScript(8443, 100, id)
 	for _, want := range []string{
 		id.PrivateKey, id.UUID, id.ShortID,
 		`"listen_port": 8443`,
@@ -234,7 +234,7 @@ func TestRealityServerSnippetComposesOntoAHy2Script(t *testing.T) {
 		UUID: "u", PrivateKey: "priv", PublicKey: "pub",
 		ShortID: "aabbccdd", Dest: "www.apple.com",
 	}
-	snip := realityServerSnippet(443, rid)
+	snip := realityServerSnippet(443, 100, rid)
 	if strings.Contains(snip, "#!/bin/bash") || strings.Contains(snip, "set -e") {
 		t.Fatal("snippet carries a shebang or set -e; it cannot be appended")
 	}
@@ -244,8 +244,31 @@ func TestRealityServerSnippetComposesOntoAHy2Script(t *testing.T) {
 		}
 	}
 	// And the standalone script must still be a valid script on its own.
-	full := realityBootScript(443, rid)
+	full := realityBootScript(443, 100, rid)
 	if !strings.HasPrefix(full, "#!/bin/bash\nset -e\n") {
 		t.Errorf("standalone reality boot script lost its header: %.40q", full)
+	}
+}
+
+// Every node that carries the REALITY leg gets the Brutal keeper, at the
+// server's ceiling as the default rate, in both the boot script and the
+// repair script; and the config-only snippet the repair extracts must not
+// carry it (it is appended separately there).
+func TestBrutalKeeperShipsWithTheRealityLeg(t *testing.T) {
+	rid := &realityIdentity{UUID: "u", PrivateKey: "priv", PublicKey: "pub", ShortID: "aabbccdd", Dest: "www.apple.com"}
+	for name, script := range map[string]string{
+		"boot":   realityServerSnippet(443, 80, rid),
+		"repair": repairScript("", 80),
+	} {
+		// The port is asserted through its default so the check still proves
+		// the constant was interpolated, not merely that the word PORT appears.
+		for _, want := range []string{"echo 80 > /etc/mole-brutal-rate", "mole-brutal-keeper.service", "tcp.hy2.sh", `MOLE_BRUTAL_PORT", 8098`} {
+			if !strings.Contains(script, want) {
+				t.Errorf("%s script missing %q", name, want)
+			}
+		}
+	}
+	if strings.Contains(realityConfigSnippet(443, rid), "brutal") {
+		t.Error("the config-only snippet must not carry the keeper install")
 	}
 }

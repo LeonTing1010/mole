@@ -91,3 +91,21 @@ func TestLegTestDueAllowsTheFirstTest(t *testing.T) {
 		t.Error("the first comparative test must not be rate-limited by a zero timestamp")
 	}
 }
+
+// The gate to the comparative test. A silent UDP probe must not hold it shut
+// when there is a second leg to ask — the outage that taught this had the
+// probe silent for its whole length (2026-09-06 22:15–22:19).
+func TestLegGateOpensOnASilentProbeWhenThereIsALegToTest(t *testing.T) {
+	if !legGateOpen(true, false, true) {
+		t.Error("new connections failing, probe silent, REALITY present: the idle leg's dial is the proof — test")
+	}
+	if legGateOpen(true, false, false) {
+		t.Error("single-leg node with a silent probe: nothing to test against, hold")
+	}
+	if legGateOpen(false, true, true) {
+		t.Error("nothing failing: no test")
+	}
+	if !legGateOpen(true, true, false) {
+		t.Error("probe alive still opens the gate on its own")
+	}
+}

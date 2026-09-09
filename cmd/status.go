@@ -151,7 +151,7 @@ func printSupervisorState() {
 		case onStandby && utils.ReadLeg() == utils.LegReality:
 			fmt.Println("   Profile: 📌 leg pinned — VLESS+REALITY over TCP/443 (fallback to hy2 disarmed; \"mole leg auto\" to release)")
 		case onStandby:
-			fmt.Println("   Profile: VLESS+REALITY over TCP/443 (primary; hy2 ladder on standby, no Brutal ceiling applies)")
+			fmt.Printf("   Profile: VLESS+REALITY over TCP/443, Brutal ↓%d Mbps (primary; hy2 ladder on standby)\n", st.BandwidthDownMbps)
 		case strings.HasPrefix(st.BandwidthProfile, "fallback-hy2/") && st.RealityServerDown != "":
 			// Not "measured dark": the node itself refused the port. Waiting
 			// will not fix this and the line should not suggest it might.

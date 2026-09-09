@@ -20,9 +20,11 @@ switching costs one Clash-API call: no reconnect, no rebuilt TUN, no dropped
 connections. What differs is the protocol underneath.
 
   reality   VLESS+REALITY over TCP/443. The PRIMARY leg. Looks like ordinary
-            HTTPS to the path, has never been seen throttled, needs no ceiling
-            tuning, and on a clean path measures the same as hy2's top rung
-            (73-89 Mbps down, 34 up on 2026-09-04).
+            HTTPS to the path, has never been seen throttled, and since
+            2026-09-06 the node paces it with TCP Brutal at the ceiling rung,
+            so it holds its rate through loss the way hy2 does (paired 8 MB
+            samples on a 5%-loss evening: Brutal 24 Mbps median / 13 floor
+            against BBR's 19 / 3.5).
   hy2       hysteria2 over UDP/443, the Brutal ceiling ladder. The FALLBACK:
             what mole moves to when REALITY is measured dark, and the one leg
             that holds its rate through loss. Also the leg the path's UDP QoS
