@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
@@ -15,11 +16,30 @@ import (
 	"github.com/LeonTing1010/mole/utils"
 )
 
-// ipBoundIf is darwin's IP_BOUND_IF (netinet/in.h). Setting it scopes the
-// socket to one interface, bypassing the routing table — the same mechanism
-// sing-box's auto_detect_interface uses to keep its own packets out of the
-// TUN it created.
-const ipBoundIf = 25
+// ipBoundIf is darwin's IP_BOUND_IF (netinet/in.h:432). IPv4-only.
+// ip6BoundIf is darwin's IPV6_BOUND_IF (netinet6/in6.h:506). 125, not 25.
+// Setting either scopes the socket to one interface, bypassing the routing
+// table — the same mechanism sing-box's auto_detect_interface uses to keep
+// its own packets out of the TUN it created. Using the IPv4 constant on an
+// IPv6 socket (or vice versa) yields EINVAL "invalid argument" from dial.
+const (
+	ipBoundIf  = 25
+	ip6BoundIf = 125
+)
+
+// networkFor returns the correct "udp4"/"udp6" or "tcp4"/"tcp6" network
+// string for a host:port address. Addresses with brackets are IPv6;
+// bare host:port with a colon that isn't bracketed is also IPv6.
+func networkFor(addr, base string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return base + "4"
+	}
+	if strings.Contains(host, ":") {
+		return base + "6"
+	}
+	return base + "4"
+}
 
 // ProbeHy2UDP checks whether the hy2/QUIC server at addr is reachable over
 // UDP, from OUTSIDE the tunnel.
@@ -53,31 +73,47 @@ const ipBoundIf = 25
 // surfacing of ICMP port unreachable) → ProbeRefused; deadline → ProbeSilent;
 // anything preventing the probe from running → ProbeError.
 func ProbeHy2UDP(addr, obfsPassword string, timeout time.Duration) (time.Duration, utils.ProbeVerdict, error) {
+	return ProbeHy2UDPContext(context.Background(), addr, obfsPassword, timeout)
+}
+
+func ProbeHy2UDPContext(ctx context.Context, addr, obfsPassword string, timeout time.Duration) (time.Duration, utils.ProbeVerdict, error) {
 	ifi, err := utils.DefaultPhysicalInterface()
 	if err != nil {
 		// Not ProbeError: this is the local uplink being gone, which says
 		// nothing about the VPS or the path. See utils.ProbeNoLink.
 		return 0, utils.ProbeNoLink, fmt.Errorf("no physical interface for direct probe: %w", err)
 	}
+	network := networkFor(addr, "udp")
+	optLevel := syscall.IPPROTO_IP
+	optName := ipBoundIf
+	if strings.HasSuffix(network, "6") {
+		optLevel = syscall.IPPROTO_IPV6
+		optName = ip6BoundIf
+	}
 	d := net.Dialer{
 		Timeout: timeout,
 		Control: func(network, address string, c syscall.RawConn) error {
 			var serr error
 			if cerr := c.Control(func(fd uintptr) {
-				serr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IP, ipBoundIf, ifi.Index)
+				serr = syscall.SetsockoptInt(int(fd), optLevel, optName, ifi.Index)
 			}); cerr != nil {
 				return cerr
 			}
 			return serr
 		},
 	}
-	conn, err := d.Dial("udp4", addr)
+	conn, err := d.DialContext(ctx, network, addr)
 	if err != nil {
 		return 0, utils.ProbeError, fmt.Errorf("dial via %s: %w", ifi.Name, err)
 	}
 	defer conn.Close()
-
-	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+	deadline := time.Now().Add(timeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
 		return 0, utils.ProbeError, err
 	}
 	start := time.Now()
@@ -158,4 +194,64 @@ func salamanderObfuscate(pkt []byte, password string) []byte {
 func isRefused(err error) bool {
 	return errors.Is(err, syscall.ECONNREFUSED) ||
 		(err != nil && strings.Contains(err.Error(), "connection refused"))
+}
+
+// ProbeTCP checks whether something is listening at addr (a REALITY leg on
+// TCP/443), from OUTSIDE the tunnel — the same interface binding as
+// ProbeHy2UDP, for the same reason: an unbound dial rides the TUN and measures
+// the tunnel instead of the node.
+//
+// What it separates is the pair the Clash delay test collapses into one "503":
+// a SYN answered with RST within one RTT (ProbeRefused — the node is up and
+// the server is not listening) from a SYN answered by nothing (ProbeSilent —
+// the path or the firewall). On 2026-09-05 the node had been refusing TCP/443
+// for seventeen hours because sing-box never installed, and every re-test said
+// "still will not dial" as if it were waiting on the path. Refused is not a
+// waiting kind of failure; it is an instruction to repair the node.
+//
+// The connection is closed the moment it opens. No TLS, no REALITY handshake —
+// the question is whether the port answers, and a full handshake is what the
+// keepalive is for.
+func ProbeTCP(addr string, timeout time.Duration) (time.Duration, utils.ProbeVerdict, error) {
+	return ProbeTCPContext(context.Background(), addr, timeout)
+}
+
+func ProbeTCPContext(ctx context.Context, addr string, timeout time.Duration) (time.Duration, utils.ProbeVerdict, error) {
+	ifi, err := utils.DefaultPhysicalInterface()
+	if err != nil {
+		return 0, utils.ProbeNoLink, fmt.Errorf("no physical interface for direct probe: %w", err)
+	}
+	network := networkFor(addr, "tcp")
+	optLevel := syscall.IPPROTO_IP
+	optName := ipBoundIf
+	if strings.HasSuffix(network, "6") {
+		optLevel = syscall.IPPROTO_IPV6
+		optName = ip6BoundIf
+	}
+	d := net.Dialer{
+		Timeout: timeout,
+		Control: func(network, address string, c syscall.RawConn) error {
+			var serr error
+			if cerr := c.Control(func(fd uintptr) {
+				serr = syscall.SetsockoptInt(int(fd), optLevel, optName, ifi.Index)
+			}); cerr != nil {
+				return cerr
+			}
+			return serr
+		},
+	}
+	start := time.Now()
+	conn, err := d.DialContext(ctx, network, addr)
+	if err == nil {
+		conn.Close()
+		return time.Since(start), utils.ProbeAlive, nil
+	}
+	if isRefused(err) {
+		return time.Since(start), utils.ProbeRefused, fmt.Errorf("dial via %s: %w", ifi.Name, err)
+	}
+	var nerr net.Error
+	if errors.As(err, &nerr) && nerr.Timeout() {
+		return 0, utils.ProbeSilent, fmt.Errorf("no SYN-ACK within %s", timeout)
+	}
+	return 0, utils.ProbeError, fmt.Errorf("dial via %s: %w", ifi.Name, err)
 }

@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"os"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -27,32 +29,28 @@ import (
 // installed is decided by the protocol it will speak and by identity material
 // that is minted on this machine — neither of which this function should have
 // an opinion about.
-func deployViaVultr(name, region, plan, script string) (instanceID string, err error) {
-	key := strings.TrimSpace(os.Getenv("VULTR_API_KEY"))
-	if key == "" {
-		return "", fmt.Errorf("VULTR_API_KEY is not set")
-	}
-
-	scriptResp, err := serverAPIWithin(60*time.Second, "POST", "/startup-scripts", map[string]any{
-		"name":   name,
-		"type":   "boot",
-		"script": base64.StdEncoding.EncodeToString([]byte(script)),
-	})
-	if err != nil {
-		return "", fmt.Errorf("create startup script: %w", err)
-	}
-	var created struct {
-		StartupScript struct {
-			ID string `json:"id"`
-		} `json:"startup_script"`
-	}
-	if err := json.Unmarshal(scriptResp, &created); err != nil {
+func deployViaVultr(name, region, plan, script string, session *deploySession, ctx context.Context) (instanceID string, err error) {
+	// Same key resolution as every other server command: the environment first,
+	// then the file the daemon reads. Deploy used to look only at the
+	// environment, so `mole server destroy` worked while `mole server deploy`
+	// demanded an export of a key the machine already held.
+	if _, err := vultrKey(); err != nil {
 		return "", err
 	}
-	if created.StartupScript.ID == "" {
-		return "", fmt.Errorf("Vultr returned no startup-script id")
+
+	if err = session.stage("creating_startup_script", nil); err != nil {
+		return "", err
+	}
+	scriptID, err := createStartupScript(name+"-"+session.record.ID, script)
+	if err != nil {
+		_ = session.stage("startup_script_unconfirmed", err)
+		return "", fmt.Errorf("create startup script: %w", err)
 	}
 
+	session.record.ScriptID = scriptID
+	if err = session.stage("preparing_firewall", nil); err != nil {
+		return "", err
+	}
 	// Attach the firewall at creation time. Applying it afterwards leaves a
 	// window where the node boots with every port open to the internet, and a
 	// hardening step that has to be remembered separately is one that will
@@ -68,16 +66,23 @@ func deployViaVultr(name, region, plan, script string) (instanceID string, err e
 		"plan":        plan,
 		"os_id":       2284, // Ubuntu 24.04
 		"label":       name,
-		"script_id":   created.StartupScript.ID,
+		"script_id":   scriptID,
 		"backups":     "disabled",
 		"enable_ipv6": true,
 	}
 	if fwID != "" {
 		body["firewall_group_id"] = fwID
 	}
+	if err = ctx.Err(); err != nil {
+		return "", err
+	}
+	if err = session.stage("creating_instance", nil); err != nil {
+		return "", err
+	}
 	instResp, err := serverAPIWithin(60*time.Second, "POST", "/instances", body)
 	if err != nil {
-		return "", fmt.Errorf("create instance: %w", err)
+		_ = session.stage("instance_creation_unconfirmed", err)
+		return "", fmt.Errorf("create instance outcome unconfirmed; inspect deployment %s before creating again: %w", session.record.ID, err)
 	}
 	var inst struct {
 		Instance struct {
@@ -85,12 +90,155 @@ func deployViaVultr(name, region, plan, script string) (instanceID string, err e
 		} `json:"instance"`
 	}
 	if err := json.Unmarshal(instResp, &inst); err != nil {
+		_ = session.stage("instance_creation_unconfirmed", err)
 		return "", err
 	}
 	if inst.Instance.ID == "" {
-		return "", fmt.Errorf("Vultr returned no instance id")
+		_ = session.stage("instance_creation_unconfirmed", fmt.Errorf("missing instance ID"))
+		return "", fmt.Errorf("Vultr returned no instance id; creation outcome unknown")
 	}
 	return inst.Instance.ID, nil
+}
+
+// createStartupScript retries a script creation only after a complete lookup.
+// Reuse additionally requires identical content: a name is not an identity.
+// Instance creation remains single-shot because an unknown POST can bill.
+func createStartupScript(name, script string) (string, error) {
+	payload := map[string]any{
+		"name":   name,
+		"type":   "boot",
+		"script": base64.StdEncoding.EncodeToString([]byte(script)),
+	}
+
+	// Allow a few verify-before-retry rounds. The inner POST call itself is
+	// still single-shot (serverAPIWithin does not retry POST), so each round
+	// is one POST + optional one GET for verification.
+	const maxRounds = 3
+	var lastErr error
+	for round := 1; round <= maxRounds; round++ {
+		resp, err := scriptAPICall(60*time.Second, "POST", "/startup-scripts", payload)
+		if err == nil {
+			var created struct {
+				StartupScript struct {
+					ID string `json:"id"`
+				} `json:"startup_script"`
+			}
+			if err := json.Unmarshal(resp, &created); err != nil {
+				return "", err
+			}
+			if created.StartupScript.ID == "" {
+				return "", fmt.Errorf("Vultr returned no startup-script id")
+			}
+			return created.StartupScript.ID, nil
+		}
+
+		// Only server-side errors are candidates for retry. A 4xx means Vultr
+		// received and rejected the request — repeating it will get the same
+		// answer. Transport errors (timeout, EOF, DNS) are also not retried
+		// here; serverAPIWithin already retries those on its own for idempotent
+		// calls, and we'd be doubling up on the wrong layer.
+		var se *ServerError
+		if !errors.As(err, &se) || se.Status < 500 {
+			return "", fmt.Errorf("create startup script: %w", err)
+		}
+		lastErr = err
+
+		// Before retrying, check whether the script actually got created — a
+		// 502/503/504 can leave the resource in either state.
+		id, found, verr := findStartupScriptByName(name)
+		if verr != nil {
+			return "", fmt.Errorf("startup-script creation outcome unknown; verification failed: %w", verr)
+		}
+		if found {
+			data, err := scriptAPICall(30*time.Second, "GET", "/startup-scripts/"+url.PathEscape(id), nil)
+			if err != nil {
+				return "", fmt.Errorf("startup-script content unverified: %w", err)
+			}
+			var existing struct {
+				StartupScript struct {
+					Script string `json:"script"`
+				} `json:"startup_script"`
+			}
+			if err := json.Unmarshal(data, &existing); err != nil {
+				return "", err
+			}
+			if existing.StartupScript.Script != payload["script"] {
+				return "", fmt.Errorf("startup script %q exists with different content; refusing to reuse its identity", name)
+			}
+			fmt.Printf("Startup script recovered after HTTP %d; identity content verified.\n", se.Status)
+			return id, nil
+		}
+		if round < maxRounds {
+			time.Sleep(time.Duration(round) * 2 * time.Second)
+		}
+	}
+	return "", fmt.Errorf("create startup script: %w (creation not confirmed after complete lookups)", lastErr)
+}
+
+// findStartupScriptByName lists Vultr startup scripts and returns the id of
+// the first one whose name matches, or ("", false, nil) if none exists.
+func findStartupScriptByName(name string) (string, bool, error) {
+	path := "/startup-scripts?per_page=100"
+	seen := map[string]bool{}
+	for path != "" {
+		if seen[path] || len(seen) >= 1000 {
+			return "", false, fmt.Errorf("startup-script pagination did not terminate")
+		}
+		seen[path] = true
+		resp, err := scriptAPICall(30*time.Second, "GET", path, nil)
+		if err != nil {
+			return "", false, err
+		}
+		var wrapper struct {
+			StartupScripts []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"startup_scripts"`
+			Meta struct {
+				Links struct {
+					Next string `json:"next"`
+				} `json:"links"`
+			} `json:"meta"`
+		}
+		if err := json.Unmarshal(resp, &wrapper); err != nil {
+			return "", false, err
+		}
+		for _, script := range wrapper.StartupScripts {
+			if script.Name == name {
+				return script.ID, true, nil
+			}
+		}
+		next := wrapper.Meta.Links.Next
+		if next == "" {
+			break
+		}
+		u, err := url.Parse(next)
+		if err != nil {
+			return "", false, err
+		}
+		if u.Host != "" && u.Host != "api.vultr.com" {
+			return "", false, fmt.Errorf("unexpected pagination origin")
+		}
+		if u.Path == "" {
+			u.Path = "/startup-scripts"
+		}
+		u.Path = strings.TrimPrefix(u.Path, "/v2")
+		if u.Path != "/startup-scripts" {
+			return "", false, fmt.Errorf("unexpected pagination path %q", u.Path)
+		}
+		path = u.RequestURI()
+	}
+	return "", false, nil
+}
+
+// scriptAPICall is the thin wrapper createStartupScript and
+// findStartupScriptByName use to reach Vultr. A var (not a fixed call) so
+// tests can swap it for a plain-http.Client call against a local httptest
+// server — serverAPIWithin's bound-physical-interface client can't reach a
+// loopback address, and every real POST in this file still goes through
+// serverAPIWithin directly.
+var scriptAPICall = func(budget time.Duration, method, path string, body any) ([]byte, error) {
+	return serverAPIWithin(budget, method, path, body)
 }
 
 // moleFirewallGroup is the description used to find (or create) the one
@@ -237,6 +385,16 @@ var (
 // setting for anyone who needs hopping at all.
 const hopIntervalSeconds = 120
 
+// dualBootScript prepares SSH recovery before either independent installer.
+// Both children inherit one absolute deadline and are joined before script exit.
+// Deployment readiness is still determined by external authenticated HTTPS.
+func dualBootScript(password string, port, downMbps int, id *serverIdentity, rid *realityIdentity) string {
+	return "#!/bin/bash\n" + nodeBootPrelude + sshHardeningScript(id.SSHPubKey) +
+		"\n(\n" + hy2ServerSnippet(password, port, id) + "\n) &\nhy2_pid=$!\n" +
+		"(\n" + realityServerSnippet(port, downMbps, rid) + "\n) &\nreality_pid=$!\n" +
+		"wait \"$hy2_pid\" || true\nwait \"$reality_pid\" || true\n"
+}
+
 // hy2BootScript renders the first-boot script for a hysteria2 node carrying a
 // client-minted identity: the certificate the client will pin, and salamander
 // obfuscation keyed to a secret they share.
@@ -251,6 +409,14 @@ const hopIntervalSeconds = 120
 // No masquerade block: under obfuscation no prober ever reaches the HTTP layer
 // to be masqueraded at.
 //
+// The two passwords are quoted YAML scalars, not bare ones. A bare scalar that
+// is nothing but digits resolves as a number: harmless while the password was
+// 32 hex characters, because a 32-digit integer overflows int64 and the parser
+// falls back to a string — but tunnelPassword puts a '.' in it, and the same
+// accident then resolves as a float and arrives on the server as something
+// other than the password the client holds. Quoting removes the coincidence
+// rather than relying on one.
+//
 // SSH is switched to key-only when we have a key to install. Vultr hands out a
 // generated root password through its own API for a window after provisioning,
 // so the account API key is transitively root on every node — and from root,
@@ -258,12 +424,21 @@ const hopIntervalSeconds = 120
 // Installing the key before disabling passwords keeps the order safe; the Vultr
 // web console remains the backstop either way.
 func hy2BootScript(password string, port int, id *serverIdentity) string {
-	sshHardening := sshHardeningScript(id.SSHPubKey)
+	return "#!/bin/bash\n" + nodeBootPrelude + sshHardeningScript(id.SSHPubKey) + hy2ServerSnippet(password, port, id)
+}
 
-	return fmt.Sprintf(`#!/bin/bash
-set -e
-curl -fsSL https://get.hy2.sh/ | bash
-mkdir -p /etc/hysteria
+// hy2ServerSnippet keeps the required leg independent from the optional cleanup.
+func hy2ServerSnippet(password string, port int, id *serverIdentity) string {
+	return fmt.Sprintf(`
+# The hysteria2 segment runs in its own subshell. "set -e" still holds inside
+# it, but a failure now terminates only this segment: the REALITY segment
+# can still run independently, and the node keeps SSH access either way. One
+# broken leg should cost one leg, not the machine.
+(
+%s
+echo "mole stage hy2 installing $(date -Is)"
+mole_install_hy2
+install -d -m 755 /etc/hysteria
 cat > /etc/hysteria/server.crt << 'CERT_EOF'
 %s
 CERT_EOF
@@ -274,17 +449,20 @@ chmod 600 /etc/hysteria/server.key
 chown hysteria:hysteria /etc/hysteria/server.key /etc/hysteria/server.crt 2>/dev/null || true
 cat > /etc/hysteria/config.yaml << 'EOF'
 listen: :%d
+# QUIC packet sizing follows Hysteria defaults; no unsupported top-level MTU key.
 tls:
   cert: /etc/hysteria/server.crt
   key: /etc/hysteria/server.key
 auth:
   type: password
-  password: %s
+  password: "%s"
 obfs:
   type: salamander
   salamander:
-    password: %s
+    password: "%s"
 EOF
+chown root:hysteria /etc/hysteria/config.yaml
+chmod 640 /etc/hysteria/config.yaml
 if command -v ufw >/dev/null 2>&1; then ufw allow %d/udp; ufw allow %d/tcp; ufw allow %s/udp; fi
 iptables -I INPUT -p udp --dport %d -j ACCEPT 2>/dev/null || true
 iptables -I INPUT -p tcp --dport %d -j ACCEPT 2>/dev/null || true
@@ -327,6 +505,21 @@ cat > /etc/sysctl.d/99-mole.conf << 'SYSCTL_EOF'
 # always say so in the log.
 net.core.rmem_max=16777216
 net.core.wmem_max=16777216
+# UDP socket minimums: the kernel default (208KB) is what hy2 sees on the
+# very first packet, before it has a chance to raise rmem/wmem at runtime.
+# Bumping the minimum means QUIC starts at a sane buffer instead of growing
+# through several iterations — no more "slow start clamp" on the first burst.
+# UDP socket minimums: doubled from 4MB → 8MB. A lower initial buffer forces
+# QUIC to grow its window through several slow iterations before it can hold
+# a real burst; with 8MB it starts with enough headroom for one full BBR RTT
+# on the ~107ms Seoul path (BDP at 250Mbps = 3.3MB, so 8MB holds two).
+net.ipv4.udp_rmem_min=8388608
+net.ipv4.udp_wmem_min=8388608
+# High-PPS ceiling: when Brutal floods at 400 Mbps on a ~107ms path, the
+# incoming UDP datagrams can exceed the kernel's default 1000-packet RX queue
+# and get dropped before the socket even sees them. 250k matches what the
+# card drivers expect for a saturated 1Gbps link.
+net.core.netdev_max_backlog=250000
 # The REALITY leg is plain TCP, so its congestion control is the kernel's, and
 # the kernel default (cubic) halves its window on every loss. On a path that
 # shows 5-8%% loss on a bad evening that is the one place TCP loses to Brutal.
@@ -335,10 +528,30 @@ net.core.wmem_max=16777216
 # than the slow standby. fq is the qdisc BBR's pacing expects.
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
+# Small TCP fast-open + TCP timestamp reuse to shave a handshake off every new
+# connection on the REALITY leg — not a throughput win, but it eliminates the
+# 1-RTT cold-start penalty when Brutal hands a stream over to TCP.
+net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_tw_reuse=1
 SYSCTL_EOF
 sysctl -p /etc/sysctl.d/99-mole.conf >/dev/null 2>&1 || true
-systemctl enable --now hysteria-server
-%s`,
+mole_run systemctl enable --now hysteria-server
+mole_run systemctl is-active --quiet hysteria-server
+echo "mole stage hy2 service_active $(date -Is)"
+# Trim Ubuntu cloud-image fat. Every VPS ships with a pile of services that a
+# forwarder never needs — daemons that probe modems, schedule disk IO,
+# subscribe to telemetry, or update packages unattended. Disabling them after
+# the tunnel is up removes ~50MB of steady-state RSS and, more importantly,
+# prevents them from CPU-spiking during apt runs or probe storms that would
+# otherwise steal cycles from hy2. The list is conservative (only services
+# Vultr instances have been observed running) and everything is "|| true" so a
+# missing binary never aborts the boot script.
+mole_run systemctl disable --now snapd snapd.socket snapd.seeded.service unattended-upgrades ModemManager multipathd open-iscsi iscsid apport apport-gather thermald vgauth ubuntu-advantage ua-reboot-cmds pollinate console-setup.service keyboard-setup.service getty@tty1.service sysstat rsyslog cron secureboot-db.service 2>/dev/null || true
+)
+if ! systemctl is-active --quiet hysteria-server 2>/dev/null; then
+  echo "HY2 LEG NOT RUNNING: hysteria-server is not active. SSH access and the REALITY segment are unaffected; run 'mole server repair' to reinstall it." >&2
+fi`,
+		nodeInstallFunctions,
 		strings.TrimSpace(id.CertPEM),
 		strings.TrimSpace(id.KeyPEM),
 		port, password, id.ObfsPassword,
@@ -351,7 +564,7 @@ systemctl enable --now hysteria-server
 		port,
 		hopRangeIPT, port, hopRangeIPT, port,
 		hopRangeIPT, port,
-		sshHardening)
+	)
 }
 
 // sshHardeningScript renders the key-only-root fragment shared by every boot
@@ -398,8 +611,12 @@ systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 // Note what is NOT in this script: no certificate, no key, no obfs password.
 // The only secrets are the VLESS uuid and the REALITY private key, and the
 // client never needs the latter.
-func realityBootScript(port int, id *realityIdentity) string {
-	return "#!/bin/bash\nset -e\n" + realityServerSnippet(port, id) + sshHardeningScript(id.SSHPubKey)
+func realityBootScript(port, downMbps int, id *realityIdentity) string {
+	// Key first, for the same reason hy2BootScript puts it first: a REALITY
+	// install that fails must not also cost the ability to log in and fix it.
+	// The snippet carries its own subshell and "set -e", so this script needs no
+	// top-level one.
+	return "#!/bin/bash\n" + nodeBootPrelude + sshHardeningScript(id.SSHPubKey) + "\n" + realityServerSnippet(port, downMbps, id)
 }
 
 // realityServerSnippet installs and starts the REALITY server, with no shebang
@@ -417,13 +634,58 @@ func realityBootScript(port int, id *realityIdentity) string {
 // one sing-box carrying both inbounds. That keeps the hysteria2 leg — the one
 // carrying traffic almost all the time — byte-identical to what it was, so
 // adding the standby cannot regress it.
-func realityServerSnippet(port int, id *realityIdentity) string {
+//
+// The direct outbound carries a `domain_resolver` pinned to `prefer_ipv6`, and
+// that is the line deciding which address a site sees. The client hands domains
+// across the leg, not addresses — its DNS answers every foreign name with a
+// fakeip and sing-box recovers the real name from the sniffed SNI — so the
+// client's own `ipv4_only` strategy never gets a vote on a dual-stack
+// destination. Measured on the icn node 2026-09-27: an AAAA-only probe exited
+// from the node's own 2401:c080:… while cloudflare.com, which has both records,
+// exited from its 141.164.35.8. Same node, same tunnel, two exit families.
+//
+// Prefer, not promise, and with no safety net under it: an IPv4-only
+// destination still leaves from the node's IPv4, and sing-box dials only the
+// FIRST address the resolver sorted out — it does not walk down the list when
+// that dial fails. So a site publishing a dead AAAA becomes an unreachable site
+// rather than a slower one. Measured 2026-09-27 with a throwaway local sing-box
+// carrying this same outbound, against a host that has both records and a
+// machine whose v6 egress the kill switch refuses: prefer_ipv6 failed every
+// request in 5–15ms (`raw read: connection refused`, no second attempt), while
+// the identical config with prefer_ipv4 returned 200 in 0.46s. The node's own
+// v6 egress is verified working, which is what makes the risk per-destination
+// instead of total.
+//
+// The `dns.servers` entry above exists only so the resolver has a tag to name;
+// `local` is what the node was already resolving with. It is spelled this way
+// rather than as `domain_strategy` on the outbound because that field is a hard
+// FATAL in the sing-box the node installs (deprecated in 1.12, gone in 1.14) —
+// and a config sing-box refuses to start leaves the node with no REALITY leg at
+// all, which is the failure `mole server repair` exists to clean up.
+func realityServerSnippet(port, downMbps int, id *realityIdentity) string {
 	return fmt.Sprintf(`
-curl -fsSL https://sing-box.app/install.sh | sh
-mkdir -p /etc/sing-box
+# sing-box arrives as a .deb, and on a fresh Ubuntu the first minutes of boot
+# belong to apt-daily/unattended-upgrades, which hold the dpkg frontend lock.
+# The icn-1788515745 node (2026-09-04) lost that race: install.sh printed
+# "dpkg frontend lock was locked by another process", the enable failed with
+# "Unit file sing-box.service does not exist", and the node ran for 17 hours
+# with TCP/443 refusing — the REALITY leg had never existed, and every
+# fallback re-test said "still will not dial". So: wait for the lock, retry
+# the install, and only then write the config (writing it first turns the
+# package's own conffile into an interactive prompt that kills dpkg).
+#
+# The subshell isolates this leg. When appended after the hysteria2 segment, a
+# failure here must not abort the rest of the boot script; when it stands alone,
+# the SSH key is already installed. Either way the machine stays reachable.
+(
+%s
+echo "mole stage reality installing $(date -Is)"
+mole_install_singbox
+install -d -m 755 /etc/sing-box
 cat > /etc/sing-box/config.json << 'EOF'
 {
   "log": {"level": "warn"},
+  "dns": {"servers": [{"type": "local", "tag": "local"}]},
   "inbounds": [
     {
       "type": "vless",
@@ -431,6 +693,7 @@ cat > /etc/sing-box/config.json << 'EOF'
       "listen": "::",
       "listen_port": %d,
       "users": [{"uuid": "%s", "flow": "xtls-rprx-vision"}],
+      "multiplex": {"enabled": true},
       "tls": {
         "enabled": true,
         "server_name": "%s",
@@ -443,13 +706,24 @@ cat > /etc/sing-box/config.json << 'EOF'
       }
     }
   ],
-  "outbounds": [{"type": "direct", "tag": "direct"}]
+  "outbounds": [{"type": "direct", "tag": "direct", "domain_resolver": {"server": "local", "strategy": "prefer_ipv6"}}]
 }
 EOF
+chown root:sing-box /etc/sing-box/config.json
+chmod 640 /etc/sing-box/config.json
 if command -v ufw >/dev/null 2>&1; then ufw allow %d/tcp; fi
 iptables -I INPUT -p tcp --dport %d -j ACCEPT 2>/dev/null || true
-systemctl enable --now sing-box
+sing-box check -c /etc/sing-box/config.json
+mole_run systemctl enable --now sing-box
+mole_run systemctl is-active --quiet sing-box
+echo "mole stage reality service_active $(date -Is)"
+%s
+)
+if ! systemctl is-active --quiet sing-box 2>/dev/null; then
+  echo "REALITY LEG NOT RUNNING: sing-box is not active. The hysteria2 leg and SSH access are unaffected; run 'mole server repair' to reinstall it." >&2
+fi
 `,
+		nodeInstallFunctions,
 		port, id.UUID, id.Dest, id.Dest, id.PrivateKey, id.ShortID,
-		port, port)
+		port, port, brutalKeeperSnippet(downMbps))
 }

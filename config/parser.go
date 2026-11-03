@@ -18,6 +18,10 @@ import (
 	"github.com/LeonTing1010/mole/utils"
 )
 
+// ParseOutbound shares URI and TLS-pin validation with the normal client while
+// allowing deployment probes to run without a TUN, DNS changes or selectors.
+func ParseOutbound(uri string) (*OutboundConfig, error) { return parseServerURL(uri) }
+
 // Build assembles a sing-box config from a server URI (vless://, hy2://).
 func Build(serverURI string) (*SingboxConfig, error) {
 	return BuildWithStandby(serverURI, "")
@@ -185,11 +189,108 @@ func BuildWithStandby(serverURI, standbyURI string) (*SingboxConfig, error) {
 	// DNS queries to our direct resolvers must bypass hijack-dns so that
 	// mole's own CLI commands (status, etc.) can resolve foreign domains
 	// without getting fake-IP (198.18.x.x) answers from the TUN DNS.
+	// Outbounds are built up here rather than at the struct literal because two
+	// things below need to know whether a REALITY leg actually materialized: a
+	// route rule naming an outbound that does not exist is a config sing-box
+	// refuses to start on, and the Brutal keeper's forwarder is pointless
+	// without the leg it paces.
+	proxyOutbounds, hy2GateTarget := buildProxyOutbounds(serverURI, standbyURI, outbound)
+	hasReality := false
+	for _, o := range proxyOutbounds {
+		if o.Tag == core.RealityLegTag {
+			hasReality = true
+			break
+		}
+	}
+
+	inbounds := []InboundConfig{
+		{
+			Type:        "tun",
+			Tag:         "tun-in",
+			Address:     []string{"172.19.0.1/28"},
+			MTU:         9000,
+			AutoRoute:   true,
+			StrictRoute: true,
+			Stack:       "gvisor",
+		},
+		{
+			Type:       "direct",
+			Tag:        "dns-in",
+			Listen:     "172.19.0.1",
+			ListenPort: 53,
+		},
+	}
+	if hasReality {
+		// A fixed forwarder onto the node's loopback Brutal keeper. Same port
+		// both ends, so the address reads the same on either side of the leg.
+		inbounds = append(inbounds, InboundConfig{
+			Type:            "direct",
+			Tag:             core.BrutalInboundTag,
+			Listen:          "127.0.0.1",
+			ListenPort:      core.BrutalKeeperPort,
+			OverrideAddress: "127.0.0.1",
+			OverridePort:    core.BrutalKeeperPort,
+		})
+		// The same destination over the other leg. Its whole purpose is to be
+		// identical to the forwarder above in every respect but the leg it is
+		// routed over, so the failover gate can time the two and have the
+		// difference mean the transport. See core.LegGatePort.
+		if hy2GateTarget != "" {
+			inbounds = append(inbounds, InboundConfig{
+				Type:            "direct",
+				Tag:             core.LegGateInboundTag,
+				Listen:          "127.0.0.1",
+				ListenPort:      core.LegGatePort,
+				OverrideAddress: "127.0.0.1",
+				OverridePort:    core.BrutalKeeperPort,
+			})
+			for _, target := range core.LegEgressTargets() {
+				for _, probe := range []struct {
+					tag  string
+					port int
+				}{
+					{target.RealityTag, target.RealityPort}, {target.Hy2Tag, target.Hy2Port},
+				} {
+					inbounds = append(inbounds, InboundConfig{
+						Type: "direct", Tag: probe.tag, Listen: "127.0.0.1", ListenPort: probe.port,
+						OverrideAddress: target.Host, OverridePort: 443,
+					})
+				}
+			}
+		}
+	}
+
 	baseRules := []RouteRule{
 		{Action: "sniff"},
 		{Protocol: "dns", IPCIDR: []string{"223.5.5.5/32", "1.1.1.1/32"}, Outbound: "direct"},
 		{Protocol: "dns", Action: "hijack-dns"},
 		{Protocol: "quic", Action: "reject"},
+	}
+	// The Brutal keeper's channel, when there is a REALITY leg to pace. It has
+	// to sit here, ahead of the systemRules below, because those send
+	// 127.0.0.0/8 straight out `direct` — and the whole point of this one is
+	// that a loopback address gets resolved on the far side of the leg.
+	if hasReality {
+		baseRules = append(baseRules, RouteRule{
+			Inbound:  []string{core.BrutalInboundTag},
+			Outbound: core.RealityLegTag,
+		})
+		// Pinned to a ladder member rather than to `proxy`, for the same reason
+		// the one above is pinned to the REALITY member: a gate that measured
+		// whichever leg the selector happens to be on would be timing the leg
+		// it is trying to decide about.
+		if hy2GateTarget != "" {
+			baseRules = append(baseRules, RouteRule{
+				Inbound:  []string{core.LegGateInboundTag},
+				Outbound: hy2GateTarget,
+			})
+			for _, target := range core.LegEgressTargets() {
+				baseRules = append(baseRules,
+					RouteRule{Inbound: []string{target.RealityTag}, Outbound: core.RealityLegTag},
+					RouteRule{Inbound: []string{target.Hy2Tag}, Outbound: hy2GateTarget},
+				)
+			}
+		}
 	}
 
 	// System rules: private IPs, DNS resolvers, geoip-cn, catch-all.
@@ -199,16 +300,44 @@ func BuildWithStandby(serverURI, standbyURI string) (*SingboxConfig, error) {
 		// Keep the public DNS resolvers reachable directly so DNS resolution
 		// itself never depends on the VPS being up.
 		{IPCIDR: []string{"1.1.1.1/32", "223.5.5.5/32"}, Outbound: "direct"},
-		{IPCIDR: []string{"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "127.0.0.0/8"}, Outbound: "direct"},
-		// FakeIP range is foreign-traffic only by construction; send through proxy.
-		// Must come before geoip-cn so the sniffed SNI doesn't accidentally hit
-		// a CN-routed rule via some other heuristic.
-		{IPCIDR: []string{"198.18.0.0/15"}, Outbound: "proxy"},
-		// China IP ranges go direct
-		{RuleSet: []string{"geoip-cn"}, Outbound: "direct"},
-		// Everything else goes through proxy
-		{IPCIDR: []string{"0.0.0.0/0"}, Outbound: "proxy"},
+		{IPCIDR: []string{"192.168.0.0/16", "127.0.0.0/8"}, Outbound: "direct"},
+		// Cloud-provider internal ranges. Never send these out the physical
+		// NIC — they're not reachable from a home connection and a stale DNS
+		// resolution from Vultr/AWS/GCP internal services would otherwise hang
+		// for 5s per connection and poison mole's fresh-dial counters. Route
+		// through block so sing-box refuses them immediately.
+		{IPCIDR: []string{"10.0.0.0/8", "172.16.0.0/12", "169.254.0.0/16"}, Outbound: "block"},
+		// SSH/scp/rsync to the VPS itself must NOT route through the tunnel —
+		// that would put three layers of TCP (SSH → REALITY → sing-box server
+		// → localhost sshd) on every byte and cut upload throughput in half.
+		// The VPS Server field is already the IP we dial; if it's a hostname
+		// (DNS resolution) we still keep it as a DNS rule above, but the IP
+		// form here is what actually bypasses proxy routing.
 	}
+	if ip := net.ParseIP(outbound.Server); ip != nil {
+		systemRules = append(systemRules, RouteRule{
+			IPCIDR:   []string{ip.String() + "/32"},
+			Outbound: "direct",
+		})
+	}
+	// Also include the standby VPS IP if different (same host in practice, but
+	// harmless when equal and correct when they diverge).
+	if standbyURI != "" {
+		if sb, err := parseServerURL(standbyURI); err == nil && sb.Server != outbound.Server {
+			if ip := net.ParseIP(sb.Server); ip != nil {
+				systemRules = append(systemRules, RouteRule{
+					IPCIDR:   []string{ip.String() + "/32"},
+					Outbound: "direct",
+				})
+			}
+		}
+	}
+	// Remaining system rules...
+	systemRules = append(systemRules,
+		RouteRule{IPCIDR: []string{"198.18.0.0/15"}, Outbound: "proxy"},
+		RouteRule{RuleSet: []string{"geoip-cn"}, Outbound: "direct"},
+		RouteRule{IPCIDR: []string{"0.0.0.0/0"}, Outbound: "proxy"},
+	)
 
 	// Load custom rules from ~/.mole/custom-rules.json if exists.
 	// Custom rules sit between base rules (sniff etc.) and system rules
@@ -234,6 +363,10 @@ func BuildWithStandby(serverURI, standbyURI string) (*SingboxConfig, error) {
 	routeRules = append(routeRules, inlineRules...)
 	routeRules = append(routeRules, hotRefs...)
 	routeRules = append(routeRules, systemRules...)
+	if hasReality && hy2GateTarget != "" {
+		proxyOutbounds = append(proxyOutbounds, flowSelectors()...)
+		routeRules = flowRoutes(routeRules)
+	}
 
 	// Rule-sets are referenced from local files only — never fetched by sing-box
 	// itself, which would put a download on the cold-start critical path.
@@ -260,27 +393,10 @@ func BuildWithStandby(serverURI, standbyURI string) (*SingboxConfig, error) {
 	ruleSets = append(ruleSets, hotDecls...)
 
 	return &SingboxConfig{
-		Log: LogConfig{Level: "warn"},
-		DNS: DNSConfig{Servers: dnsServers, Rules: dnsRules, Final: "dns-remote", Strategy: "ipv4_only", IndependentCache: true},
-		Inbounds: []InboundConfig{
-			{
-				Type:        "tun",
-				Tag:         "tun-in",
-				Address:     []string{"172.19.0.1/28"},
-				MTU:         9000,
-				AutoRoute:   true,
-				StrictRoute: true,
-				Stack:       "gvisor",
-			},
-			{
-				Type:       "direct",
-				Tag:        "dns-in",
-				Listen:     "172.19.0.1",
-				ListenPort: 53,
-			},
-		},
-		Outbounds: append(buildProxyOutbounds(serverURI, standbyURI, outbound),
-			OutboundConfig{Type: "direct", Tag: "direct"}),
+		Log:       LogConfig{Level: "warn"},
+		DNS:       DNSConfig{Servers: dnsServers, Rules: dnsRules, Final: "dns-remote", Strategy: "ipv4_only"},
+		Inbounds:  inbounds,
+		Outbounds: append(proxyOutbounds, OutboundConfig{Type: "direct", Tag: "direct"}, OutboundConfig{Type: "block", Tag: "block"}),
 		Route: RouteConfig{
 			Rules:               routeRules,
 			RuleSet:             ruleSets,
@@ -291,7 +407,8 @@ func BuildWithStandby(serverURI, standbyURI string) (*SingboxConfig, error) {
 			},
 		},
 		Experimental: &ExperimentalConfig{
-			ClashAPI: &ClashAPIConfig{ExternalController: "127.0.0.1:9090"},
+			ClashAPI:  &ClashAPIConfig{ExternalController: "127.0.0.1:9090"},
+			CacheFile: &CacheFileConfig{Enabled: true, Path: filepath.Join(utils.MoleDir(), "sing-box-cache.db"), StoreFakeIP: true},
 		},
 	}, nil
 }
@@ -301,6 +418,24 @@ func Save(cfg *SingboxConfig, path string) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
+	}
+	if cfg.Experimental != nil && cfg.Experimental.CacheFile != nil {
+		cache := cfg.Experimental.CacheFile
+		if cache.Enabled && cache.Path != "" {
+			// The engine otherwise creates a world-readable DNS metadata DB.
+			// Do not truncate a live or previously persisted mapping table.
+			f, err := os.OpenFile(cache.Path, os.O_CREATE|os.O_WRONLY, 0600)
+			if err != nil {
+				return fmt.Errorf("prepare private DNS cache: %w", err)
+			}
+			err = f.Chmod(0600)
+			if closeErr := f.Close(); err == nil {
+				err = closeErr
+			}
+			if err != nil {
+				return fmt.Errorf("secure DNS cache: %w", err)
+			}
+		}
 	}
 	return os.WriteFile(path, data, 0644)
 }
@@ -323,7 +458,10 @@ func Save(cfg *SingboxConfig, path string) error {
 // Falls back to a single outbound tagged `proxy` — the historical layout — for
 // non-hy2 protocols and for BBR mode (down_mbps<=0), where there is no ceiling
 // to ladder. The route always targets `proxy` either way.
-func buildProxyOutbounds(serverURI, standbyURI string, outbound *OutboundConfig) []OutboundConfig {
+// The second return is the ladder member the failover gate measures hy2 on —
+// empty when there is no hy2 member to measure. With two legs it is a separate
+// selector so the probe can measure the exact rung the scheduler would select.
+func buildProxyOutbounds(serverURI, standbyURI string, outbound *OutboundConfig) ([]OutboundConfig, string) {
 	// standby is the REALITY member, or nil when there is no second leg. Parsed
 	// up front so a malformed standby URI degrades to the single-leg layout
 	// instead of taking the whole tunnel down with it — the primary is what the
@@ -337,9 +475,10 @@ func buildProxyOutbounds(serverURI, standbyURI string, outbound *OutboundConfig)
 			log.Printf("⚠️  standby leg ignored — %q is not a usable vless://…security=reality URI", standbyURI)
 		}
 	}
-	single := func() []OutboundConfig {
+	single := func() ([]OutboundConfig, string) {
 		outbound.Tag = core.ProxySelectorTag
-		return []OutboundConfig{*outbound}
+		// No selector, so nothing to fail over to and nothing for the gate.
+		return []OutboundConfig{*outbound}, ""
 	}
 	// A selector is only worth building when there is something to switch
 	// between. With a standby leg there always is, even on a server with no
@@ -349,6 +488,12 @@ func buildProxyOutbounds(serverURI, standbyURI string, outbound *OutboundConfig)
 		out := make([]OutboundConfig, 1, len(rungs)+2)
 		out = append(out, rungs...)
 		if standby != nil {
+			if outbound.Type == "hysteria2" {
+				out = append(out, OutboundConfig{
+					Type: "selector", Tag: core.Hy2ProbeSelectorTag,
+					Outbounds: append([]string(nil), members...), Default: members[len(members)-1],
+				})
+			}
 			members = append(members, standby.Tag)
 			out = append(out, *standby)
 		}
@@ -356,13 +501,7 @@ func buildProxyOutbounds(serverURI, standbyURI string, outbound *OutboundConfig)
 			Type: "selector", Tag: core.ProxySelectorTag,
 			Outbounds: members, Default: def,
 		}
-		// A/B arms are appended OUTSIDE the members list on purpose. They are
-		// materialized so the Clash API can delay-probe them — an outbound that
-		// belongs to no selector is still probeable, which is what makes a
-		// probe-only arm possible at all — and kept out of the selector so no
-		// user traffic can ever be routed through an experimental port. An arm
-		// that carried real requests would change the thing it is measuring.
-		return append(out, experimentArms(outbound)...)
+		return out
 	}
 	if outbound.Type != "hysteria2" {
 		if standby == nil {
@@ -370,7 +509,8 @@ func buildProxyOutbounds(serverURI, standbyURI string, outbound *OutboundConfig)
 		}
 		primary := *outbound
 		primary.Tag = "proxy-primary"
-		return selectOver([]string{primary.Tag}, []OutboundConfig{primary}, standby.Tag)
+		// Not hy2, so the gate has no ladder to measure against REALITY.
+		return selectOver([]string{primary.Tag}, []OutboundConfig{primary}, standby.Tag), ""
 	}
 	u, err := url.Parse(serverURI)
 	if err != nil {
@@ -397,7 +537,7 @@ func buildProxyOutbounds(serverURI, standbyURI string, outbound *OutboundConfig)
 		}
 		primary := *outbound
 		primary.Tag = core.BandwidthRungTag(outbound.DownMbps)
-		return selectOver([]string{primary.Tag}, []OutboundConfig{primary}, standby.Tag)
+		return selectOver([]string{primary.Tag}, []OutboundConfig{primary}, standby.Tag), core.Hy2ProbeSelectorTag
 	}
 
 	members := make([]string, 0, len(rungs))
@@ -413,10 +553,11 @@ func buildProxyOutbounds(serverURI, standbyURI string, outbound *OutboundConfig)
 	// With a REALITY leg present it is the default: it is the primary, and a
 	// tunnel that came up on the ladder would run its first minute — until the
 	// supervisor's first tick — on the leg measured failing ten times a day.
+	gate := members[len(members)-1]
 	if standby != nil {
-		return selectOver(members, ladder, standby.Tag)
+		return selectOver(members, ladder, standby.Tag), core.Hy2ProbeSelectorTag
 	}
-	return selectOver(members, ladder, sched.Member(time.Now()))
+	return selectOver(members, ladder, sched.Member(time.Now())), gate
 }
 
 func parseServerURL(serverURL string) (*OutboundConfig, error) {
@@ -448,7 +589,32 @@ func parseVLESS(u *url.URL) (*OutboundConfig, error) {
 		Server: u.Hostname(), ServerPort: port,
 		UUID: u.User.Username(),
 	}
+	// TCP Fast Open sends the first payload inside the SYN, removing one RTT
+	// from every new connection. The node already runs net.ipv4.tcp_fastopen=3
+	// (see cmd's boot script); without this flag the client never asks for it.
+	//
+	// A/B tested 2026-10-14 (spec.md D4) on the hypothesis that a data-carrying
+	// SYN is what access networks drop when they shape :443. It is not: with
+	// TFO off a QoS window still dropped new connections at the same rate
+	// (130 "dial tcp VPS:443: i/o timeout" in 30min vs 65 in 14min with it on).
+	// The shaper discards plain SYNs too, so the RTT this saves is kept.
+	//
+	// Multiplex stays opt-in: older nodes did not explicitly enable it on the
+	// inbound, and reject requests via the deprecated global mux handler.
+	// Vision itself supports smux when BOTH ends enable it (verified with
+	// sing-box 1.14.3 on 2026-10-20). A small native session pool reuses warm
+	// TCP/REALITY connections instead of exposing every new flow to SYN loss.
+	o.TCPFastOpen = true
 	q := u.Query()
+	if protocol := q.Get("mux"); protocol != "" {
+		if protocol != "smux" {
+			return nil, fmt.Errorf("unsupported VLESS multiplex protocol %q (want smux)", protocol)
+		}
+		// One active stream can open another session: the 4/4 pool helped
+		// fresh flows but constrained eight-flow downloads on the measured
+		// path. 8/1 retains idle-session reuse without that concurrency clamp.
+		o.Multiplex = &MultiplexConfig{Enabled: true, Protocol: protocol, MaxConnections: 8, MinStreams: 1}
+	}
 	if flow := q.Get("flow"); flow != "" {
 		o.Flow = flow
 	}
@@ -555,6 +721,12 @@ func parseHysteria2(u *url.URL) (*OutboundConfig, error) {
 	}
 	o.UpMbps = upMbps
 	o.DownMbps = downMbps
+
+	// Conservative UDP packet defaults. These do not configure the VPS NIC MTU
+	// or the Hysteria server's packet size. Compare PMTUD on this path before
+	// changing either client setting; the server has no top-level mtu option.
+	o.InitialPacketSize = 1200
+	o.DisablePathMTU = true
 
 	// Salamander obfuscation. Raw QUIC/443 to a foreign IP is easily
 	// fingerprinted and throttled by the GFW; obfs wraps it so the path stays
@@ -864,32 +1036,4 @@ func parsePortRange(s string) (lo, hi int, ok bool) {
 		return 0, 0, false
 	}
 	return lo, hi, true
-}
-
-// experimentArms materializes the declared A/B arms as probe-only outbounds.
-//
-// Each arm is the LIVE outbound with at most a port or host overridden, so
-// everything else — the Brutal ceiling, obfs, the pinned certificate, the
-// password — is identical between arms and cancels out of the comparison.
-// Copying rather than re-parsing is the point: a hand-built arm would drift
-// from the real outbound the first time anything else about the tunnel changed,
-// and then the experiment would be measuring the drift.
-func experimentArms(base *OutboundConfig) []OutboundConfig {
-	e := utils.ReadExperiment()
-	if e == nil || base.Type != "hysteria2" {
-		return nil
-	}
-	arms := make([]OutboundConfig, 0, len(e.Arms))
-	for _, a := range e.Arms {
-		arm := *base
-		arm.Tag = core.ExperimentArmTag(a.Name)
-		if a.Port > 0 {
-			arm.ServerPort = a.Port
-		}
-		if a.Server != "" {
-			arm.Server = a.Server
-		}
-		arms = append(arms, arm)
-	}
-	return arms
 }

@@ -23,7 +23,7 @@ import (
 func TestKeepaliveArmsDifferInConnectionReuse(t *testing.T) {
 	var mu sync.Mutex
 	conns := map[string]int{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "fl=test\n") // a body, like the real keepalive URL
 	}))
 	srv.Config.ConnState = func(c net.Conn, st http.ConnState) {
@@ -34,6 +34,7 @@ func TestKeepaliveArmsDifferInConnectionReuse(t *testing.T) {
 		conns[c.RemoteAddr().String()]++
 		mu.Unlock()
 	}
+	srv.Start()
 	defer srv.Close()
 
 	const beats = 5

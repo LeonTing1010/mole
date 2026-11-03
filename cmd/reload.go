@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/LeonTing1010/mole/config"
 	"github.com/LeonTing1010/mole/utils"
@@ -38,7 +39,7 @@ func runReload(_ *cobra.Command, _ []string) error {
 	// 没在跑也允许 reload：文件写好了，下次 `mole up` 直接就是新的。
 	// 但要如实说明「现在没有进程会读它」，否则用户会以为已经生效。
 	running := true
-	if _, err := utils.ReadPID(); err != nil {
+	if pid, err := utils.ReadPID(); err != nil || !utils.IsRunning(pid) {
 		running = false
 	}
 
@@ -57,12 +58,22 @@ func runReload(_ *cobra.Command, _ []string) error {
 			shortPath(filepath.Join(config.HotRuleSetDir(), "mole-"+ob+".json")))
 	}
 
+	// 规则变了，PF 的 direct 豁免表也得跟着变 —— 但只在「把一个域名从 direct 里
+	// 删掉」时才需要动 PF：豁免是 fail-closed 规则集上的洞，规则没了洞必须跟着关。
+	// 新加的域名不在这里预开洞（守护进程看到第一次拨号自己会补上），所以常见的
+	// reload 依旧一次 pfctl 都不碰，也就依旧不要 sudo。
+	if dropped := utils.PruneDirectExemptions(config.DirectDomains()); len(dropped) > 0 {
+		fmt.Printf("🛡️  已收回 %d 个主机名的直连豁免（不再是 direct）：%s\n",
+			len(dropped), strings.Join(dropped, ", "))
+	}
+
 	if !running {
 		fmt.Printf("✅ 已重写 %d 条域名规则，但 mole 没在运行 —— 下次 `mole up` 生效\n", total)
 		return nil
 	}
 	fmt.Printf("✅ 已重写 %d 条域名规则，运行中的 sing-box 会就地重载（TUN/连接不受影响）\n", total)
 	fmt.Println("   验证请用行为，别看日志：sing-box 重载 rule-set 时不打任何日志")
+	fmt.Println("   DNS 域名策略仍是启动时的配置；新增/调整直连或代理域名后需 `mole down && mole up` 同步 DNS")
 	return nil
 }
 
@@ -81,7 +92,10 @@ func shortPath(p string) string {
 // 不做成两份是因为它们必须永远给出同一个结果 —— 一旦漂移，
 // 「我 reload 过了」和「守护进程自动生效的」就会是两套规则。
 func RecompileHotRules() (int, error) {
-	rules := config.LoadRoutingRules()
+	rules, err := config.LoadRoutingRulesStrict()
+	if err != nil {
+		return 0, err
+	}
 	byOutbound, order, _ := config.SplitHotRules(rules)
 	if err := config.DetectHotRuleConflicts(byOutbound); err != nil {
 		return 0, err

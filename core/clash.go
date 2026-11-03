@@ -126,3 +126,58 @@ func (c *ClashClient) Selection(selector string) (string, error) {
 	}
 	return out.Now, nil
 }
+
+// Connection is one live connection as sing-box reports it, reduced to the
+// three fields the direct-exemption learner needs.
+type Connection struct {
+	// Chains is the outbound stack, innermost first: ["direct"] for a direct
+	// dial, ["proxy-reality", "proxy"] when the "proxy" selector resolved to
+	// its REALITY member. Chains[0] is therefore the outbound that actually
+	// opened the socket, which is the only one that decides whether the packets
+	// leave through a physical interface.
+	Chains []string
+	// Host is the sniffed destination name — the SNI for TLS. Empty for a dial
+	// straight to an address, which is exactly the case the learner refuses to
+	// act on: there is no name to check against the rules.
+	Host string
+	// DestIP is populated for direct dials. Connections routed into the tunnel
+	// carry a domain rather than an address and leave this empty.
+	DestIP string
+}
+
+// Connections lists the live connections. Used by the direct-exemption learner
+// to see what sing-box's "direct" outbound is dialing — including the dials PF
+// is dropping, which still appear here with zero bytes moved, and which is what
+// makes the learner able to fix a block it can only observe after the fact.
+func (c *ClashClient) Connections() ([]Connection, error) {
+	resp, err := c.http.Get(c.base + "/connections")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		msg, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("connections: %s: %s", resp.Status, string(msg))
+	}
+	var out struct {
+		Connections []struct {
+			Chains   []string `json:"chains"`
+			Metadata struct {
+				Host          string `json:"host"`
+				DestinationIP string `json:"destinationIP"`
+			} `json:"metadata"`
+		} `json:"connections"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	conns := make([]Connection, 0, len(out.Connections))
+	for _, c := range out.Connections {
+		conns = append(conns, Connection{
+			Chains: c.Chains,
+			Host:   c.Metadata.Host,
+			DestIP: c.Metadata.DestinationIP,
+		})
+	}
+	return conns, nil
+}

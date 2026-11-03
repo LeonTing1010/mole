@@ -55,7 +55,9 @@ func TestBuildPFRulesShape(t *testing.T) {
 		vps := strings.Index(rules, "pass out quick on "+ifc+" to 45.32.28.60")
 		cn := strings.Index(rules, "pass out quick on "+ifc+" inet to <mole_cn4>")
 		blk4 := strings.Index(rules, "block out quick on "+ifc+" inet all")
-		blk6 := strings.Index(rules, "block out quick on "+ifc+" inet6 all")
+		// `return`, not a silent drop: a dropped v6 SYN hangs apps that dial
+		// IPv6 on their own (WeChat) until timeout before they try v4.
+		blk6 := strings.Index(rules, "block return out quick on "+ifc+" inet6 all")
 		if vps < 0 || cn < 0 || blk4 < 0 || blk6 < 0 {
 			t.Fatalf("missing rule for %s:\n%s", ifc, rules)
 		}
@@ -189,7 +191,10 @@ func TestKillSwitchSeedsTheExemptionAfterTheToken(t *testing.T) {
 func TestPFRulesPassAppleRange(t *testing.T) {
 	rules := buildPFRules([]string{"45.32.28.60"})
 	for _, ifc := range physicalInterfaces() {
-		apple := strings.Index(rules, "pass out quick on "+ifc+" inet to "+appleRange)
+		// Apple rides the braced literal set now (see literalPassRanges), which
+		// PF expands to one rule per CIDR — so what this pins is that the range
+		// is passed somewhere ahead of the block, not the shape of the line.
+		apple := indexOfLineContaining(rules, "pass out quick on "+ifc+" inet to {", appleRange)
 		blk4 := strings.Index(rules, "block out quick on "+ifc+" inet all")
 		if apple < 0 {
 			t.Fatalf("no Apple pass rule for %s:\n%s", ifc, rules)
@@ -203,4 +208,17 @@ func TestPFRulesPassAppleRange(t *testing.T) {
 	if strings.Contains(rules, "pass out quick on en0 inet all") {
 		t.Error("the Apple exception must not widen into a blanket inet pass")
 	}
+}
+
+// indexOfLineContaining returns the offset of the first line that starts with
+// prefix and also contains want, or -1.
+func indexOfLineContaining(text, prefix, want string) int {
+	off := 0
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, prefix) && strings.Contains(line, want) {
+			return off
+		}
+		off += len(line) + 1
+	}
+	return -1
 }

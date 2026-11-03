@@ -9,7 +9,7 @@ import (
 
 // The line the sensor has to recognise, verbatim from ~/.mole/mole.log.
 const enobufsLine = "ERROR[17673] [3127740104 46.49s] connection: connection download closed: " +
-	"write udp 192.168.1.34:50774->158.247.195.18:443: write: no buffer space available\n"
+	"write udp 192.0.2.34:50774->198.51.100.20:443: write: no buffer space available\n"
 
 func TestFloodSensorCountsEnobufsLines(t *testing.T) {
 	var f floodSensor

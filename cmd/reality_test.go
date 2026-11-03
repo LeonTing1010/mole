@@ -43,10 +43,10 @@ func TestEmptyProtoStaysHysteria2(t *testing.T) {
 // mole cannot read back.
 func TestRealityURIRoundTrip(t *testing.T) {
 	srv := Server{
-		Name: "icn-test", Proto: protoReality, IP: "158.247.230.81", Port: 443,
-		UUID:           "96738e78-6353-4d57-863f-f3bd26d2a856",
-		RealityPubKey:  "Sl-2p_V0AFMK09BlyvW-CyvV-7jZpiXBl8x6dvmPxRg",
-		RealityShortID: "ac9a7dcddc45b2b7", RealityDest: "www.apple.com",
+		Name: "icn-test", Proto: protoReality, IP: "198.51.100.10", Port: 443,
+		UUID:           "00000000-0000-4000-8000-000000000000",
+		RealityPubKey:  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		RealityShortID: "0123456789abcdef", RealityDest: "www.apple.com",
 	}
 	back, err := serverFromURI(srv.URI())
 	if err != nil {
@@ -114,7 +114,7 @@ func TestRealityBootScriptCarriesIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := realityBootScript(8443, id)
+	script := realityBootScript(8443, 100, id)
 	for _, want := range []string{
 		id.PrivateKey, id.UUID, id.ShortID,
 		`"listen_port": 8443`,
@@ -233,19 +233,57 @@ func TestRealityServerSnippetComposesOntoAHy2Script(t *testing.T) {
 	rid := &realityIdentity{
 		UUID: "u", PrivateKey: "priv", PublicKey: "pub",
 		ShortID: "aabbccdd", Dest: "www.apple.com",
+		SSHPubKey: "ssh-ed25519 AAAA test@mole",
 	}
-	snip := realityServerSnippet(443, rid)
-	if strings.Contains(snip, "#!/bin/bash") || strings.Contains(snip, "set -e") {
-		t.Fatal("snippet carries a shebang or set -e; it cannot be appended")
+	snip := realityServerSnippet(443, 100, rid)
+	if strings.Contains(snip, "#!/bin/bash") {
+		t.Fatal("snippet carries a shebang; it cannot be appended")
+	}
+	// `set -e` is allowed only inside the snippet's own subshell. There it
+	// bounds the blast radius to this leg; at the top level of a composed
+	// script it would take down the leg appended before it.
+	if i := strings.Index(snip, "set -e"); i >= 0 && !strings.Contains(snip[:i], "(") {
+		t.Fatalf("set -e sits outside the subshell, so a failure here aborts the whole script")
 	}
 	for _, want := range []string{"sing-box", `"type": "vless"`, `"private_key": "priv"`, "systemctl enable --now sing-box"} {
 		if !strings.Contains(snip, want) {
 			t.Errorf("snippet missing %q", want)
 		}
 	}
-	// And the standalone script must still be a valid script on its own.
-	full := realityBootScript(443, rid)
-	if !strings.HasPrefix(full, "#!/bin/bash\nset -e\n") {
-		t.Errorf("standalone reality boot script lost its header: %.40q", full)
+	// And the standalone script must still be a valid script on its own, with
+	// the SSH key installed before anything that can fail.
+	full := realityBootScript(443, 100, rid)
+	if !strings.HasPrefix(full, "#!/bin/bash\n") {
+		t.Errorf("standalone reality boot script lost its shebang: %.40q", full)
+	}
+	keyAt, enableAt := strings.Index(full, "authorized_keys"), strings.Index(full, "\nset -e\n")
+	if keyAt < 0 {
+		t.Fatal("standalone script installs no SSH key")
+	}
+	if enableAt >= 0 && keyAt > enableAt {
+		t.Error("the SSH key must be installed before the first set -e, or a later failure locks the machine")
+	}
+}
+
+// Every node that carries the REALITY leg gets the Brutal keeper, at the
+// server's ceiling as the default rate, in both the boot script and the
+// repair script; and the config-only snippet the repair extracts must not
+// carry it (it is appended separately there).
+func TestBrutalKeeperShipsWithTheRealityLeg(t *testing.T) {
+	rid := &realityIdentity{UUID: "u", PrivateKey: "priv", PublicKey: "pub", ShortID: "aabbccdd", Dest: "www.apple.com"}
+	for name, script := range map[string]string{
+		"boot":   realityServerSnippet(443, 80, rid),
+		"repair": repairScript("", 80),
+	} {
+		// The port is asserted through its default so the check still proves
+		// the constant was interpolated, not merely that the word PORT appears.
+		for _, want := range []string{"echo 80 > /etc/mole-brutal-rate", "mole-brutal-keeper.service", "tcp.hy2.sh", `MOLE_BRUTAL_PORT", 8098`} {
+			if !strings.Contains(script, want) {
+				t.Errorf("%s script missing %q", name, want)
+			}
+		}
+	}
+	if strings.Contains(realityConfigSnippet(443, rid), "brutal") {
+		t.Error("the config-only snippet must not carry the keeper install")
 	}
 }

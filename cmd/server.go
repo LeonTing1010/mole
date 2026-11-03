@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -12,9 +14,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/LeonTing1010/mole/core"
@@ -24,16 +29,18 @@ import (
 
 // Server is one deployed VPS running Hysteria2.
 type Server struct {
-	Name       string `json:"name"`
-	InstanceID string `json:"instance_id"`
-	Region     string `json:"region"`
-	IP         string `json:"ip"`
-	IPv6       string `json:"ip_v6,omitempty"`
-	Port       uint16 `json:"port"`
-	Password   string `json:"password"`
-	CreatedAt  string `json:"created_at"`
-	Active     bool   `json:"active,omitempty"`
-	Stopped    bool   `json:"stopped,omitempty"` // true when halted on the server (no compute billing, storage only)
+	DeployID     string            `json:"deploy_id,omitempty"`
+	Verification *nodeVerification `json:"verification,omitempty"`
+	Name         string            `json:"name"`
+	InstanceID   string            `json:"instance_id"`
+	Region       string            `json:"region"`
+	IP           string            `json:"ip"`
+	IPv6         string            `json:"ip_v6,omitempty"`
+	Port         uint16            `json:"port"`
+	Password     string            `json:"password"`
+	CreatedAt    string            `json:"created_at"`
+	Active       bool              `json:"active,omitempty"`
+	Stopped      bool              `json:"stopped,omitempty"` // true when halted on the server (no compute billing, storage only)
 	// Optional per-server tuning. All opt-in: zero values reproduce the previous
 	// URI byte-for-byte. Obfs/ObfsPassword turn on hysteria2 salamander
 	// obfuscation (must match the server, or the tunnel goes dark). UpMbps/DownMbps
@@ -44,6 +51,9 @@ type Server struct {
 	ObfsPassword string `json:"obfs_password,omitempty"`
 	UpMbps       int    `json:"up_mbps,omitempty"`
 	DownMbps     int    `json:"down_mbps,omitempty"`
+	// RealityDownMbps paces the node's TCP Brutal sender independently of the
+	// hysteria2 ladder. Zero keeps the historical shared-ceiling behavior.
+	RealityDownMbps int `json:"reality_down_mbps,omitempty"`
 
 	// TLS identity. TLSCertPEM is the server's leaf certificate, pinned by the
 	// client so the tunnel verifies without a domain, a CA, or a Certificate
@@ -84,8 +94,8 @@ type Server struct {
 	// port is a peer-address change the server's QUIC has to re-validate, and
 	// Brutal's send rate restarts from that point. Rotating the source port is
 	// also no answer to a five-tuple block that keys on something coarser: on
-	// 2026-08-27 the stall kick redialled four times, each new port died after
-	// exactly the 30s QUIC idle timeout, and only the REALITY leg was untouched.
+	// 2026-08-27 four such redials each died after exactly the 30s QUIC idle
+	// timeout, and only the REALITY leg was untouched.
 	// Reach for Proto instead when UDP itself is what is being singled out.
 	HopPorts   string `json:"hop_ports,omitempty"`
 	HopSeconds int    `json:"hop_seconds,omitempty"`
@@ -116,6 +126,9 @@ type Server struct {
 	// a dual-leg node runs hysteria2 on UDP/443 and REALITY on TCP/443 and the
 	// two never collide.
 	RealityPort uint16 `json:"reality_port,omitempty"`
+	// RealityMultiplex is an explicit client opt-in after the node's VLESS
+	// inbound has multiplex.enabled=true. Absent on older nodes and imports.
+	RealityMultiplex bool `json:"reality_multiplex,omitempty"`
 }
 
 // Tunnel protocols. protoHysteria2 is also what an empty Proto means.
@@ -209,15 +222,27 @@ func (s *Server) Schedule() core.BandwidthSchedule {
 	}
 }
 
-// Ready reports whether the server is fully provisioned (has an IP). Servers
+// HasAddress reports address assignment, independently of service readiness. Servers
 // recorded mid-deploy may exist with InstanceID set but IP still empty until
 // `waitForIP` succeeds.
-func (s *Server) Ready() bool { return s.IP != "" }
+func (s *Server) HasAddress() bool { return s.IP != "" || s.IPv6 != "" }
 
-// URI returns the hy2:// URI sing-box consumes. Obfs params are appended only
-// when set; the bandwidth ceiling is always emitted, defaults included, so the
-// parser never has to invent one of its own.
-func (s *Server) URI() string {
+func (s Server) deployStatus() string {
+	if s.Stopped {
+		return "stopped"
+	}
+	if !s.HasAddress() {
+		return "provisioning"
+	}
+	if s.Verification == nil {
+		return "unverified"
+	}
+	return s.Verification.Status
+}
+
+// linkHost is the address a share link carries: IPv4 when the node has one,
+// IPv6 otherwise, bracketed the way a URL's authority requires.
+func (s *Server) linkHost() string {
 	host := s.IP
 	if host == "" {
 		host = s.IPv6
@@ -225,6 +250,14 @@ func (s *Server) URI() string {
 	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
 		host = "[" + host + "]"
 	}
+	return host
+}
+
+// URI returns the hy2:// URI sing-box consumes. Obfs params are appended only
+// when set; the bandwidth ceiling is always emitted, defaults included, so the
+// parser never has to invent one of its own.
+func (s *Server) URI() string {
+	host := s.linkHost()
 	if s.isReality() {
 		return s.realityURI(host)
 	}
@@ -307,14 +340,29 @@ func (s *Server) StandbyURI() string {
 	if !s.hasStandbyLeg() {
 		return ""
 	}
+	return s.realityURI(s.linkHost())
+}
+
+// realityAddr is the REALITY leg's ip:port, or "" when the node has none.
+func (s *Server) realityAddr() string {
+	if !s.hasStandbyLeg() && !s.isReality() {
+		return ""
+	}
 	host := s.IP
 	if host == "" {
 		host = s.IPv6
 	}
+	if host == "" {
+		return ""
+	}
+	port := s.RealityPort
+	if port == 0 {
+		port = s.Port
+	}
 	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
 		host = "[" + host + "]"
 	}
-	return s.realityURI(host)
+	return fmt.Sprintf("%s:%d", host, port)
 }
 
 func (s *Server) realityURI(host string) string {
@@ -344,6 +392,9 @@ func (s *Server) realityURI(host string) string {
 	}
 	if s.RealityShortID != "" {
 		q.Set("sid", s.RealityShortID)
+	}
+	if s.RealityMultiplex {
+		q.Set("mux", "smux")
 	}
 	return fmt.Sprintf("vless://%s@%s:%d?%s#%s", s.UUID, host, port, q.Encode(), s.Name)
 }
@@ -436,6 +487,9 @@ func init() {
 	// PCCW with a 165ms floor — roughly three times the physical distance — and
 	// that sustained loss is what the tunnel kept collapsing on.
 	serverDeployCmd.Flags().String("region", "icn", "server region (icn, nrt, sgp, lax, ...)")
+	serverDeployCmd.Flags().DurationVar(&deployTimeout, "timeout", nodeVerifyBudget, "maximum wait for address and authenticated protocol verification")
+	serverDeployCmd.Flags().BoolVar(&deployNoVerify, "no-verify", false, "do not wait for both legs to answer from outside the tunnel")
+	serverDeployCmd.Flags().BoolVar(&deployNoReality, "no-reality", false, "do not install the REALITY standby leg (saves ~100MB RAM; use when hy2 is stable on this path)")
 	serverDeployCmd.Flags().String("plan", "vc2-1c-1gb", "server plan")
 	serverDeployCmd.Flags().String("name", "", "Server name (auto-generated if empty)")
 	serverDeployCmd.Flags().Int("port", 443, "tunnel port")
@@ -456,6 +510,12 @@ func init() {
 // ── deploy ─────────────────────────────────────────────────────
 
 func runDeploy(cmd *cobra.Command, _ []string) error {
+	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if deployTimeout <= 0 {
+		return fmt.Errorf("--timeout must be positive")
+	}
+
 	region, _ := cmd.Flags().GetString("region")
 	plan, _ := cmd.Flags().GetString("plan")
 	name, _ := cmd.Flags().GetString("name")
@@ -477,7 +537,22 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 
 	fmt.Printf("🚀 Deploying %s in %s (%s, %s on port %d)\n", name, region, plan, proto, port)
 
-	srv := Server{Name: name, Region: region, Port: uint16(port), Proto: proto}
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("port must be in 1..65535")
+	}
+	servers, err := loadServers()
+	if err != nil {
+		return err
+	}
+	if indexByName(servers, name) >= 0 {
+		return fmt.Errorf("server %q already exists; verify that instance instead", name)
+	}
+	deployID, err := randomHexString(16)
+	if err != nil {
+		return err
+	}
+	srv := Server{Name: name, Region: region, Port: uint16(port), Proto: proto, DeployID: deployID}
+	configureDeployCeiling(&srv)
 	var script string
 
 	// Identity material is minted here, not on the VPS, for both protocols: the
@@ -491,7 +566,7 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return fmt.Errorf("deploy: generate reality identity: %w", err)
 		}
-		script = realityBootScript(port, id)
+		script = realityBootScript(port, srv.DownMbps, id)
 		srv.UUID = id.UUID
 		srv.RealityPubKey = id.PublicKey
 		srv.RealityShortID = id.ShortID
@@ -501,7 +576,7 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return fmt.Errorf("deploy: generate server identity: %w", err)
 		}
-		password, err := randomHexString(16)
+		password, err := tunnelPassword()
 		if err != nil {
 			return fmt.Errorf("deploy: generate tunnel password: %w", err)
 		}
@@ -522,16 +597,22 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 		// It costs nothing until used: sing-box sits idle on a port the firewall
 		// group already opens, and the client's selector only routes to it once
 		// the supervisor has measured hy2 carrying nothing.
-		if rid, err := newRealityIdentity(dest); err != nil {
-			// Not fatal. A node with one working leg is worth having; a deploy
-			// that aborted over the spare would leave none.
-			fmt.Printf("⚠️  Standby REALITY leg skipped: %v (the hysteria2 leg is unaffected)\n", err)
+		//
+		// --no-reality skips it to save ~100MB RAM on small plans (0.5gb).
+		if !deployNoReality {
+			if rid, err := newRealityIdentity(dest); err != nil {
+				// Not fatal. A node with one working leg is worth having; a deploy
+				// that aborted over the spare would leave none.
+				fmt.Printf("⚠️  Standby REALITY leg skipped: %v (the hysteria2 leg is unaffected)\n", err)
+			} else {
+				script = dualBootScript(password, port, srv.DownMbps, id, rid)
+				srv.UUID = rid.UUID
+				srv.RealityPubKey = rid.PublicKey
+				srv.RealityShortID = rid.ShortID
+				srv.RealityDest = rid.Dest
+			}
 		} else {
-			script += realityServerSnippet(port, rid)
-			srv.UUID = rid.UUID
-			srv.RealityPubKey = rid.PublicKey
-			srv.RealityShortID = rid.ShortID
-			srv.RealityDest = rid.Dest
+			fmt.Println("   🎭 REALITY standby leg skipped (--no-reality)")
 		}
 	}
 
@@ -541,12 +622,29 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 	// Worker has no stable egress to allowlist, so every call from it came back
 	// 403. Keeping it as an alternative meant every deploy could fail in two
 	// different ways, one of them silently.
-	instanceID, err := deployViaVultr(name, region, plan, script)
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(script)))
+	session, err := newDeploySession(srv, digest)
 	if err != nil {
-		return fmt.Errorf("deploy: %w", err)
+		return err
 	}
-	srv.InstanceID = instanceID
-	return finishDeploy(srv)
+	defer session.log.Close()
+	fmt.Printf("Deployment receipt: %s\n", filepath.Join(session.dir, "receipt.json"))
+	return runDeployLifecycle(ctx, func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		instanceID, err := deployViaVultr(name, region, plan, script, session, ctx)
+		if err != nil {
+			return err
+		}
+		srv.InstanceID = instanceID
+		session.record.InstanceID = instanceID
+		if err = session.stage("created", nil); err != nil {
+			return fmt.Errorf("instance %s created but receipt write failed: %w", instanceID, err)
+		}
+		_ = stashVultrKey()
+		return finishDeploy(ctx, srv, session)
+	}, func() error { return session.cleanupInstance(srv) })
 }
 
 // finishDeploy records a freshly created instance locally, waits for its IP and
@@ -557,103 +655,63 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 // receive. That ordering matters: recording a pin, an obfs key or a REALITY
 // public key the server never installed doesn't leave the tunnel merely
 // unverified, it blackholes it, on a box reachable no other way.
-func finishDeploy(srv Server) error {
-	fmt.Printf("✅ Instance %s created — waiting for IP...\n", srv.InstanceID)
+func configureDeployCeiling(srv *Server) {
+	if srv.isReality() {
+		return
+	}
+	srv.UpMbps, srv.DownMbps = core.DefaultUpMbps, core.DefaultDownMbps
+	srv.PeakUpMbps, srv.PeakDownMbps = core.DefaultPeakUpMbps, core.DefaultPeakDownMbps
+	srv.PeakStartHour, srv.PeakEndHour = defaultPeakStartHour, defaultPeakEndHour
+	if l, ok := recallLadder(srv.Region); ok {
+		srv.UpMbps, srv.DownMbps = l.UpMbps, l.DownMbps
+		srv.PeakUpMbps, srv.PeakDownMbps = l.PeakUpMbps, l.PeakDownMbps
+		srv.RealityDownMbps = l.RealityDownMbps
+		srv.PeakStartHour, srv.PeakEndHour = l.PeakStartHour, l.PeakEndHour
+	}
+}
 
+func finishDeploy(parent context.Context, srv Server, session *deploySession) error {
 	srv.CreatedAt = time.Now().Format(time.RFC3339)
-	if srv.isReality() {
-		fmt.Printf("🎭 REALITY handshake borrowed from %s — no certificate to pin, no obfs key to match\n", srv.RealityDest)
-	} else {
-		// Write the ceiling out explicitly rather than leaning on the defaults.
-		// A server entry that describes its own ladder is inspectable in
-		// servers.json and survives any future change to what "unset" means —
-		// which is the exact hazard this replaced: entries with no ceiling at all
-		// ran at the top rung while `mole ceiling` refused to run.
-		srv.UpMbps, srv.DownMbps = core.DefaultUpMbps, core.DefaultDownMbps
-		srv.PeakUpMbps, srv.PeakDownMbps = core.DefaultPeakUpMbps, core.DefaultPeakDownMbps
-		srv.PeakStartHour, srv.PeakEndHour = defaultPeakStartHour, defaultPeakEndHour
-		// HopPorts is deliberately NOT set. The boot script opens the range and
-		// NATs it onto Port so the capability is there the moment it is wanted,
-		// but leaving it unset is what keeps it off: measured, hopping costs
-		// 28% of throughput at 120s and 90% at 30s. See Server.HopPorts.
-		// Prefer what this region was last measured to carry. The defaults above
-		// are deliberately timid — right for a path nobody has tested, wrong for
-		// one that has been laddered up by hand — and destroy-on-lid-close means
-		// most deploys land in a region that was measured only yesterday. See
-		// ladder_memory.go.
-		if l, ok := recallLadder(srv.Region); ok {
-			srv.UpMbps, srv.DownMbps = l.UpMbps, l.DownMbps
-			srv.PeakUpMbps, srv.PeakDownMbps = l.PeakUpMbps, l.PeakDownMbps
-			srv.PeakStartHour, srv.PeakEndHour = l.PeakStartHour, l.PeakEndHour
-			fmt.Printf("📶 Ceiling %d↓/%d↑ Mbps (peak %d↓/%d↑) carried over from the last %s server — %s\n",
-				l.DownMbps, l.UpMbps, l.PeakDownMbps, l.PeakUpMbps, srv.Region, describeAge(l, time.Now()))
-		}
-		fmt.Println("🔒 Pinned certificate + salamander obfs installed")
+	if err := appendServer(srv); err != nil {
+		_ = session.stage("local_record_failed", err)
+		return fmt.Errorf("instance %s exists; recovery identity is in %s: %w", srv.InstanceID, session.dir, err)
 	}
-	name, instanceID := srv.Name, srv.InstanceID
-	servers, _ := loadServers()
-	if len(servers) == 0 {
-		srv.Active = true
-	}
-	servers = append(servers, srv)
-	if err := saveServers(servers); err != nil {
-		fmt.Printf("⚠️  Could not record %s locally: %v\n", instanceID, err)
-		fmt.Printf("    The instance IS running. Recover it with:\n")
-		fmt.Printf("        mole server adopt %s --password %s --port %d\n", instanceID, srv.Password, srv.Port)
+	ctx, cancel := context.WithTimeout(parent, deployTimeout)
+	defer cancel()
+	if err := session.stage("waiting_for_address", nil); err != nil {
 		return err
 	}
-
-	ip, ipv6, err := waitForIP(instanceID)
+	ip, ipv6, err := waitForIP(ctx, srv.InstanceID)
 	if err != nil {
-		// Not a deploy failure. The instance was created, its id is saved, and
-		// the address is a value that arrives on its own — every later command
-		// fills it in through reconcileAddresses without being asked. Returning
-		// an error here is what used to strand a perfectly good VPS behind a
-		// manual step.
-		fmt.Printf("⚠️  %v — it is recorded as %q and the address will be filled in automatically.\n", err, name)
-		return nil
+		_ = session.stage("provisioning", err)
+		return fmt.Errorf("instance %s retained and potentially billing; retry mole server verify %s; receipt %s: %w", srv.InstanceID, srv.Name, session.dir, err)
 	}
-	fmt.Printf("   IPv4: %s\n", ip)
-	if ipv6 != "" {
-		fmt.Printf("   IPv6: %s\n", ipv6)
-	}
-
-	// Update the entry we already saved with the now-known IP info.
-	servers, _ = loadServers()
-	for i := range servers {
-		if servers[i].InstanceID == instanceID {
-			servers[i].IP = ip
-			servers[i].IPv6 = ipv6
-			srv = servers[i]
-			break
-		}
-	}
-	if err := saveServers(servers); err != nil {
+	if err = changeServer(srv.InstanceID, srv.Name, func(current *Server) { current.IP = ip; current.IPv6 = ipv6; srv = *current }); err != nil {
 		return err
 	}
-
-	fmt.Printf("\n🔗 %s\n", srv.URI())
-	if srv.isReality() {
-		fmt.Println("\n⏳ VLESS+REALITY boot script is installing in the background (~2 min).")
-	} else {
-		// The range is open on the node either way, so say so — otherwise the only
-		// record that this is a one-line switch is a comment in the source.
-		fmt.Printf("\n🔀 Port hopping is available but off (it costs ~28%% throughput at %ds).\n", hopIntervalSeconds)
-		fmt.Printf("   Turn it on for this server by setting \"hop_ports\": %q, \"hop_seconds\": %d in servers.json.\n",
-			hopRangeURI, hopIntervalSeconds)
-		if srv.hasStandbyLeg() {
-			fmt.Println("\n🎭 Standby leg: VLESS+REALITY on TCP/443, beside hysteria2 on UDP/443.")
-			fmt.Println("   mole moves traffic to it on its own when this path starts throttling UDP.")
-		}
-		fmt.Println("\n⏳ Boot script is installing in the background (~2 min).")
+	fmt.Fprintf(session.writer(), "Address assigned: %s; waiting for server installation.\n", serverHost(srv))
+	if deployNoVerify {
+		return session.stage("unverified", nil)
 	}
-	if srv.Active {
-		fmt.Println("   This is now the active server — run `mole up` once it's ready.")
-	} else {
-		fmt.Printf("   Switch to it with `mole use %s`.\n", name)
+	if err = session.stage("verifying", nil); err != nil {
+		return err
 	}
+	result, verifyErr := verifyNode(ctx, srv, session.writer())
+	session.record.Verification = &result
+	storeErr := changeServer(srv.InstanceID, srv.Name, func(s *Server) { s.Verification = &result })
+	recordErr := session.stage(result.Status, verifyErr)
+	if err = errors.Join(verifyErr, storeErr, recordErr); err != nil {
+		return fmt.Errorf("instance %s retained and potentially billing; verify with mole server verify %s or destroy with mole server destroy %s; receipt %s: %w", srv.InstanceID, srv.Name, srv.Name, session.dir, err)
+	}
+	fmt.Fprintln(session.writer(), "Requested tunnels ready. Optional Brutal capability is checked separately by the client.")
 	return nil
 }
+
+var (
+	deployTimeout   time.Duration
+	deployNoVerify  bool
+	deployNoReality bool
+)
 
 // waitForIP polls until Vultr assigns the instance an address.
 //
@@ -663,21 +721,29 @@ func finishDeploy(srv Server) error {
 // its id was already recorded, and the only missing piece was a value that
 // arrives on its own. Wait long enough to cover the normal case, and let
 // reconcileAddresses pick up the rest without anyone being asked to.
-func waitForIP(instanceID string) (string, string, error) {
-	deadline := time.Now().Add(5 * time.Minute)
-	for attempt := 1; time.Now().Before(deadline); attempt++ {
-		resp, err := serverAPI("GET", "/instances/"+instanceID, nil)
+func waitForIP(parent context.Context, instanceID string) (string, string, error) {
+	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
+	defer cancel()
+	started := time.Now()
+	for attempt := 1; ctx.Err() == nil; attempt++ {
+		resp, err := serverAPIContext(ctx, apiBudget, "GET", "/instances/"+instanceID, nil)
+		if IsServerNotFound(err) {
+			return "", "", err
+		}
 		if err == nil {
 			if ip, v6 := parseInstanceAddress(resp); ip != "" {
 				return ip, v6, nil
 			}
 		}
 		if attempt%5 == 0 {
-			fmt.Printf("   still waiting for an address (%ds)...\n", attempt*3)
+			fmt.Printf("   still waiting for an address (%ds)...\n", int(time.Since(started).Seconds()))
 		}
-		time.Sleep(3 * time.Second)
+		select {
+		case <-ctx.Done():
+		case <-time.After(3 * time.Second):
+		}
 	}
-	return "", "", fmt.Errorf("instance %s has no address yet", instanceID)
+	return "", "", fmt.Errorf("instance %s address unverified: %w", instanceID, ctx.Err())
 }
 
 // parseInstanceAddress pulls the addresses out of a single-instance GET,
@@ -725,7 +791,7 @@ func reconcileAddresses() (int, error) {
 	}
 	needed := false
 	for _, s := range local {
-		if s.InstanceID != "" && s.IP == "" {
+		if s.InstanceID != "" && s.IP == "" && s.IPv6 == "" {
 			needed = true
 			break
 		}
@@ -739,13 +805,11 @@ func reconcileAddresses() (int, error) {
 		return 0, err
 	}
 
-	filled := fillAddresses(local, remote)
-	if filled == 0 {
-		return 0, nil
-	}
-	if err := saveServers(local); err != nil {
+	filled := 0
+	if err := updateServers(func(current []Server) ([]Server, error) { filled = fillAddresses(current, remote); return current, nil }); err != nil {
 		return 0, err
 	}
+
 	return filled, nil
 }
 
@@ -807,14 +871,10 @@ func destroyServerWithin(name string, forceLocal bool, budget time.Duration) err
 	// from the defaults, however much measuring went into these numbers.
 	rememberLadder(target)
 
-	servers = append(servers[:idx], servers[idx+1:]...)
-	// If the destroyed server was active, promote the first remaining.
-	if target.Active && len(servers) > 0 {
-		servers[0].Active = true
-	}
-	if err := saveServers(servers); err != nil {
+	if err := removeRecordedServer(target.InstanceID, target.Name); err != nil {
 		return err
 	}
+
 	// If this is the server a failed lid-close destroy left billing, the debt is
 	// now paid and the record has to go — it is what `mole status` nags from,
 	// and a nag about a server that no longer exists teaches people to ignore
@@ -893,12 +953,7 @@ func runLs(_ *cobra.Command, _ []string) error {
 		if s.Active {
 			marker = "▸ "
 		}
-		status := "ready"
-		if s.Stopped {
-			status = "stopped"
-		} else if !s.Ready() {
-			status = "provisioning"
-		}
+		status := s.deployStatus()
 		ip := s.IP
 		if ip == "" {
 			ip = "(pending)"
@@ -1085,8 +1140,7 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 	if len(servers) == 0 {
 		srv.Active = true
 	}
-	servers = append(servers, srv)
-	if err := saveServers(servers); err != nil {
+	if err := appendServer(srv); err != nil {
 		return err
 	}
 	fmt.Printf("✅ Adopted %s as %q (%s)\n", instanceID, name, srv.IP)
@@ -1129,8 +1183,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 		srv.Active = true
 	}
 	srv.CreatedAt = time.Now().Format(time.RFC3339)
-	servers = append(servers, *srv)
-	if err := saveServers(servers); err != nil {
+	if err := appendServer(*srv); err != nil {
 		return err
 	}
 	fmt.Printf("✅ Imported %q (%s:%d)\n", srv.Name, serverHost(*srv), srv.Port)
@@ -1146,6 +1199,9 @@ func runImport(cmd *cobra.Command, args []string) error {
 // would be importing an outbound it has no way to authenticate.
 func realityServerFromURI(u *url.URL) (*Server, error) {
 	q := u.Query()
+	if mux := q.Get("mux"); mux != "" && mux != "smux" {
+		return nil, fmt.Errorf("unsupported VLESS multiplex protocol %q (want smux)", mux)
+	}
 	if q.Get("security") != "reality" {
 		return nil, fmt.Errorf("vless link is not REALITY (security=%q): mole imports vless://…?security=reality links only", q.Get("security"))
 	}
@@ -1166,12 +1222,13 @@ func realityServerFromURI(u *url.URL) (*Server, error) {
 		port = 443
 	}
 	srv := &Server{
-		Proto:          protoReality,
-		UUID:           uuid,
-		Port:           uint16(port),
-		RealityPubKey:  pbk,
-		RealityShortID: q.Get("sid"),
-		RealityDest:    q.Get("sni"),
+		Proto:            protoReality,
+		UUID:             uuid,
+		Port:             uint16(port),
+		RealityPubKey:    pbk,
+		RealityShortID:   q.Get("sid"),
+		RealityDest:      q.Get("sni"),
+		RealityMultiplex: q.Get("mux") == "smux",
 	}
 	if srv.RealityDest == "" {
 		srv.RealityDest = defaultRealityDest
@@ -1306,8 +1363,7 @@ func runStop(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("halt instance: %w", err)
 	}
 
-	servers[idx].Stopped = true
-	if err := saveServers(servers); err != nil {
+	if err := changeServer(target.InstanceID, target.Name, func(s *Server) { s.Stopped = true; s.Verification = nil }); err != nil {
 		return err
 	}
 	fmt.Printf("✅ %s halted (storage preserved, ~$0.5/mo)\n", name)
@@ -1359,8 +1415,7 @@ func runStart(_ *cobra.Command, args []string) error {
 		time.Sleep(2 * time.Second)
 	}
 
-	servers[idx].Stopped = false
-	if err := saveServers(servers); err != nil {
+	if err := changeServer(target.InstanceID, target.Name, func(s *Server) { s.Stopped = false; s.Verification = nil }); err != nil {
 		return err
 	}
 	fmt.Printf("✅ %s started\n", name)
@@ -1380,12 +1435,19 @@ func runUse(_ *cobra.Command, args []string) error {
 	if idx < 0 {
 		return fmt.Errorf("server %q not found", name)
 	}
-	for i := range servers {
-		servers[i].Active = (i == idx)
-	}
-	if err := saveServers(servers); err != nil {
+	if err := updateServers(func(current []Server) ([]Server, error) {
+		selected := indexByName(current, name)
+		if selected < 0 {
+			return nil, fmt.Errorf("server no longer exists")
+		}
+		for i := range current {
+			current[i].Active = i == selected
+		}
+		return current, nil
+	}); err != nil {
 		return err
 	}
+
 	fmt.Printf("✅ Active server: %s (%s)\n", servers[idx].Name, servers[idx].IP)
 	fmt.Println("   Run `mole up` to connect.")
 	return nil
@@ -1393,39 +1455,12 @@ func runUse(_ *cobra.Command, args []string) error {
 
 // ── storage ────────────────────────────────────────────────────
 
-func loadServers() ([]Server, error) {
-	data, err := os.ReadFile(utils.ServersPath())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var servers []Server
-	if err := json.Unmarshal(data, &servers); err != nil {
-		return nil, fmt.Errorf("parse %s: %w (file may be corrupt; do NOT delete it without first backing up — InstanceIDs cannot be recovered. Try `mole server reconcile` after fixing it)", utils.ServersPath(), err)
-	}
-	return servers, nil
-}
+func loadServers() ([]Server, error) { return readServersAt(utils.ServersPath()) }
 
-// saveServers writes the server list atomically (tmp + rename) so a crash
-// mid-write never leaves a half-written or empty file. Losing servers.json
-// means losing every InstanceID — the corresponding VPS instances become
-// invisible orphans on the server.
+// Full replacement is reserved for test fixtures. Production mutations use
+// updateServers / changeServer so stale snapshots cannot overwrite peers.
 func saveServers(servers []Server) error {
-	data, err := json.MarshalIndent(servers, "", "  ")
-	if err != nil {
-		return err
-	}
-	path := utils.ServersPath()
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		return err
-	}
-	// The daemon writes this file too now (idle-destroy drops the entry for the
-	// server it deleted) and it runs as root. See utils.ChownToMoleDirOwner.
-	utils.ChownToMoleDirOwner(tmp)
-	return os.Rename(tmp, path)
+	return updateServers(func([]Server) ([]Server, error) { return servers, nil })
 }
 
 // The two states `mole up` repairs on its own. They are sentinels rather than
@@ -1476,7 +1511,7 @@ func ActiveServer() (*Server, error) {
 			if servers[i].Stopped {
 				return nil, fmt.Errorf("%w: %q", ErrServerStopped, servers[i].Name)
 			}
-			if !servers[i].Ready() {
+			if !servers[i].HasAddress() {
 				return nil, fmt.Errorf("%w: %q has no address yet", ErrServerProvisioning, servers[i].Name)
 			}
 			return &servers[i], nil
@@ -1520,8 +1555,9 @@ func knownServerIPs() []string {
 
 // ── Vultr management API ───────────────────────────────────────
 
-// vultrBase is the only management endpoint mole talks to.
-const vultrBase = "https://api.vultr.com/v2"
+// vultrBase is the only management endpoint mole talks to. Var (not const) so
+// tests can point it at a local httptest server.
+var vultrBase = "https://api.vultr.com/v2"
 
 type ServerError struct {
 	Method string
@@ -1618,7 +1654,16 @@ const apiBudget = 20 * time.Second
 // ~0.9s to api.vultr.com. Six seconds is an enormous multiple of that, which
 // is the point — anything slower is a path problem, and the remedy for a path
 // problem is the next attempt, not more patience on this one.
-const apiAttempt = 6 * time.Second
+//
+// 2026-10-07: was 6s, same as retryBudget — the retry loop could only run ONE
+// attempt before the deadline, so a single dark-wake path timeout killed the
+// destroy and then reconcileLidDebt cancelled the debt on the next lid open
+// (which also happened twice today: 13:59 and 19:12, both on battery dark
+// wakes). 2s fits 3+ attempts inside retryBudget's 6s window, and the
+// bound/routed alternation at server.go:1729 now actually alternates instead
+// of always hitting bound. A bound-to-Vultr-API call that cannot finish in
+// 2s is a path problem worth retrying, not one worth waiting through.
+const apiAttempt = 2 * time.Second
 
 // serverAPIWithin performs one management-plane request against the Vultr API,
 // retrying transport failures until budget is spent.
@@ -1644,29 +1689,40 @@ const apiAttempt = 6 * time.Second
 // helps a DELETE would leave a second instance running and billing with no
 // local record of it. Better to fail loudly and let a human look.
 func serverAPIWithin(budget time.Duration, method, path string, body any) ([]byte, error) {
+	return serverAPIContext(context.Background(), budget, method, path, body)
+}
+
+func serverAPIContext(parent context.Context, budget time.Duration, method, path string, body any) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(parent, budget)
+	defer cancel()
+
 	key, err := vultrKey()
 	if err != nil {
 		return nil, err
 	}
 	auth := "Bearer " + key
-	deadline := time.Now().Add(budget)
+	deadline, _ := ctx.Deadline()
 
-	if err := utils.AllowDirectHost(utils.APIHost); err != nil {
+	if err := utils.AllowDirectHostContext(ctx, utils.APIHost); err != nil {
 		// Not fatal: the routed path may still work, and on a host where the
 		// kill switch is not loaded there was nothing to exempt.
 		log.Printf("management API: direct exemption unavailable: %v", err)
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if !idempotent(method) {
+		budget = time.Until(deadline)
 		client, cerr := utils.NewBoundHTTPClient(budget)
 		if cerr != nil {
 			client = &http.Client{Timeout: budget}
 		}
-		return callAPI(client, vultrBase, auth, method, path, body)
+		return callAPIContext(ctx, client, vultrBase, auth, method, path, body)
 	}
 
 	var lastErr error
-	for attempt := 0; time.Now().Before(deadline); attempt++ {
+	for attempt := 0; ctx.Err() == nil; attempt++ {
 		timeout := apiAttempt
 		if remaining := time.Until(deadline); remaining < timeout {
 			timeout = remaining
@@ -1685,7 +1741,7 @@ func serverAPIWithin(budget time.Duration, method, path string, body any) ([]byt
 			client = &http.Client{Timeout: timeout}
 		}
 
-		data, err := callAPI(client, vultrBase, auth, method, path, body)
+		data, err := callAPIContext(ctx, client, vultrBase, auth, method, path, body)
 		if err == nil {
 			return data, nil
 		}
@@ -1695,7 +1751,7 @@ func serverAPIWithin(budget time.Duration, method, path string, body any) ([]byt
 		}
 		lastErr = err
 	}
-	return nil, fmt.Errorf("after %s of attempts: %w", budget, lastErr)
+	return nil, fmt.Errorf("management call expired: %w", errors.Join(ctx.Err(), lastErr))
 }
 
 // idempotent reports whether repeating method can only be answered the same
@@ -1712,12 +1768,19 @@ func idempotent(method string) bool {
 // the response body, or a *ServerError for HTTP >= 400, or a raw transport
 // error (EOF / timeout / DNS) for connection-level failures.
 func callAPI(client *http.Client, base, auth string, method, path string, body any) ([]byte, error) {
+	return callAPIContext(context.Background(), client, base, auth, method, path, body)
+}
+func callAPIContext(ctx context.Context, client *http.Client, base, auth, method, path string, body any) ([]byte, error) {
+
 	var reqBody io.Reader
 	if body != nil {
-		b, _ := json.Marshal(body)
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
 		reqBody = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, base+path, reqBody)
+	req, err := http.NewRequestWithContext(ctx, method, base+path, reqBody)
 	if err != nil {
 		return nil, err
 	}
@@ -1729,7 +1792,10 @@ func callAPI(client *http.Client, base, auth string, method, path string, body a
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if err != nil {
+		return nil, err
+	}
 	if resp.StatusCode >= 400 {
 		return nil, &ServerError{Method: method, Path: path, Status: resp.StatusCode, Body: string(data)}
 	}

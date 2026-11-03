@@ -138,3 +138,24 @@ func TestHotRuleSetRefs_TagsMatchDeclarations(t *testing.T) {
 		}
 	}
 }
+
+// DirectDomains 是 PF 豁免表的闸门，所以它只能收 direct 出站的域名，
+// 且必须保持 suffix / keyword 两种匹配式分开 —— 揉在一起就会和 sing-box
+// 的真实路由判定给出不同答案，于是「开了洞的域名」和「真的走直连的域名」不是同一批。
+func TestDirectDomainsOnlyCollectsDirectRules(t *testing.T) {
+	set := directDomainsFrom([]RouteRule{
+		{DomainSuffix: []string{"npmjs.com"}, Outbound: "direct"},
+		{DomainKeyword: []string{"-buy.itunes"}, Outbound: "direct"},
+		{DomainSuffix: []string{"github.com"}, Outbound: "proxy"},
+		{IPCIDR: []string{"17.0.0.0/8"}, Outbound: "direct"}, // 没有域名可核对
+	})
+	if len(set.Suffixes) != 1 || set.Suffixes[0] != "npmjs.com" {
+		t.Fatalf("suffixes = %v, want [npmjs.com]", set.Suffixes)
+	}
+	if len(set.Keywords) != 1 || set.Keywords[0] != "-buy.itunes" {
+		t.Fatalf("keywords = %v, want [-buy.itunes]", set.Keywords)
+	}
+	if set.Match("github.com") {
+		t.Error("a proxy-bound domain must never be exemptable")
+	}
+}

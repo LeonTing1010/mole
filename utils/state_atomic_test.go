@@ -1,0 +1,42 @@
+package utils
+
+import (
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+)
+
+// Audit constraint: independent monitor loops must not collide on the same
+// temporary state file. Go's race detector does not detect filesystem races.
+func TestConcurrentStateWritersPreserveAtomicity(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const writers, rounds = 24, 12
+	start := make(chan struct{})
+	var failures atomic.Int32
+	var first sync.Once
+	var wg sync.WaitGroup
+	for writer := 0; writer < writers; writer++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			state := &State{Server: strings.Repeat("audit payload ", 4096)}
+			<-start
+			for i := 0; i < rounds; i++ {
+				if err := WriteState(state); err != nil {
+					failures.Add(1)
+					first.Do(func() { t.Logf("first persistence error: %v", err) })
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	t.Logf("failed writes=%d/%d", failures.Load(), writers*rounds)
+	if _, err := ReadState(); err != nil {
+		t.Fatalf("published state is not readable JSON: %v", err)
+	}
+	if failures.Load() != 0 {
+		t.Fatal("concurrent monitor state snapshots collided on their shared temporary file")
+	}
+}

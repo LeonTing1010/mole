@@ -92,16 +92,12 @@ func TestNewFlowLatch(t *testing.T) {
 		}
 	}
 
-	t.Run("a partial window never latches", func(t *testing.T) {
+	t.Run("a partial window below the failure threshold does not latch", func(t *testing.T) {
+		// Quality/what. Why: early detection still tolerates a brief hiccup.
 		s := &State{}
-		// Every sample bad, but not yet DialWindow of them: one bad minute at
-		// startup must not paint the tunnel yellow.
-		fill(s, DialWindow-1, DialWindow-1)
-		if s.SlowNewFlows {
-			t.Fatalf("latched on %d samples, want no verdict before %d", len(s.DialSamples), DialWindow)
-		}
-		if got := s.Health(); got != HealthOK {
-			t.Fatalf("Health() = %q, want %q", got, HealthOK)
+		fill(s, DialBadEnter-1, DialBadEnter-1)
+		if s.SlowNewFlows || s.Health() != HealthOK {
+			t.Fatal("latched before enough bad samples were observed")
 		}
 	})
 

@@ -34,6 +34,7 @@ func newRetrySupervisor(t *testing.T, lid int, results ...error) (*Supervisor, *
 		},
 	})
 	s.lidClosedFn = func() int { return lid }
+	s.uplinkFn = func() bool { return true }
 	s.recordLidDestroy(true)
 	return s, &calls
 }
@@ -460,5 +461,55 @@ func TestNothingToDestroySettlesAnOutstandingDebt(t *testing.T) {
 
 	if debt := utils.ReadLidDebt(); debt != nil {
 		t.Errorf("the debt outlived proof that no instance exists: %+v", debt)
+	}
+}
+
+// 2026-09-22: nine dark wakes in a row had no IPv4 on en0, and every one of
+// them still spent an attempt — and the retry floor — on a link that did not
+// exist. No link means no attempt; the link returning means one immediately.
+func TestOwedDestroyWaitsForTheUplinkInsteadOfFiringIntoNothing(t *testing.T) {
+	s, calls := newRetrySupervisor(t, 1, errors.New("i/o timeout"))
+	s.attemptLidDestroy("lid close", lidCloseBudget)
+	s.lastLidAttempt = time.Now().Add(-2 * wakeRetryFloor)
+
+	up := false
+	s.uplinkFn = func() bool { return up }
+	s.reconcileLidDebt("tick retry")
+	if *calls != 1 {
+		t.Fatalf("destroy called %d times with no uplink, want 1 (the lid close only)", *calls)
+	}
+	if wallSince(s.lastLidAttempt) < wakeRetryFloor {
+		t.Fatal("a skipped attempt stamped lastLidAttempt, fencing off the retry when the link returns")
+	}
+
+	up = true
+	s.reconcileLidDebt("uplink back")
+	if *calls != 2 {
+		t.Fatalf("destroy called %d times after the uplink returned, want 2", *calls)
+	}
+	if got := s.snapshot(); got.LidDestroy != utils.LidDestroyFired {
+		t.Errorf("LidDestroy = %q, want %q", got.LidDestroy, utils.LidDestroyFired)
+	}
+}
+
+// The grace-expiry branch has the same gate: the held destroy stays held.
+func TestGraceExpiryWithNoUplinkKeepsTheDestroyHeld(t *testing.T) {
+	s, calls := newRetrySupervisor(t, 1)
+	s.lidGrace = time.Minute
+	s.recordLidDeferred(time.Now().Add(-time.Hour))
+	s.uplinkFn = func() bool { return false }
+
+	s.reconcileLidDebt("tick retry")
+	if *calls != 0 {
+		t.Fatalf("destroy called %d times with no uplink, want 0", *calls)
+	}
+	if _, held := s.lidDeferred(); !held {
+		t.Fatal("the held destroy was dropped instead of waiting for the link")
+	}
+
+	s.uplinkFn = func() bool { return true }
+	s.reconcileLidDebt("uplink back")
+	if *calls != 1 {
+		t.Fatalf("destroy called %d times after the uplink returned, want 1", *calls)
 	}
 }

@@ -71,6 +71,16 @@ func printSupervisorState() {
 		case utils.HealthVPSDown:
 			// ICMP port unreachable round-tripped: path fine, nothing listening.
 			fmt.Printf("   Mode:    🔴 proxy — hy2 process down on VPS (probe refused): %s\n", st.LastProbeError)
+		case utils.HealthLocalLink:
+			// The first hop is dropping packets. Say so before anything about
+			// the tunnel, because everything about the tunnel is suspect while
+			// this holds — and because "your Wi-Fi" is the single most useful
+			// thing mole can say on a bad evening.
+			fmt.Printf("   Mode:    🟡 proxy — LOCAL LINK BAD: gateway %s lost %d/%d echoes, median %dms, for %s; this is the Wi-Fi, not the tunnel — both legs will be slow and mole is changing nothing until it clears\n",
+				st.LinkGateway, st.LinkLoss(), utils.LinkWindow, st.LinkMedianMs(), humanize(time.Since(st.LinkBadSince)))
+			if st.LinkPHY != "" {
+				fmt.Printf("            radio: %s\n", st.LinkPHY)
+			}
 		case utils.HealthNoLink:
 			// Nothing to say about the VPS: this machine has no uplink. Naming
 			// the real culprit matters — reported as a path blackhole, this sent
@@ -84,7 +94,7 @@ func printSupervisorState() {
 				fmt.Printf("   Mode:    🟡 proxy — UDP path to VPS dark (probe %s ×%d, keepalive ×%d); wait it out or `mole down`, restarting won't help\n",
 					st.LastProbeVerdict, st.ConsecutiveFails, st.KeepaliveFails)
 			} else {
-				fmt.Printf("   Mode:    🟡 proxy — VPS answers fresh probes but the established tunnel is dark for %s (keepalive ×%d); a stall kick is dialing a new session\n",
+				fmt.Printf("   Mode:    🟡 proxy — VPS answers fresh probes but the established tunnel is dark for %s (keepalive ×%d); the standby leg is pre-warmed\n",
 					humanize(time.Since(st.KeepaliveFailingSince)), st.KeepaliveFails)
 			}
 		case utils.HealthDegraded:
@@ -92,12 +102,8 @@ func printSupervisorState() {
 			// is passing traffic. Which flavor matters, though, because only one
 			// of them is something the user is feeling right now.
 			if st.SlowNewFlows {
-				// Measured, not inferred: this is the state where an open
-				// connection holds ~100ms and full speed while every newly
-				// opened one takes seconds. Say what it looks like from a
-				// browser, since that is where it gets noticed.
-				fmt.Printf("   Mode:    🟡 proxy — established connections fine, but %d of the last %d NEW ones were slow or failed (last %s); pages you already have open are fast, new sites hang\n",
-					st.DialBad(), len(st.DialSamples), dialLast(st))
+				// The synthetic window is not evidence that every new site hangs.
+				fmt.Printf("   Mode:    🟡 proxy — synthetic probe window degraded (last %s); see Dials for slow replies versus failures\n", dialLast(st))
 			} else {
 				// The probe opens a new five-tuple each time and this path
 				// loses ~20% of those first packets.
@@ -105,7 +111,11 @@ func printSupervisorState() {
 					st.LastProbeVerdict, st.ConsecutiveFails)
 			}
 		default:
-			if st.LastLatencyMs > 0 {
+			if len(st.DialSamples) < utils.DialWindow {
+				fmt.Printf("   Mode:    🟡 proxy — collecting probe samples (%d/%d); %d slow or failed\n", len(st.DialSamples), utils.DialWindow, st.DialBad())
+			} else if st.DialBad() > 0 {
+				fmt.Printf("   Mode:    🟡 proxy — %d/%d probe requests slow or failed; see Dials for breakdown\n", st.DialBad(), len(st.DialSamples))
+			} else if st.LastLatencyMs > 0 {
 				fmt.Printf("   Mode:    🟢 proxy — VPS healthy (%dms)\n", st.LastLatencyMs)
 			} else {
 				fmt.Println("   Mode:    🟢 proxy — VPS healthy")
@@ -114,6 +124,8 @@ func printSupervisorState() {
 	default:
 		fmt.Printf("   Mode:    %s\n", st.Mode)
 	}
+	fmt.Printf("   Dials:   %s\n", dialStatus(st))
+	printBalance(st)
 	// Time-of-day Brutal ceiling, when the active server has a peak profile.
 	//
 	// The recorded profile is the scheduler's belief, refreshed once a minute;
@@ -124,24 +136,37 @@ func printSupervisorState() {
 	// name the disagreement instead of hiding it: past the settling window a
 	// standing mismatch means the scheduler has lost the selector.
 	if st.BandwidthProfile != "" {
+		realityRate := st.RealityRateMbps
+		if realityRate <= 0 {
+			realityRate = st.BandwidthDownMbps
+		}
+		tcpProfile := fmt.Sprintf("TCP Brutal ↓%d Mbps", realityRate)
+		if st.RealityPacingState == "unconfirmed" {
+			tcpProfile = "TCP pacing unconfirmed"
+		}
 		live, onStandby := 0, false
 		if now, err := core.NewClashClient("127.0.0.1:9090").Selection(core.ProxySelectorTag); err == nil {
 			live = core.BandwidthRungMbps(now)
 			onStandby = now == core.RealityLegTag
 		}
 		switch {
-		// The standby leg has no Brutal ceiling to report — it is TCP, so
-		// congestion control belongs to the kernel at both ends. Printing "↓0
-		// Mbps" here would read as a broken ceiling rather than a deliberate
-		// change of transport, so say which leg is carrying traffic instead.
+		case utils.ReadLeg() == utils.LegBoth:
+			fmt.Printf("   Profile: dual routing — %s; HY2 ladder ↓%d Mbps\n", tcpProfile, st.BandwidthDownMbps)
+		// The REALITY leg uses node-side TCP Brutal. Its confirmed rate may
+		// differ from the hysteria2 ladder's selected ceiling.
 		// Why traffic is on REALITY matters more than that it is. One of these
 		// is mole reporting a path problem it worked around; the other is the
 		// user's own instruction still in force, and left unsaid it reads as a
 		// fault that will not clear.
 		case onStandby && utils.ReadLeg() == utils.LegReality:
-			fmt.Println("   Profile: 📌 leg pinned — VLESS+REALITY over TCP/443 (fallback to hy2 disarmed; \"mole leg auto\" to release)")
+			fmt.Printf("   Profile: 📌 leg pinned — VLESS+REALITY over TCP/443, %s (fallback to hy2 disarmed; \"mole leg auto\" to release)\n", tcpProfile)
 		case onStandby:
-			fmt.Println("   Profile: VLESS+REALITY over TCP/443 (primary; hy2 ladder on standby, no Brutal ceiling applies)")
+			fmt.Printf("   Profile: VLESS+REALITY over TCP/443, %s (primary; hy2 ladder ↓%d Mbps on standby)\n", tcpProfile, st.BandwidthDownMbps)
+		case strings.HasPrefix(st.BandwidthProfile, "fallback-hy2/") && st.RealityServerDown != "":
+			// Not "measured dark": the node itself refused the port. Waiting
+			// will not fix this and the line should not suggest it might.
+			fmt.Printf("   Profile: 🎭 fallback leg — hysteria2 ladder, Brutal ↓%d Mbps; REALITY server NOT LISTENING on the node (%s) — `mole server repair` reinstalls it\n",
+				st.BandwidthDownMbps, st.RealityServerDown)
 		case strings.HasPrefix(st.BandwidthProfile, "fallback-hy2/") && (live == 0 || live == st.BandwidthDownMbps):
 			fmt.Printf("   Profile: 🎭 fallback leg — hysteria2 ladder, Brutal ↓%d Mbps (REALITY was measured dark; returns on its own)\n", st.BandwidthDownMbps)
 		case live == 0 || live == st.BandwidthDownMbps:
@@ -151,7 +176,20 @@ func printSupervisorState() {
 				live, st.BandwidthProfile, st.BandwidthDownMbps)
 		}
 	}
+	if st.RealityPacingState == "unconfirmed" {
+		fmt.Printf("   Pacing:  ⚠️ TCP rate is unconfirmed; transport remains selected by delivery checks (%s)\n", st.RealityPacingError)
+	}
 	printLidDestroy(st)
+	// The first hop, whenever it has been measured. One line, so the reader
+	// who sees a yellow tunnel can check the radio without leaving status.
+	if !st.LinkLastAt.IsZero() && st.LinkGateway != "" {
+		mark := "🟢"
+		if st.LinkBad {
+			mark = "🔴"
+		}
+		fmt.Printf("   Link:    %s gateway %s — %d/%d echoes lost, median %dms\n",
+			mark, st.LinkGateway, st.LinkLoss(), utils.LinkWindow, st.LinkMedianMs())
+	}
 	if !st.LastProbeAt.IsZero() {
 		fmt.Printf("   Probed:  %s ago\n", humanize(time.Since(st.LastProbeAt)))
 	}
@@ -186,6 +224,9 @@ func printLidDestroy(st *utils.State) {
 	case utils.LidDestroyFired:
 		fmt.Printf("   Lid:     🔴 destroy-on-lid-close FIRED — the server was destroyed (%s)\n", st.LidDestroyReason)
 		fmt.Println("            The daemon is stopping; bring the tunnel back with `mole server deploy` then `mole up`")
+	case utils.LidDestroyDeferred:
+		fmt.Printf("   Lid:     🟡 the lid shut at %s — server kept for the grace period, destroyed on the first wake after it if the lid is still shut\n",
+			st.LidDestroyPendingSince.Format("15:04"))
 	case utils.LidDestroyPending:
 		fmt.Printf("   Lid:     🟠 destroy-on-lid-close FAILED at %s (%d attempts) — the server is STILL BILLING, %s so far\n",
 			st.LidDestroyPendingSince.Format("15:04"), st.LidDestroyAttempts,

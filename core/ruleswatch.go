@@ -40,7 +40,7 @@ func (s *Supervisor) watchRules(ctx context.Context) {
 		return // 没注入回调 = 该功能未启用，安静退出而不是空转
 	}
 	paths := []string{utils.CustomRulesPath()}
-	last := stampFiles(paths)
+	retry := rulesRetry{observed: stampFiles(paths)}
 
 	ticker := time.NewTicker(rulesWatchInterval)
 	defer ticker.Stop()
@@ -50,22 +50,22 @@ func (s *Supervisor) watchRules(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			cur := stampFiles(paths)
-			if cur == last {
+			now := time.Now()
+			if !retry.due(stampFiles(paths), now) {
 				continue
 			}
-			last = cur
 			// 失败只记日志不中断守护进程：一份写坏的规则文件不该把还在正常工作的
-			// 隧道拖下水 —— 上一份 rule-set 仍然生效。
+			// 隧道拖下水。解析失败不写文件；多文件写入失败可能部分完成。
 			n, err := s.onRulesChanged()
+			retry.finish(time.Now(), err)
 			if err != nil {
-				log.Printf("rules: 规则未应用，沿用上一份生效的规则: %v", err)
+				log.Printf("rules: 规则重编译失败，将退避重试（写入失败可能只完成部分文件）: %v", err)
 				continue
 			}
 			// ⚠️ 这行日志证明的是「mole 重写了 rule-set」，**不是**「sing-box 已重载」——
 			// sing-box 重载 rule-set 时不打任何日志（2026-08-04 实测）。要确认最终效果
 			// 只能看行为（curl 那个域名），不能看日志。
-			log.Printf("rules: custom-rules.json 已变更 → 重写 %d 条域名规则，sing-box 就地重载（TUN/连接不受影响）", n)
+			log.Printf("rules: custom-rules.json 已变更 → 重写 %d 条域名规则，等待 sing-box 文件监听重载；DNS 域名策略仍需重新连接同步", n)
 		}
 	}
 }
@@ -84,4 +84,38 @@ func stampFiles(paths []string) string {
 			strconv.FormatInt(fi.Size(), 10) + ";"
 	}
 	return out
+}
+
+// A failed version stays pending. Retry at 2, 4, ... 60 seconds; a new
+// source version bypasses backoff. Successful versions are never re-applied.
+type rulesRetry struct {
+	observed string
+	pending  bool
+	delay    time.Duration
+	next     time.Time
+}
+
+func (r *rulesRetry) due(stamp string, now time.Time) bool {
+	if stamp != r.observed {
+		r.observed, r.pending = stamp, true
+		r.delay, r.next = 0, time.Time{}
+	}
+	return r.pending && !now.Before(r.next)
+}
+
+func (r *rulesRetry) finish(now time.Time, err error) {
+	if err == nil {
+		r.pending = false
+		r.delay = 0
+		return
+	}
+	if r.delay == 0 {
+		r.delay = rulesWatchInterval
+	} else {
+		r.delay *= 2
+	}
+	if r.delay > time.Minute {
+		r.delay = time.Minute
+	}
+	r.next = now.Add(r.delay)
 }

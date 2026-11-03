@@ -52,6 +52,9 @@ type ruleSetSource struct {
 
 // isHotEligible 判断一条规则能否搬进 rule-set：纯域名匹配 + 有 outbound。
 func isHotEligible(r RouteRule) bool {
+	if len(r.SourcePortRange) != 0 {
+		return false
+	}
 	if r.Outbound == "" || r.Action != "" || r.Protocol != "" || r.Invert {
 		return false
 	}
@@ -184,6 +187,53 @@ func LoadRoutingRules() []RouteRule {
 	return append(append([]RouteRule{}, loadBuiltinRules()...), loadCustomRules()...)
 }
 
+// LoadRoutingRulesStrict refuses malformed/unreadable custom rules on reload.
+// Treating an invalid file as an empty list would overwrite the last good sets.
+func LoadRoutingRulesStrict() ([]RouteRule, error) {
+	rules := append([]RouteRule{}, loadBuiltinRules()...)
+	data, err := os.ReadFile(utils.CustomRulesPath())
+	if os.IsNotExist(err) {
+		return rules, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read custom rules: %w", err)
+	}
+	var custom []RouteRule
+	if err := json.Unmarshal(data, &custom); err != nil {
+		return nil, fmt.Errorf("parse custom rules: %w", err)
+	}
+	return append(rules, custom...), nil
+}
+
 // MoleDirForTest 返回当前 ~/.mole。测试用它在改写 HOME 之前抓住真实目录，
 // 以便把 geoip-cn.srs 这类二进制 rule-set 复制进临时环境。
 func MoleDirForTest() string { return utils.MoleDir() }
+
+// DirectDomains 返回所有「判给 direct 出站」的域名匹配式。
+//
+// 给 PF 的 direct 豁免表当闸门用（见 utils/directexempt.go）：豁免一个地址等于
+// 在 fail-closed 的防火墙上开一个洞，所以那个洞必须能追溯到 custom-rules.json 里
+// 一条有人亲手写下的规则 —— 而不是「sing-box 这条连接走了 direct，那就放行」。
+// 两者平时一致，不一致的那天（路由 bug、规则文件写坏、rule-set 没重编）
+// 正是最不该自动开洞的那天。
+//
+// suffix 与 keyword 分开返回而不是合成一份：sing-box 对两者的语义不同
+// （suffix 按标签边界对齐，keyword 是裸子串，见 types.go 上的注释），
+// 揉在一起匹配就会和真实路由判定给出不同答案。
+func DirectDomains() utils.DirectDomainSet {
+	return directDomainsFrom(LoadRoutingRules())
+}
+
+func directDomainsFrom(rules []RouteRule) utils.DirectDomainSet {
+	var set utils.DirectDomainSet
+	for _, r := range rules {
+		if r.Outbound != "direct" {
+			continue
+		}
+		set.Suffixes = append(set.Suffixes, r.DomainSuffix...)
+		set.Keywords = append(set.Keywords, r.DomainKeyword...)
+	}
+	sort.Strings(set.Suffixes)
+	sort.Strings(set.Keywords)
+	return set
+}

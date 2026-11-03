@@ -14,7 +14,7 @@ func TestReadLegUnpinnedByDefault(t *testing.T) {
 
 func TestWriteReadClearLeg(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	for _, leg := range []string{LegHy2, LegReality} {
+	for _, leg := range []string{LegHy2, LegReality, "both"} {
 		if err := WriteLeg(leg); err != nil {
 			t.Fatalf("WriteLeg(%q): %v", leg, err)
 		}

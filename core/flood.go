@@ -9,8 +9,8 @@ import (
 // floodMarker is how Go renders syscall.ENOBUFS, which is what sing-box prints
 // when its UDP socket refuses another datagram:
 //
-//	connection: connection download closed: write udp 192.168.1.34:50774->
-//	158.247.195.18:443: write: no buffer space available
+//	connection: connection download closed: write udp 192.0.2.34:50774->
+//	198.51.100.20:443: write: no buffer space available
 //
 // That line is the one symptom that separates the two failures self-healing
 // keeps confusing. Brutal sends at the configured rate whether or not the link
@@ -30,9 +30,10 @@ const floodMarker = "write: no buffer space available"
 // io.Writer so it can be spliced into sing-box's own output rather than
 // re-reading the log file, which rotates under us.
 type floodSensor struct {
-	mu   sync.Mutex
-	seen int
-	last time.Time
+	mu       sync.Mutex
+	seen     int
+	last     time.Time
+	sequence uint64
 	// tail carries the bytes that could still be the head of a marker split
 	// across two writes. It is kept one byte shorter than the marker, so it can
 	// never contain a complete one on its own and nothing is counted twice.
@@ -50,6 +51,7 @@ func (f *floodSensor) Write(p []byte) (int, error) {
 	}
 	if n := bytes.Count(buf, []byte(floodMarker)); n > 0 {
 		f.seen += n
+		f.sequence += uint64(n)
 		f.last = time.Now()
 	}
 	if keep := len(floodMarker) - 1; len(buf) > keep {
@@ -58,6 +60,18 @@ func (f *floodSensor) Write(p []byte) (int, error) {
 		f.tail = append(f.tail[:0], buf...)
 	}
 	return len(p), nil
+}
+
+type floodSnapshot struct {
+	sequence uint64
+	last     time.Time
+}
+
+// snapshot is independent of the consuming minute-scale self-healing counter.
+func (f *floodSensor) snapshot() floodSnapshot {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return floodSnapshot{f.sequence, f.last}
 }
 
 // take reports the sightings since the last call and resets the count.

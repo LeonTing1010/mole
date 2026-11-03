@@ -44,6 +44,9 @@ func runCeiling(_ *cobra.Command, args []string) error {
 
 	if len(args) == 0 {
 		printCeiling(sched, rungs)
+		if srv.RealityDownMbps > 0 {
+			fmt.Printf("REALITY TCP Brutal: %d Mbps (independent of the hy2 ladder)\n", srv.RealityDownMbps)
+		}
 		return nil
 	}
 
@@ -86,6 +89,10 @@ func runCeiling(_ *cobra.Command, args []string) error {
 	// here keeps the first post-switch connection from eating it.
 	member := core.BandwidthRungTag(target)
 	clash := core.NewClashClient("127.0.0.1:9090")
+	if utils.ReadLeg() == utils.LegBoth {
+		fmt.Printf("✔ HY2 ceiling → %d Mbps; dual routing will reconcile the new ceiling without moving existing connections.\n", target)
+		return nil
+	}
 	// Don't yank traffic off REALITY. It is the primary, and the ceiling is a
 	// property of the hy2 ladder only; selecting a rung here would move live
 	// traffic across transports under the name of a ceiling change — which the
@@ -93,8 +100,11 @@ func runCeiling(_ *cobra.Command, args []string) error {
 	// be the churn in between. The pin is saved either way and takes effect
 	// whenever the ladder carries traffic: a fallback, or `mole leg hy2`.
 	if now, err := clash.Selection(core.ProxySelectorTag); err == nil && now == core.RealityLegTag {
-		fmt.Printf("✔ Ceiling pinned to %d Mbps — held, because traffic is on the primary leg (VLESS+REALITY over TCP), which has no ceiling.\n", target)
-		fmt.Println("  It applies whenever the hy2 ladder carries traffic: an automatic fallback, or \"mole leg hy2\".")
+		tcpRate := target
+		if srv.RealityDownMbps > 0 {
+			tcpRate = srv.RealityDownMbps
+		}
+		fmt.Printf("✔ HY2 ceiling → %d Mbps. Traffic stays on REALITY; the node paces TCP toward this client at %d Mbps.\n", target, tcpRate)
 		return nil
 	}
 	if _, err := clash.TestDelay(member, "https://www.gstatic.com/generate_204", 5000); err != nil {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -276,6 +277,111 @@ func TestPinnedCertEncodingIsURLSafe(t *testing.T) {
 	}
 }
 
+// These are real 32-hex passwords of the shape mole used to mint, and what an
+// importer that base64-decodes a link's userinfo makes of them. The first two
+// decode to 24 bytes with a colon in them, so the importer authenticates with
+// the two halves of the decoded noise and the server reports a wrong password —
+// with nothing anywhere saying the credential was rewritten on the way in.
+// 11.8% of hex passwords landed there. If this test ever passes because the
+// predicate stopped recognising them, the password change below is unguarded.
+func TestBase64RewritesFlagsTheCredentialsItMangles(t *testing.T) {
+	mangled := []string{
+		"ff9243a8f506b40928b5b7a767c76fb0", // colon at decoded index 8
+		"e8a7f770d9106fd287db7f1adbc60926", // colon at decoded index 20
+	}
+	for _, pw := range mangled {
+		if !base64Rewrites(pw) {
+			t.Errorf("%s is rewritten by such an importer but not flagged", pw)
+		}
+	}
+	// A colon-free decode leaves the credential alone, so the predicate must not
+	// fire on every hex string — only on the ones that actually break.
+	if base64Rewrites("00000000000000000000000000000000") {
+		t.Error("a colon-free decode flagged as rewritten")
+	}
+	// And the '.' makes the decode fail outright, which is the whole remedy.
+	if base64Rewrites("ff9243a8f506b409.28b5b7a767c76fb0") {
+		t.Error("a password carrying '.' is not base64 at all, so nothing can rewrite it")
+	}
+}
+
+func TestTunnelPasswordIsNotBase64Shaped(t *testing.T) {
+	for i := 0; i < 4096; i++ {
+		pw, err := tunnelPassword()
+		if err != nil {
+			t.Fatalf("tunnelPassword: %v", err)
+		}
+		if base64Rewrites(pw) {
+			t.Fatalf("%q can still be rewritten by an importer that decodes userinfo", pw)
+		}
+		if n := strings.Count(pw, "."); n != 1 {
+			t.Fatalf("%q carries %d dots, want exactly 1", pw, n)
+		}
+		// A leading '.' is YAML's .inf/.nan indicator, and the password is
+		// interpolated into the node's config.yaml.
+		if pw[0] == '.' {
+			t.Fatalf("%q starts with the dot", pw)
+		}
+		if len(pw) != 33 {
+			t.Fatalf("%q is %d chars, want 33 (32 hex + the dot)", pw, len(pw))
+		}
+		if body := strings.Replace(pw, ".", "", 1); !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(body) {
+			t.Fatalf("%q is not hex around its dot", pw)
+		}
+	}
+}
+
+// The password reaches the node twice — once in the boot script's YAML and once
+// in the client's own config, built from the URI — and the two have to agree or
+// the tunnel is dark with both sides reporting a bad password. A '.' is
+// unreserved in RFC 3986, so it needs no escaping in the userinfo and the
+// round trip is the identity.
+func TestTunnelPasswordSurvivesTheURIRoundTrip(t *testing.T) {
+	pw, err := tunnelPassword()
+	if err != nil {
+		t.Fatalf("tunnelPassword: %v", err)
+	}
+	s := Server{Name: "icn-1", IP: "1.2.3.4", Port: 443, Password: pw}
+	uri := s.URI()
+	back, err := serverFromURI(uri)
+	if err != nil {
+		t.Fatalf("serverFromURI: %v", err)
+	}
+	if back.Password != pw {
+		t.Errorf("password did not survive the URI: got %q want %q", back.Password, pw)
+	}
+	if back.URI() != uri {
+		t.Errorf("URI is not stable across a round-trip:\n got %q\nwant %q", back.URI(), uri)
+	}
+}
+
+// The uuid is the credential in the link `mole server link` hands out, and its
+// shape is not ours to choose: 36 characters, all of them in the base64url
+// alphabet, length divisible by four — so it decodes every time. 14.6% of v4
+// UUIDs decode to something containing a colon, and an importer then splits on
+// it and authenticates with the halves. Resampling is the only defence that
+// leaves the uuid canonical, which a VLESS server requires.
+func TestRandomUUIDSurvivesAnImportersBase64Heuristic(t *testing.T) {
+	canonical := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	seen := make(map[string]bool, 4096)
+	for i := 0; i < 4096; i++ {
+		uuid, err := randomUUID()
+		if err != nil {
+			t.Fatalf("randomUUID: %v", err)
+		}
+		if !canonical.MatchString(uuid) {
+			t.Fatalf("%q is not a canonical version-4 uuid", uuid)
+		}
+		if base64Rewrites(uuid) {
+			t.Fatalf("%q decodes to something containing a colon — an importer would authenticate with the halves", uuid)
+		}
+		if seen[uuid] {
+			t.Fatalf("%q minted twice", uuid)
+		}
+		seen[uuid] = true
+	}
+}
+
 // The boot script runs once, unattended, on a machine reachable no other way.
 // A quoting or heredoc mistake here doesn't fail loudly — it leaves a VPS that
 // billed you and never came up.
@@ -308,6 +414,13 @@ func TestBootScriptIsValidBashAndCarriesTheIdentity(t *testing.T) {
 		if i, j := strings.Index(script, "authorized_keys"), strings.Index(script, "PasswordAuthentication no"); i < 0 || j < 0 || i > j {
 			t.Error("sshd hardening must install the key before disabling password auth")
 		}
+		// And before the first set -e. On 2026-10-31 the key was installed
+		// last, a failure ahead of it ended the script, and the machine had
+		// neither a key nor a way to log in. The line-anchored match skips the
+		// mention of set -e in the comment above.
+		if k, e := strings.Index(script, "authorized_keys"), strings.Index(script, "\nset -euo pipefail\n"); k < 0 || e < 0 || k > e {
+			t.Error("the SSH key must be installed before the first set -e, or an early failure locks the machine")
+		}
 		want = append(want, strings.TrimSpace(id.SSHPubKey), "PermitRootLogin prohibit-password")
 	} else if strings.Contains(script, "PasswordAuthentication no") {
 		t.Error("password auth disabled with no key installed — the node would be unreachable")
@@ -323,5 +436,29 @@ func TestBootScriptIsValidBashAndCarriesTheIdentity(t *testing.T) {
 	}
 	if strings.Contains(script, "bing.com") {
 		t.Error("boot script still impersonates bing.com")
+	}
+}
+
+// Both credentials land in the node's config.yaml as YAML scalars, and a bare
+// scalar that is nothing but digits resolves as a number. While the password was
+// 32 hex characters that was survivable by accident — a 32-digit integer
+// overflows int64 and the parser falls back to a string — but tunnelPassword
+// puts a '.' in it, and the same accident then resolves as a float. The node
+// would come up authenticating against something other than the password the
+// client holds, and both sides would report the other as wrong.
+func TestBootScriptQuotesTheYAMLCredentials(t *testing.T) {
+	id, err := newServerIdentity()
+	if err != nil {
+		t.Fatalf("newServerIdentity: %v", err)
+	}
+	pw, err := tunnelPassword()
+	if err != nil {
+		t.Fatalf("tunnelPassword: %v", err)
+	}
+	script := hy2BootScript(pw, 443, id)
+	for _, want := range []string{`password: "` + pw + `"`, `password: "` + id.ObfsPassword + `"`} {
+		if !strings.Contains(script, want) {
+			t.Errorf("boot script does not carry the quoted scalar %s", want)
+		}
 	}
 }

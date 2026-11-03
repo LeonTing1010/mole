@@ -12,13 +12,13 @@ import (
 // bare EOF — a failure that reads like a broken implementation rather than a
 // missing field.
 func TestParseVLESSReality(t *testing.T) {
-	o, err := parseServerURL("vless://96738e78-6353-4d57-863f-f3bd26d2a856@158.247.230.81:443" +
+	o, err := parseServerURL("vless://00000000-0000-4000-8000-000000000000@198.51.100.10:443" +
 		"?encryption=none&security=reality&type=tcp&flow=xtls-rprx-vision&fp=chrome" +
-		"&sni=www.apple.com&pbk=Sl-2p_V0AFMK09BlyvW-CyvV-7jZpiXBl8x6dvmPxRg&sid=ac9a7dcddc45b2b7#icn-test")
+		"&sni=www.apple.com&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0123456789abcdef#icn-test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.Type != "vless" || o.UUID != "96738e78-6353-4d57-863f-f3bd26d2a856" || o.ServerPort != 443 {
+	if o.Type != "vless" || o.UUID != "00000000-0000-4000-8000-000000000000" || o.ServerPort != 443 {
 		t.Fatalf("unexpected outbound: %+v", o)
 	}
 	if o.Flow != "xtls-rprx-vision" {
@@ -39,10 +39,10 @@ func TestParseVLESSReality(t *testing.T) {
 	if o.TLS.Reality == nil || !o.TLS.Reality.Enabled {
 		t.Fatal("reality not enabled")
 	}
-	if o.TLS.Reality.PublicKey != "Sl-2p_V0AFMK09BlyvW-CyvV-7jZpiXBl8x6dvmPxRg" {
+	if o.TLS.Reality.PublicKey != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" {
 		t.Errorf("public_key = %q", o.TLS.Reality.PublicKey)
 	}
-	if o.TLS.Reality.ShortID != "ac9a7dcddc45b2b7" {
+	if o.TLS.Reality.ShortID != "0123456789abcdef" {
 		t.Errorf("short_id = %q", o.TLS.Reality.ShortID)
 	}
 }
@@ -71,7 +71,7 @@ func TestRealityOutboundIsNotLaddered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outs := buildProxyOutbounds(uri, "", o)
+	outs, _ := buildProxyOutbounds(uri, "", o)
 	if len(outs) != 1 || outs[0].Type != "vless" {
 		t.Fatalf("expected a single vless outbound, got %+v", outs)
 	}
@@ -87,7 +87,7 @@ func TestStandbyLegJoinsTheLadderSelector(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outs := buildProxyOutbounds(hy2, reality, o)
+	outs, _ := buildProxyOutbounds(hy2, reality, o)
 	if outs[0].Type != "selector" || outs[0].Tag != core.ProxySelectorTag {
 		t.Fatalf("first outbound should be the proxy selector, got %+v", outs[0])
 	}
@@ -129,7 +129,7 @@ func TestBadStandbyURIDegradesToSingleLeg(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outs := buildProxyOutbounds(hy2, "://nonsense", o)
+	outs, _ := buildProxyOutbounds(hy2, "://nonsense", o)
 	for _, out := range outs {
 		if out.Tag == core.RealityLegTag {
 			t.Fatal("a malformed standby URI produced a standby member")
@@ -151,7 +151,7 @@ func TestStandbyBuildsASelectorEvenWhenTheLadderCollapses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outs := buildProxyOutbounds(hy2, reality, o)
+	outs, _ := buildProxyOutbounds(hy2, reality, o)
 	if outs[0].Type != "selector" {
 		t.Fatalf("expected a selector for the two legs, got %+v", outs[0])
 	}
@@ -161,5 +161,111 @@ func TestStandbyBuildsASelectorEvenWhenTheLadderCollapses(t *testing.T) {
 	}
 	if outs[0].Default != want[1] {
 		t.Errorf("default = %q, want the REALITY primary %q", outs[0].Default, want[1])
+	}
+}
+
+// The failover gate's two forwarders must be a matched pair: same destination
+// on the node, different legs carrying them. If they are not — if one is
+// missing, or both end up on the same leg — the gate goes on comparing two
+// things that are not comparable, which is the 2026-09-12 failure (fourteen
+// switches onto a leg measured 3-9x worse) wearing a different disguise.
+//
+// This is the check that distinguishes "wired" from "present in the JSON",
+// because nothing at runtime would report the difference: a gate probe routed
+// over REALITY answers perfectly well, it just answers about the wrong leg.
+func TestLegGateForwardersRideDifferentLegs(t *testing.T) {
+	hy2 := "hy2://pw@1.2.3.4:443?upmbps=5&downmbps=100&obfs=salamander&obfs-password=x"
+	reality := "vless://u@1.2.3.4:443?security=reality&pbk=k&sni=www.apple.com"
+	cfg, err := BuildWithStandby(hy2, reality)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ports := map[string]int{}
+	for _, in := range cfg.Inbounds {
+		switch in.Tag {
+		case core.BrutalInboundTag, core.LegGateInboundTag:
+			ports[in.Tag] = in.ListenPort
+			// Both must land on the keeper's port at the far end: the gate
+			// compares legs, so the destination has to be the one thing they
+			// do not differ in.
+			if in.OverridePort != core.BrutalKeeperPort {
+				t.Errorf("%s forwards to port %d, want the keeper's %d", in.Tag, in.OverridePort, core.BrutalKeeperPort)
+			}
+		}
+	}
+	if ports[core.BrutalInboundTag] != core.BrutalKeeperPort {
+		t.Errorf("REALITY forwarder listens on %d, want %d", ports[core.BrutalInboundTag], core.BrutalKeeperPort)
+	}
+	if ports[core.LegGateInboundTag] != core.LegGatePort {
+		t.Fatalf("hy2 gate forwarder listens on %d, want %d", ports[core.LegGateInboundTag], core.LegGatePort)
+	}
+
+	legOf := map[string]string{}
+	for _, r := range cfg.Route.Rules {
+		for _, in := range r.Inbound {
+			if in == core.BrutalInboundTag || in == core.LegGateInboundTag {
+				legOf[in] = r.Outbound
+			}
+		}
+	}
+	if legOf[core.BrutalInboundTag] != core.RealityLegTag {
+		t.Errorf("REALITY forwarder routed to %q, want %q", legOf[core.BrutalInboundTag], core.RealityLegTag)
+	}
+	gate := legOf[core.LegGateInboundTag]
+	if gate == "" {
+		t.Fatal("hy2 gate forwarder has no route rule — its probes would fall through to the catch-all and measure whatever the selector is on")
+	}
+	if gate == core.RealityLegTag || gate == core.ProxySelectorTag {
+		t.Fatalf("hy2 gate forwarder routed to %q — it must name a ladder member, or the gate times the leg it is deciding about", gate)
+	}
+	if gate != core.Hy2ProbeSelectorTag {
+		t.Errorf("hy2 gate forwarder routed to %q, want its own selectable UDP leg", gate)
+	}
+	// And the member it names has to be one sing-box will have defined.
+	var defined bool
+	for _, o := range cfg.Outbounds {
+		if o.Tag == gate {
+			defined = true
+			if o.Type != "selector" {
+				t.Errorf("gate target %q is type %q, want selector", gate, o.Type)
+			}
+			for _, member := range o.Outbounds {
+				found := false
+				for _, target := range cfg.Outbounds {
+					if target.Tag == member && target.Type == "hysteria2" {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("gate can leave the UDP transport through %q", member)
+				}
+			}
+		}
+	}
+	if !defined {
+		t.Errorf("gate routed to %q, which no outbound defines — sing-box refuses to start on that", gate)
+	}
+}
+
+// A node with no REALITY leg has nothing to compare, and a route rule naming an
+// outbound that does not exist is a config sing-box refuses to start on.
+func TestLegGateAbsentWithoutASecondLeg(t *testing.T) {
+	hy2 := "hy2://pw@1.2.3.4:443?upmbps=5&downmbps=100"
+	cfg, err := Build(hy2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range cfg.Inbounds {
+		if in.Tag == core.LegGateInboundTag {
+			t.Error("single-leg config carries a gate forwarder with no second leg to gate")
+		}
+	}
+	for _, r := range cfg.Route.Rules {
+		for _, in := range r.Inbound {
+			if in == core.LegGateInboundTag {
+				t.Error("single-leg config carries a gate route rule")
+			}
+		}
 	}
 }

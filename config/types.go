@@ -13,7 +13,14 @@ type SingboxConfig struct {
 // ExperimentalConfig exposes the Clash-compatible API so mole can
 // flip a selector outbound at runtime.
 type ExperimentalConfig struct {
-	ClashAPI *ClashAPIConfig `json:"clash_api,omitempty"`
+	ClashAPI  *ClashAPIConfig  `json:"clash_api,omitempty"`
+	CacheFile *CacheFileConfig `json:"cache_file,omitempty"`
+}
+
+type CacheFileConfig struct {
+	Enabled     bool   `json:"enabled"`
+	Path        string `json:"path"`
+	StoreFakeIP bool   `json:"store_fakeip"`
 }
 
 type ClashAPIConfig struct {
@@ -63,6 +70,17 @@ type InboundConfig struct {
 	Stack       string   `json:"stack,omitempty"`
 	Listen      string   `json:"listen,omitempty"`
 	ListenPort  int      `json:"listen_port,omitempty"`
+	// OverrideAddress/OverridePort turn a `direct` inbound into a fixed
+	// forwarder: everything accepted on Listen:ListenPort is sent to
+	// OverrideAddress:OverridePort through whatever outbound the route picks.
+	// That is how the client reaches the node's loopback-only Brutal keeper —
+	// a destination of 127.0.0.1 is meaningless to name from here, because the
+	// TUN never captures loopback, so the address is written on the node's side
+	// of the leg instead. A fixed forwarder rather than a socks/mixed inbound
+	// on purpose: it can reach exactly one address, so no other local process
+	// can borrow it as a general proxy into the tunnel.
+	OverrideAddress string `json:"override_address,omitempty"`
+	OverridePort    int    `json:"override_port,omitempty"`
 }
 
 type OutboundConfig struct {
@@ -90,6 +108,27 @@ type OutboundConfig struct {
 	Default     string           `json:"default,omitempty"`
 	TLS         *TLSConfig       `json:"tls,omitempty"`
 	Transport   *TransportConfig `json:"transport,omitempty"`
+	// QUIC tuning — applied to every QUIC-based outbound (HY2, VLESS+REALITY
+	// with flow=xtls-rprx-vision, TUIC). Smaller initial packets raise the
+	// chance a handshake gets through a lossy path on the first try; disabling
+	// PMTUD is safe because we know the VPS MTU and a failed ICMP probe would
+	// just make things worse.
+	InitialPacketSize int  `json:"initial_packet_size,omitempty"`
+	DisablePathMTU    bool `json:"disable_path_mtu_discovery,omitempty"`
+	// TCPFastOpen sends the first payload inside the SYN, removing one RTT from
+	// every new connection. The node already runs net.ipv4.tcp_fastopen=3 (see
+	// cmd's boot script); without this flag the client never asks for it.
+	TCPFastOpen bool             `json:"tcp_fast_open,omitempty"`
+	Multiplex   *MultiplexConfig `json:"multiplex,omitempty"`
+}
+
+// MultiplexConfig uses sing-box's native stream/session pool. Enable only when
+// the node explicitly accepts multiplex; legacy global mux rejects requests.
+type MultiplexConfig struct {
+	Enabled        bool   `json:"enabled"`
+	Protocol       string `json:"protocol"`
+	MaxConnections int    `json:"max_connections"`
+	MinStreams     int    `json:"min_streams"`
 }
 
 // Hy2Obfs enables hysteria2 salamander obfuscation. Without it the raw QUIC
@@ -171,10 +210,11 @@ type DefaultDomainResolver struct {
 }
 
 type RouteRule struct {
-	Action       string   `json:"action,omitempty"`
-	Protocol     string   `json:"protocol,omitempty"`
-	IPCIDR       []string `json:"ip_cidr,omitempty"`
-	DomainSuffix []string `json:"domain_suffix,omitempty"`
+	SourcePortRange []string `json:"source_port_range,omitempty"`
+	Action          string   `json:"action,omitempty"`
+	Protocol        string   `json:"protocol,omitempty"`
+	IPCIDR          []string `json:"ip_cidr,omitempty"`
+	DomainSuffix    []string `json:"domain_suffix,omitempty"`
 	// DomainKeyword matches a substring anywhere in the domain, with no regard
 	// for label boundaries — the escape hatch for hosts a suffix cannot reach.
 	// sing-box's domain_suffix aligns on dots, so `buy.itunes.apple.com` does
@@ -183,6 +223,11 @@ type RouteRule struct {
 	// matcher kinds within one rule, so mixing them matches neither alone.
 	DomainKeyword []string `json:"domain_keyword,omitempty"`
 	RuleSet       []string `json:"rule_set,omitempty"`
-	Invert        bool     `json:"invert,omitempty"`
-	Outbound      string   `json:"outbound,omitempty"`
+	// Inbound pins a rule to traffic that arrived on one named inbound,
+	// regardless of where it is going. Used to bind the Brutal keeper's
+	// forwarder to the REALITY leg specifically: the rate has to travel over
+	// the very leg it describes, whichever leg the selector is carrying.
+	Inbound  []string `json:"inbound,omitempty"`
+	Invert   bool     `json:"invert,omitempty"`
+	Outbound string   `json:"outbound,omitempty"`
 }

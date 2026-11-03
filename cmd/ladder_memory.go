@@ -31,13 +31,14 @@ import (
 // An inherited ceiling that is too LOW has nothing to correct it, which is the
 // asymmetry that argues for remembering at all.
 type regionLadder struct {
-	UpMbps        int    `json:"up_mbps"`
-	DownMbps      int    `json:"down_mbps"`
-	PeakUpMbps    int    `json:"peak_up_mbps"`
-	PeakDownMbps  int    `json:"peak_down_mbps"`
-	PeakStartHour int    `json:"peak_start_hour"`
-	PeakEndHour   int    `json:"peak_end_hour"`
-	RememberedAt  string `json:"remembered_at"`
+	UpMbps          int    `json:"up_mbps"`
+	DownMbps        int    `json:"down_mbps"`
+	PeakUpMbps      int    `json:"peak_up_mbps"`
+	PeakDownMbps    int    `json:"peak_down_mbps"`
+	RealityDownMbps int    `json:"reality_down_mbps,omitempty"`
+	PeakStartHour   int    `json:"peak_start_hour"`
+	PeakEndHour     int    `json:"peak_end_hour"`
+	RememberedAt    string `json:"remembered_at"`
 }
 
 // loadLadderMemory reads the per-region record. A missing file is not an error
@@ -98,7 +99,8 @@ func rememberLadder(s Server) {
 	m[s.Region] = regionLadder{
 		UpMbps: up, DownMbps: down,
 		PeakUpMbps: peakUp, PeakDownMbps: peakDown,
-		PeakStartHour: start, PeakEndHour: end,
+		RealityDownMbps: s.RealityDownMbps,
+		PeakStartHour:   start, PeakEndHour: end,
 		RememberedAt: time.Now().Format(time.RFC3339),
 	}
 	if err := saveLadderMemory(m); err != nil {

@@ -54,7 +54,7 @@ func TestNothingLocalAndAnEmptyAccountIsNothingToDestroy(t *testing.T) {
 // only the API key.
 func TestNothingLocalButAnOrphanOnTheAccountStaysADebt(t *testing.T) {
 	withServers(t)
-	withAccount(t, []serverInstance{{ID: "cf7674ee", Label: "icn-1786758841", MainIP: "158.247.230.81"}}, nil)
+	withAccount(t, []serverInstance{{ID: "cf7674ee", Label: "icn-1786758841", MainIP: "198.51.100.10"}}, nil)
 
 	err := destroyActiveServerWithin(time.Second)
 	if err == nil || errors.Is(err, core.ErrNothingToDestroy) {

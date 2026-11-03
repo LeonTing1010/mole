@@ -143,6 +143,7 @@ func (s *Supervisor) runSleepDestroy(ctx context.Context) {
 // either way. Returns whether the server is gone.
 func (s *Supervisor) attemptLidDestroy(why string, budget time.Duration) bool {
 	s.lastLidAttempt = time.Now()
+	s.noUplinkLogged = false
 	// Retries live inside the management call, bounded by the budget the caller
 	// passed for the window it is actually in. They belong there rather than
 	// here because the failure this recovers from is a path failure, not a
@@ -199,6 +200,28 @@ func (s *Supervisor) onLidClose() {
 		log.Printf("destroy-on-lid-close: DRY RUN — lid close detected; would have destroyed the server now")
 		return
 	}
+	// With a grace period the lid close is a note, not a destroy. The server
+	// is kept until the first wake that finds the lid still shut past the
+	// grace; a lid that reopens before then keeps it for good. See
+	// reconcileLidDebt, which does the checking on every wake and tick.
+	//
+	// What this trades: a destroy at lid close has the network up and a 20s
+	// window; one on a dark wake has 6s and a HoldAwake that battery may
+	// decline — so a deferred destroy fails more often, and then the existing
+	// debt machinery retries it on every later wake. A Mac that never
+	// dark-wakes keeps the server until the lid opens, which at Vultr's rate
+	// is a few cents a night. Against that: 2026-09-04 17:53, a lid shut for
+	// two minutes, a destroy, a redeploy two minutes later, and a node that
+	// booted with one leg. Vultr bills the hour either way.
+	if s.lidGrace > 0 {
+		if _, held := s.lidDeferred(); held {
+			return
+		}
+		s.recordLidDeferred(time.Now())
+		_ = utils.WriteState(s.snapshot())
+		log.Printf("destroy-on-lid-close: the lid is shut — keeping the server for %s; it is destroyed on the first wake after that if the lid is still shut, and kept if the lid opens first", s.lidGrace)
+		return
+	}
 	log.Printf("destroy-on-lid-close: the lid is shut — destroying the server")
 	// Waits rather than skipping if a tick-driven retry is mid-flight: this is
 	// the one call with a window the system is holding open for it, and a
@@ -206,6 +229,28 @@ func (s *Supervisor) onLidClose() {
 	s.lidMu.Lock()
 	defer s.lidMu.Unlock()
 	s.attemptLidDestroy("lid close", lidCloseBudget)
+}
+
+// lidGraceAction is what a wake or tick should do about a held destroy.
+type lidGraceAction int
+
+const (
+	lidGraceWait    lidGraceAction = iota // still inside the grace, lid still shut
+	lidGraceKeep                          // the lid opened: keep the server, re-arm
+	lidGraceDestroy                       // grace elapsed with the lid still shut
+)
+
+// lidGraceDecision is the policy, kept free of the clock and the clamshell so
+// it can be tested. closed follows lidClosed(): 1 shut, 0 open, -1 unknown;
+// unknown counts as shut, for the reason reconcileLidDebt gives.
+func lidGraceDecision(closed int, since, now time.Time, grace time.Duration) lidGraceAction {
+	if closed == 0 {
+		return lidGraceKeep
+	}
+	if now.Round(0).Sub(since.Round(0)) < grace {
+		return lidGraceWait
+	}
+	return lidGraceDestroy
 }
 
 // onPowerWake settles a destroy at a wake notification. Kept as the fast path —
@@ -243,6 +288,33 @@ func (s *Supervisor) reconcileLidDebt(why string) {
 	if s.onIdleDestroy == nil || s.lidDryRun {
 		return
 	}
+	// A held destroy first: it is the common case with a grace period, and it
+	// becomes a debt only if the attempt below fails.
+	if heldSince, held := s.lidDeferred(); held {
+		if !s.lidMu.TryLock() {
+			return
+		}
+		defer s.lidMu.Unlock()
+		switch lidGraceDecision(s.lidIsClosed(), heldSince, time.Now(), s.lidGrace) {
+		case lidGraceKeep:
+			log.Printf("destroy-on-lid-close: the lid opened %s after it shut — inside the grace period, so the server was kept and nothing was redeployed",
+				wallSince(heldSince).Round(time.Minute))
+			s.recordLidReopened()
+			_ = utils.WriteState(s.snapshot())
+		case lidGraceDestroy:
+			if wallSince(s.lastLidAttempt) < wakeRetryFloor || !s.uplinkReady() {
+				return
+			}
+			log.Printf("destroy-on-lid-close: the lid has been shut for %s, past the %s grace — destroying the server",
+				wallSince(heldSince).Round(time.Minute), s.lidGrace)
+			if err := HoldAwake(); err != nil {
+				log.Printf("destroy-on-lid-close: could not hold the machine awake (%v) — trying anyway", err)
+			}
+			defer ReleaseAwake()
+			s.attemptLidDestroy(why, retryBudget)
+		}
+		return
+	}
 	since, attempts, owed := s.lidDestroyPending()
 	if !owed {
 		return
@@ -266,7 +338,7 @@ func (s *Supervisor) reconcileLidDebt(why string) {
 		_ = utils.WriteState(s.snapshot())
 		return
 	}
-	if wallSince(s.lastLidAttempt) < wakeRetryFloor {
+	if wallSince(s.lastLidAttempt) < wakeRetryFloor || !s.uplinkReady() {
 		return
 	}
 	// Ask for the wake to be held open for the length of the attempt. It is a
@@ -277,4 +349,25 @@ func (s *Supervisor) reconcileLidDebt(why string) {
 	}
 	defer ReleaseAwake()
 	s.attemptLidDestroy(why, retryBudget)
+}
+
+// uplinkReady gates a destroy attempt on there being a physical link at all.
+//
+// On 2026-09-22 the grace ran out at 04:06 in a dark wake whose Wi-Fi had not
+// joined, and every one of the next eight dark wakes until 07:49 was the same:
+// no interface with an IPv4 address. Each attempt still ran — a DNS query sent
+// out the TUN, then a DELETE down the routed path into a tunnel that had no
+// link beneath it — held the wake for its full budget, stamped lastLidAttempt,
+// and so fenced off the retry floor for the minute in which Wi-Fi might have
+// come up. With no link the attempt cannot succeed by construction; skipping
+// it costs nothing, and runLinkWatch retries the instant the link returns.
+func (s *Supervisor) uplinkReady() bool {
+	if s.uplinkUp() {
+		return true
+	}
+	if !s.noUplinkLogged {
+		s.noUplinkLogged = true
+		log.Printf("destroy-on-lid-close: destroy owed but no physical link yet (Wi-Fi not joined in this wake) — waiting for the uplink rather than firing into it")
+	}
+	return false
 }

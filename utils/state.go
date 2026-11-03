@@ -2,7 +2,9 @@ package utils
 
 import (
 	"encoding/json"
+	"log"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -42,17 +44,18 @@ const (
 // State is the supervisor's live view of the connection, persisted so that
 // `mole status` can read it without IPC.
 type State struct {
-	Mode             Mode         `json:"mode"`
-	PID              int          `json:"pid"`
-	SingboxPID       int          `json:"singbox_pid,omitempty"`
-	Server           string       `json:"server,omitempty"`
-	StartedAt        time.Time    `json:"started_at"`
-	LastProbeAt      time.Time    `json:"last_probe_at,omitempty"`
-	LastLatencyMs    int          `json:"last_latency_ms,omitempty"`
-	LastProbeError   string       `json:"last_probe_error,omitempty"`
-	LastProbeVerdict ProbeVerdict `json:"last_probe_verdict,omitempty"`
-	ConsecutiveFails int          `json:"consecutive_fails"`
-	ConsecutiveOK    int          `json:"consecutive_ok"`
+	Balance          *BalanceStatus `json:"balance,omitempty"`
+	Mode             Mode           `json:"mode"`
+	PID              int            `json:"pid"`
+	SingboxPID       int            `json:"singbox_pid,omitempty"`
+	Server           string         `json:"server,omitempty"`
+	StartedAt        time.Time      `json:"started_at"`
+	LastProbeAt      time.Time      `json:"last_probe_at,omitempty"`
+	LastLatencyMs    int            `json:"last_latency_ms,omitempty"`
+	LastProbeError   string         `json:"last_probe_error,omitempty"`
+	LastProbeVerdict ProbeVerdict   `json:"last_probe_verdict,omitempty"`
+	ConsecutiveFails int            `json:"consecutive_fails"`
+	ConsecutiveOK    int            `json:"consecutive_ok"`
 
 	// Keepalive fields track the in-tunnel keepalive that drives a tiny request
 	// through the proxy outbound to keep the hy2/QUIC session and its NAT
@@ -80,8 +83,9 @@ type State struct {
 	// five-tuple to the VPS; this opens a new proxied TCP connection through
 	// the tunnel to a foreign host. On 2026-09-01 the probe was alive 291
 	// times consecutively across the whole episode.
-	LastDialMs    int    `json:"last_dial_ms,omitempty"`
-	LastDialError string `json:"last_dial_error,omitempty"`
+	LastDialAt    time.Time `json:"last_dial_at,omitempty"`
+	LastDialMs    int       `json:"last_dial_ms,omitempty"`
+	LastDialError string    `json:"last_dial_error,omitempty"`
 	// DialSamples is the rolling window the latch below is computed from,
 	// newest last, capped at DialWindow. Persisted so `mole status` can show
 	// the shape of the last few minutes rather than one instantaneous number.
@@ -92,10 +96,29 @@ type State struct {
 	// verdict computed from the same window flaps every beat.
 	SlowNewFlows bool `json:"slow_new_flows,omitempty"`
 
+	// Local-link instrument — the echo to the default gateway. See link.go.
+	// LinkGateway names what is being echoed so a reader can tell a home
+	// router from a phone hotspot; LinkBad is the latched verdict and
+	// LinkBadSince when it latched.
+	LinkGateway  string       `json:"link_gateway,omitempty"`
+	LinkSamples  []LinkSample `json:"link_samples,omitempty"`
+	LinkLastAt   time.Time    `json:"link_last_at,omitempty"`
+	LinkBad      bool         `json:"link_bad,omitempty"`
+	LinkBadSince time.Time    `json:"link_bad_since,omitempty"`
+	LinkPHY      string       `json:"link_phy,omitempty"`
+
 	// Time-of-day bandwidth scheduler: which Brutal ceiling is currently selected.
 	// Empty when the active server has no peak profile configured.
-	BandwidthProfile  string `json:"bandwidth_profile,omitempty"`
-	BandwidthDownMbps int    `json:"bandwidth_down_mbps,omitempty"`
+	BandwidthProfile   string `json:"bandwidth_profile,omitempty"`
+	BandwidthDownMbps  int    `json:"bandwidth_down_mbps,omitempty"`
+	RealityRateMbps    int    `json:"reality_rate_mbps,omitempty"`
+	RealityPacingState string `json:"reality_pacing_state,omitempty"`
+	RealityPacingError string `json:"reality_pacing_error,omitempty"`
+
+	// RealityServerDown is set when the REALITY re-test got "connection
+	// refused" from the node itself — the server is not listening, which no
+	// amount of waiting on the path will fix. Empty otherwise.
+	RealityServerDown string `json:"reality_server_down,omitempty"`
 
 	// Whether the running daemon's destroy-on-lid-close watcher is actually
 	// armed, and why not when it isn't. Recorded because the feature used to be
@@ -133,6 +156,13 @@ const (
 	// same read it already makes, instead of showing a frozen "tunnel dark"
 	// through a server that no longer exists.
 	LidDestroyFired LidDestroyState = "fired"
+	// LidDestroyDeferred: the lid shut and the destroy is being held for the
+	// grace period (see Supervisor.onLidClose). A lid that reopens inside it
+	// keeps the server; one still shut on the first wake past it loses it.
+	// 2026-09-04: a lid shut for two minutes cost a destroy, a redeploy, and
+	// a node that came up with one leg — for a saving of nothing, since Vultr
+	// bills the hour either way.
+	LidDestroyDeferred LidDestroyState = "deferred"
 	// LidDestroyPending: the lid shut, the destroy fired, and it failed — the
 	// network was down at the one moment it had to work. The server is still
 	// running and still billing.
@@ -207,6 +237,11 @@ const (
 	// HealthNoLink: this machine has no usable uplink. Nothing about the VPS or
 	// the path is known — or knowable — until it returns.
 	HealthNoLink Health = "no-link"
+	// HealthLocalLink: the uplink exists but the first hop is dropping or
+	// delaying packets — the Wi-Fi, not the path. Every path-side verdict is
+	// suspect while this holds, and every remedy mole has (a leg, a rung) is
+	// aimed at the wrong side of the fault. See link.go.
+	HealthLocalLink Health = "local-link"
 )
 
 // Usable reports whether the tunnel is expected to carry traffic right now.
@@ -250,8 +285,8 @@ const (
 	// DialWindow: how many fresh dials the verdict looks at. At the 15s
 	// keepalive cadence this is ~5 minutes.
 	DialWindow = 20
-	// DialBadEnter / DialBadLeave: the Schmitt trigger. Enter at 4 bad in 20
-	// (20%), leave only at 1 or fewer (5%). A single threshold cannot work
+	// DialBadEnter / DialBadLeave: enter as soon as 4 bad samples occur in
+	// the rolling window (up to 20); leave at 1 or fewer in a full window. A single threshold cannot work
 	// here: the failure rate that day was ~15%, which straddles any fixed cut,
 	// and a verdict recomputed each beat would flap for the entire episode. A
 	// healthy leg measures 0 bad in 20 and never enters.
@@ -264,6 +299,7 @@ const (
 // than the time it spent failing, because how long a timeout took is a property
 // of the timeout, not of the path.
 func (s *State) RecordDial(ms int, err error) {
+	s.LastDialAt = time.Now()
 	sample := DialSample{Ms: ms, OK: err == nil}
 	if err != nil {
 		s.LastDialMs = 0
@@ -282,6 +318,21 @@ func (s *State) RecordDial(ms int, err error) {
 	s.UpdateNewFlowLatch()
 }
 
+// ResetDials empties the fresh-dial window and drops its latch, for the moment
+// traffic moves to a different leg. The samples describe connections opened on
+// the leg that was in force when each was taken, and a window that survives
+// the switch attributes them to the new one. Measured 2026-09-05: REALITY was
+// handed traffic back at 10:56:29 and thrown off again at 10:57:41 for "12 of
+// the last 20 new connections were slow or failed on proxy-reality" — 15 of
+// those 20 had been dialled on hy2, and an A/B minutes later had REALITY at
+// 0/10 bad. The new leg starts with its own evidence; four bad samples can
+// trigger an early comparison without inheriting the previous leg's failures.
+func (s *State) ResetDials() {
+	s.DialSamples = nil
+	s.LastDialAt = time.Time{}
+	s.SlowNewFlows = false
+}
+
 // DialBad counts the slow-or-failed dials in the current window.
 func (s *State) DialBad() int {
 	bad := 0
@@ -293,18 +344,36 @@ func (s *State) DialBad() int {
 	return bad
 }
 
-// UpdateNewFlowLatch applies the Schmitt trigger described at DialBadEnter.
-// Deliberately does nothing until the window is full: entering the verdict off
-// three samples would let one bad minute at startup paint the tunnel yellow.
-func (s *State) UpdateNewFlowLatch() {
-	if len(s.DialSamples) < DialWindow {
-		return
+// DialFails counts only the dials that carried nothing — a strict subset of
+// DialBad, which also counts the merely slow.
+//
+// The two are deliberately kept apart. A slow dial still degrades the verdict
+// and `mole status` (DialBad feeds the latch), but it must not move the
+// tunnel's leg: a connection that answered in 1.2s is slow, not dead, and the
+// leg it gets swapped for has not been shown to be any better. Measured
+// 2026-10-14, all six leg switches that evening were opened by four SUCCESSFUL
+// 1.1-2.4s dials with zero failures. Only a connection that carried nothing is
+// evidence about the leg.
+func (s *State) DialFails() int {
+	fails := 0
+	for _, d := range s.DialSamples {
+		if !d.OK {
+			fails++
+		}
 	}
+	return fails
+}
+
+// UpdateNewFlowLatch enters as soon as four bad samples provide evidence,
+// including startup and post-switch windows. The comparative leg gate still
+// verifies the standby before switching. Release requires a full clean window
+// so a brief recovery cannot erase an ongoing intermittent fault.
+func (s *State) UpdateNewFlowLatch() {
 	bad := s.DialBad()
 	switch {
 	case bad >= DialBadEnter:
 		s.SlowNewFlows = true
-	case bad <= DialBadLeave:
+	case len(s.DialSamples) == DialWindow && bad <= DialBadLeave:
 		s.SlowNewFlows = false
 	}
 }
@@ -320,6 +389,14 @@ func (s *State) Health() Health {
 	// far end.
 	if s.ConsecutiveFails > 0 && s.LastProbeVerdict == ProbeNoLink {
 		return HealthNoLink
+	}
+	// The local link outranks every path verdict below for the same reason
+	// no-link does: with the first hop dropping packets, a dark keepalive and
+	// a failing fresh dial are measurements of the radio, and acting on them
+	// as if they were about the path is how one bad evening became four leg
+	// changes and a three-rung descent.
+	if s.LinkBad {
+		return HealthLocalLink
 	}
 	// The keepalive is the authority on whether the tunnel passes traffic: it
 	// rides an established session end to end. When it is failing, the path is
@@ -345,18 +422,42 @@ func (s *State) Health() Health {
 	return HealthOK
 }
 
-// WriteState atomically persists the state to ~/.mole/state.json.
-func WriteState(s *State) error {
+// Serialize snapshots within the daemon and use unique files across processes.
+var stateWriteMu sync.Mutex
+var stateWriteLastWarning time.Time
+
+// WriteState publishes a complete snapshot without sharing a temporary path.
+func WriteState(s *State) (err error) {
+	stateWriteMu.Lock()
+	defer func() {
+		if err != nil && time.Since(stateWriteLastWarning) >= 30*time.Second {
+			log.Printf("state snapshot could not be persisted: %v", err)
+			stateWriteLastWarning = time.Now()
+		}
+		stateWriteMu.Unlock()
+	}()
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	path := StatePath()
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	f, err := os.CreateTemp(MoleDir(), ".state-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	defer os.Remove(f.Name())
+	_, err = f.Write(data)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	// The root daemon publishes status for the ordinary user's CLI.
+	if err = os.Chmod(f.Name(), 0644); err != nil {
+		return err
+	}
+	ChownToMoleDirOwner(f.Name())
+	return os.Rename(f.Name(), StatePath())
 }
 
 // ReadState loads the last persisted state, if any.

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/LeonTing1010/mole/utils"
@@ -21,6 +22,9 @@ type Supervisor struct {
 	// onRulesChanged 重新编译域名 rule-set，返回域名条数。由 cmd 层注入以避开
 	// core→config 的循环依赖（config 已 import core）。nil = 关闭规则热更。
 	onRulesChanged func() (int, error)
+	// directDomains 返回当前判给 direct 出站的域名集合，供 PF 豁免学习当闸门用。
+	// 同样由 cmd 层注入（core 不能 import config）。nil = 关闭豁免学习。
+	directDomains  func() utils.DirectDomainSet
 	probeAddr      string // "host:port" — direct UDP probe target
 	obfsPassword   string // salamander key the probe must speak; "" when unobfuscated
 	probeURL       string // URL driven through the proxy for keepalive (and fallback probe)
@@ -36,6 +40,9 @@ type Supervisor struct {
 	// at each window boundary — no sing-box restart, so the TUN and existing
 	// connections are never torn down.
 	schedule BandwidthSchedule
+	// realityRateMbps overrides the shared ladder rate for node-side TCP Brutal.
+	// Zero preserves the shared rate used by older server entries.
+	realityRateMbps int
 
 	// Destroy-on-lid-close. Inert unless both are set; see runSleepDestroy.
 	destroyOnLidClose bool
@@ -43,6 +50,8 @@ type Supervisor struct {
 	// lidDryRun logs the lid close and destroys nothing, so the clamshell
 	// detection can be proven on a given Mac without paying a redeploy.
 	lidDryRun bool
+	// lidGrace is SupervisorOpts.LidGrace. See onLidClose.
+	lidGrace time.Duration
 	// lidOffReason is what to tell the operator when the watcher is not armed.
 	lidOffReason string
 	// lidClosedFn reads the clamshell. A field rather than a direct call to
@@ -50,6 +59,10 @@ type Supervisor struct {
 	// has its lid open by definition, and the branch that matters most is the
 	// one taken when it is shut. Defaults to the real reader.
 	lidClosedFn func() int
+	// uplinkFn reports whether a physical interface carries a usable IPv4 —
+	// injectable for the same reason as lidClosedFn: the case that matters, a
+	// dark wake with Wi-Fi still unjoined, cannot be produced on demand.
+	uplinkFn func() bool
 	// Lid-destroy bookkeeping. It used to be reachable only from the
 	// power-notification thread, which is single-threaded by construction (one
 	// run loop, one callback at a time). The probe loop now settles debts too —
@@ -61,9 +74,13 @@ type Supervisor struct {
 	lidDestroyed     chan struct{}
 	lidDestroyedOnce sync.Once
 	lastLidAttempt   time.Time
+	noUplinkLogged   bool // guarded by lidMu; one "waiting for the uplink" line per stretch
 
 	stateMu sync.Mutex
 	state   *utils.State
+	// Incremented at handoff so an in-flight request on the old leg cannot
+	// add its result to the new leg's fresh window or keepalive streak.
+	probeGeneration atomic.Uint64
 	// lastHealth (guarded by stateMu) is the previously observed synthesized
 	// verdict, kept so flips get one durable log line — state.json is
 	// overwritten in place, so the log is the only history of transitions.
@@ -79,21 +96,18 @@ type Supervisor struct {
 	dialClientOnce sync.Once
 	dialHTTP       *http.Client
 
-	// Stall-kick bookkeeping: which rung a kick is parked on and until when.
-	// Its own mutex because the keepalive goroutine sets it and the bandwidth
-	// scheduler reads it every tick. Never taken while stateMu is held.
-	kickMu    sync.Mutex
-	kickUntil time.Time
-	kickRung  int
-
 	// Leg bookkeeping. hasReality records that the config carries a
 	// RealityLegTag member at all — without one hy2 is the only leg, REALITY
 	// cannot be the primary, and every failover check below short-circuits.
-	// fallbackMu guards the policy value and, like kickMu, is never taken
-	// while stateMu is held.
+	// fallbackMu guards the policy value and is never taken while stateMu is
+	// held.
 	hasReality bool
-	fallbackMu sync.Mutex
-	fallback   fallbackState
+	// Unconfirmed TCP pacing is a capability warning. Authenticated transport
+	// health and recovery are measured independently of this optional module.
+	brutalUnpaced atomic.Bool
+	realityAddr   string
+	fallbackMu    sync.Mutex
+	fallback      fallbackState
 
 	// legTest rate-limits the comparative leg test in considerLegFailover.
 	// The fresh-dial latch can stay set for an hour; without this the test
@@ -102,6 +116,16 @@ type Supervisor struct {
 	// two above.
 	legTestMu sync.Mutex
 	legTestAt time.Time
+	// legProbeFn substitutes the network boundary in recovery tests. Nil uses
+	// fresh keeper and (when configured) external TLS/body requests.
+	legProbeFn func(port, timeoutMs int) (time.Duration, error)
+	// Enabled only with the transport-bound external forwarders in the config.
+	verifyLegEgress    bool
+	pressureSnapshotFn func() floodSnapshot // Nil uses the live sing-box log sensor.
+
+	// dialsPaused records that fresh-dial sampling is suspended for a bad
+	// local link, so the suspension is logged once per stretch.
+	dialsPaused bool
 
 	// linkPoke carries "the local address changed, re-dial now" from the link
 	// watcher to the keepalive. Buffered so the watcher never blocks and a
@@ -118,8 +142,13 @@ type SupervisorOpts struct {
 	// OnRulesChanged 在 custom-rules.json 变更时重新编译域名 rule-set，返回域名条数。
 	// 由 cmd 层注入（core 不能 import config，会成循环依赖）。nil = 关闭规则热更。
 	OnRulesChanged func() (int, error)
-	ProbeAddr      string // VPS hy2 endpoint "ip:port" for direct UDP probe (recommended)
-	ProbeURL       string // URL driven through the proxy for keepalive; also the fallback probe when ProbeAddr is empty
+	// DirectDomains 返回 custom-rules.json 判给 direct 的域名集合。守护进程用它
+	// 当闸门，把这些域名实际拨往的境外地址补进 PF 的 direct 豁免表 ——
+	// 没有它，一条 "outbound": "direct" 的境外规则会被 kill switch 自己丢掉
+	// （见 utils/directexempt.go）。nil = 关闭。
+	DirectDomains func() utils.DirectDomainSet
+	ProbeAddr     string // VPS hy2 endpoint "ip:port" for direct UDP probe (recommended)
+	ProbeURL      string // URL driven through the proxy for keepalive; also the fallback probe when ProbeAddr is empty
 	// ObfsPassword is the server's salamander key. The direct probe must speak
 	// the same obfuscation the server does, or every probe decodes to noise on
 	// arrival and is dropped unanswered — health would report a dark path
@@ -136,12 +165,20 @@ type SupervisorOpts struct {
 	// RealityLegTag outbound sing-box never heard of would fail the call and
 	// strand traffic on a leg already proven dark.
 	HasRealityLeg bool
+	// VerifyLegEgress requires real external TLS/body delivery as well as the
+	// node's keeper response. Older configs without forwarders leave this off.
+	VerifyLegEgress bool
+	// RealityAddr is the REALITY leg's ip:port, for the out-of-tunnel TCP probe
+	// that tells a node refusing the port from a path dropping it. Empty when
+	// there is no such leg.
+	RealityAddr string
 
 	// Schedule enables the time-of-day Brutal ceiling. Gated by Schedule.Enabled()
 	// (a peak profile must be configured); the config must also carry the
 	// peak/off-peak selector that config.Build emits for the same server. Leave
 	// it zero to keep a plain fixed-bandwidth server.
-	Schedule BandwidthSchedule
+	Schedule        BandwidthSchedule
+	RealityRateMbps int
 
 	// DestroyOnLidClose destroys the server when the lid is shut — the sleep
 	// notification, gated on the clamshell actually being closed, so idle and
@@ -162,6 +199,10 @@ type SupervisorOpts struct {
 	// "it compiles" is not evidence it fires on this Mac. This is how to get
 	// that evidence without deleting the server to find out.
 	LidCloseDryRun bool
+	// LidGrace holds the destroy for this long after the lid shuts. A lid
+	// that reopens inside it keeps the server; one still shut on the first
+	// wake past it loses it. Zero destroys at the lid close, as before.
+	LidGrace time.Duration
 	// LidDestroyOffReason is why DestroyOnLidClose is false, in the operator's
 	// terms ("no Vultr key", a flag they passed). Recorded in state.json and
 	// logged at startup so a disarmed watcher is discoverable later instead of
@@ -200,17 +241,24 @@ func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervis
 		keepaliveEvery:    opts.KeepaliveEvery,
 		probeTimeMs:       opts.ProbeTimeMs,
 		schedule:          opts.Schedule,
+		realityRateMbps:   opts.RealityRateMbps,
 		hasReality:        opts.HasRealityLeg,
+		verifyLegEgress:   opts.VerifyLegEgress,
+		realityAddr:       opts.RealityAddr,
 		destroyOnLidClose: opts.DestroyOnLidClose,
 		onIdleDestroy:     opts.OnIdleDestroy,
 		onRulesChanged:    opts.OnRulesChanged,
+		directDomains:     opts.DirectDomains,
 		lidDryRun:         opts.LidCloseDryRun,
+		lidGrace:          opts.LidGrace,
 		lidOffReason:      opts.LidDestroyOffReason,
 		lidClosedFn:       lidClosed,
+		uplinkFn:          hasUplink,
 		lidDestroyed:      make(chan struct{}),
 		linkPoke:          make(chan struct{}, 1),
 		clash:             NewClashClient(opts.ClashAddr),
 		state: &utils.State{
+			Balance:   initialBalanceStatus(opts.HasRealityLeg && opts.VerifyLegEgress),
 			Mode:      utils.ModeProxy,
 			PID:       os.Getpid(),
 			Server:    serverName,
@@ -276,20 +324,25 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	// 无需任何命令、不重启进程、不断 TUN。
 	// +1 = 本机上行地址监听（见 runLinkWatch）：macOS 自己重连 Wi-Fi 换 IP 后
 	// 立刻重拨，不等 keepalive 的下一拍。
-	n := 5
+	// +1 = the gateway echo (runLinkProbe): the one instrument on this side of
+	// the Wi-Fi, which is where a third of the bad minutes turned out to be.
+	n := 6
+	if s.hasReality && s.verifyLegEgress {
+		n++
+	}
+	if s.directDomains != nil {
+		n++
+	}
 	if scheduleOn {
 		n++
 	}
 	if sleepOn {
 		n++
 	}
-	// +1 = the paired A/B sampler, only while an experiment is declared. Its
-	// absence costs nothing and its presence costs two delay probes per beat.
-	experimentOn := utils.ReadExperiment() != nil
-	if experimentOn {
-		n++
-	}
 	wg.Add(n)
+	if s.hasReality && s.verifyLegEgress {
+		go func() { defer wg.Done(); defer recoverPanic("dual-routing"); s.runBalance(ctx) }()
+	}
 
 	// Goroutine A: keep sing-box alive.
 	go func() {
@@ -334,6 +387,25 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		s.runLinkWatch(ctx)
 	}()
 
+	// Goroutine C3: echo the default gateway and keep the local-link verdict.
+	go func() {
+		defer wg.Done()
+		defer recoverPanic("link-probe")
+		s.runLinkProbe(ctx)
+	}()
+
+	// Goroutine A3 (optional): keep the PF direct-exemption table in step with
+	// what the direct rules actually dial. Without it every foreign domain
+	// carrying "outbound": "direct" is silently dropped by our own kill switch
+	// — see core/directexempt.go and utils/directexempt.go.
+	if s.directDomains != nil {
+		go func() {
+			defer wg.Done()
+			defer recoverPanic("direct-exempt")
+			s.runDirectExempt(ctx)
+		}()
+	}
+
 	// Goroutine D (optional): drive the Brutal ceiling — follow the local clock
 	// between peak/off-peak profiles so a single fixed rate can't flood the path
 	// at peak or throttle it off-peak, unless a manual pin overrides it.
@@ -342,15 +414,6 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			defer wg.Done()
 			defer recoverPanic("bandwidth-scheduler")
 			s.runBandwidthScheduler(ctx)
-		}()
-	}
-
-	// Goroutine D2 (optional): the paired A/B sampler. See runExperiment.
-	if experimentOn {
-		go func() {
-			defer wg.Done()
-			defer recoverPanic("experiment")
-			s.runExperiment(ctx)
 		}()
 	}
 
@@ -584,7 +647,25 @@ func (h *healState) freeze() int {
 // A dark tick still clears the clean streak — the path is not well, so the
 // ceiling must not climb either. It just holds where it is and waits, which for
 // a blackhole is the only thing that has ever worked.
-func (h *healState) tick(healthy, flooding bool) int {
+//
+// dark says the in-tunnel keepalive is failing past its threshold: the path is
+// not carrying traffic at all. Flooding during that is not evidence about the
+// ceiling — nothing is being pushed through, and what ENOBUFS measures then is
+// the send queue backing up behind a link that is not draining. All eighteen
+// ENOBUFS bursts in the 2026-09-03..05 logs fell inside keepalive blackouts,
+// and the nine descents they caused cost 15-45 minutes of bandwidth each for a
+// path no rung could have fixed. So a flood inside a blackout holds, like a
+// dark tick without one; a flood while the tunnel otherwise answers (the
+// 2026-08-22 case this branch was built for) still descends.
+func (h *healState) tick(healthy, flooding, dark bool) int {
+	if flooding && dark {
+		h.good = 0
+		if !h.held {
+			h.held = true
+			log.Printf("self-heal: ENOBUFS during a keepalive blackout — holding the ceiling; the send queue is backing up behind a dark path, not a ceiling that is too high")
+		}
+		return h.backoff
+	}
 	// Flooding is decisive on its own, and is checked BEFORE health. ENOBUFS
 	// means this machine could not push the declared rate into the link — a
 	// statement about the local send path that is equally true whether or not
@@ -674,9 +755,13 @@ func (s *Supervisor) runKeepalive(ctx context.Context) {
 
 	t := time.NewTicker(s.keepaliveEvery)
 	defer t.Stop()
+	var lastFreshDial time.Time
 	for {
 		s.keepaliveOnce()
-		s.dialOnce()
+		if s.shouldSampleFreshDial(lastFreshDial) {
+			lastFreshDial = time.Now()
+			s.dialOnce()
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -690,6 +775,25 @@ func (s *Supervisor) runKeepalive(ctx context.Context) {
 		case <-t.C:
 		}
 	}
+}
+
+// shouldSampleFreshDial keeps the fresh TCP/TLS measurement frequent while it
+// is collecting a window or seeing any degraded sample. A full, clean window
+// is enough evidence to stretch the next sample to one minute. Link failures
+// are excluded because those samples would describe Wi-Fi rather than the leg.
+func (s *Supervisor) shouldSampleFreshDial(last time.Time) bool {
+	if s.linkBad() {
+		return false
+	}
+	s.stateMu.Lock()
+	wellKnownHealthy := len(s.state.DialSamples) == utils.DialWindow &&
+		s.state.DialBad() == 0 && !s.state.SlowNewFlows
+	s.stateMu.Unlock()
+	interval := s.keepaliveEvery
+	if wellKnownHealthy {
+		interval = healthyFreshDialEvery
+	}
+	return last.IsZero() || time.Since(last) >= interval
 }
 
 // runLinkWatch notices when this machine's physical uplink address changes and
@@ -731,6 +835,13 @@ func (s *Supervisor) runLinkWatch(ctx context.Context) {
 		default:
 			log.Printf("uplink changed (%s → %s) — sessions are bound to the old address; re-dialing", last, now)
 		}
+		if last == "" && now != "" {
+			// A dark wake joins Wi-Fi seconds after it starts, often after the
+			// tick that would have retried an owed destroy has already found
+			// no link and gone back to waiting. This is the moment the destroy
+			// can actually reach Vultr; don't leave it to the next tick.
+			go s.reconcileLidDebt("uplink back")
+		}
 		last = now
 		if now != "" {
 			select {
@@ -765,32 +876,9 @@ func currentUplink() (string, error) {
 	return "", fmt.Errorf("%s has no usable IPv4", ifi.Name)
 }
 
-// keepaliveURL is what the in-tunnel keepalive fetches. Two properties matter
-// and neither is the latency:
-//
-//   - it returns a BODY. The old keepalive drove a Clash delay probe at a
-//     generate_204, which completes with an empty response — so it proved a
-//     request could be issued and answered, and proved nothing about whether the
-//     tunnel moves bytes. A session that connects but carries nothing looked
-//     perfectly healthy through that check.
-//   - it is small (~200 bytes) and stable, so doing it every 15s costs nothing.
-//
-// As a bonus for anyone debugging by hand: the body names the exit IP, so
-// `curl https://cloudflare.com/cdn-cgi/trace` is also the one-liner that says
-// whether traffic is leaving through the VPS at all.
-const keepaliveURL = "https://cloudflare.com/cdn-cgi/trace"
-
-// Stall-kick thresholds. See requestStallKick.
-const (
-	// stallKickThreshold: consecutive keepalive failures before concluding the
-	// established session is the problem. At the 15s cadence, 2 ≈ 30s — early
-	// enough to act before KeepaliveFailThreshold declares the path dead.
-	stallKickThreshold = 2
-	// stallKickHold: how long to stay off the original rung. Must exceed
-	// hysteria's MaxIdleTimeout (30s), or returning would reuse the very session
-	// we are trying to shed instead of dialing a fresh one.
-	stallKickHold = 45 * time.Second
-)
+// healthyFreshDialEvery reduces full TCP/TLS handshake traffic while the
+// rolling window has enough evidence that new connections are healthy.
+const healthyFreshDialEvery = time.Minute
 
 // keepaliveOnce drives one real request through the tunnel and records the
 // result. A single failure stays informational — this path runs through
@@ -804,12 +892,17 @@ const (
 // routed to a dead hy2 outbound makes sing-box re-dial — it both prevents idle
 // death and re-establishes a session that died anyway (e.g. after sleep/wake).
 func (s *Supervisor) keepaliveOnce() {
+	generation := s.probeGeneration.Load()
 	start := time.Now()
-	n, err := s.fetchThroughTunnel(s.tunnelClient(), keepaliveURL)
+	err := s.fetchMonitor(s.tunnelClient())
 	delay := int(time.Since(start) / time.Millisecond)
 
 	action := legHold
 	s.stateMu.Lock()
+	if generation != s.probeGeneration.Load() {
+		s.stateMu.Unlock()
+		return
+	}
 	s.state.LastKeepaliveAt = time.Now()
 	if err != nil {
 		s.state.KeepaliveFails++
@@ -821,19 +914,25 @@ func (s *Supervisor) keepaliveOnce() {
 		log.Printf("tunnel keepalive failed (×%d): %v", s.state.KeepaliveFails, err)
 		// Every move below needs the out-of-tunnel datagram still answered:
 		// that says the far end and the route are fine and it is the way
-		// traffic is CARRIED that has stopped working. The kick is for a stuck
-		// hy2 session (rotate the five-tuple, 45s); the fallback is for a
-		// primary that stayed dark past that; abandoning the fallback is for
-		// an hy2 that turned out dark too. See keepaliveLegAction.
+		// traffic is CARRIED that has stopped working. The fallback is for a
+		// primary that stayed dark; abandoning the fallback is for an hy2 that
+		// turned out dark too. See keepaliveLegAction.
 		action = keepaliveLegAction(s.state.KeepaliveFails,
-			s.state.LastProbeVerdict == utils.ProbeAlive, s.activeOnHy2(), s.onFallback(), utils.ReadLeg())
+			s.state.LastProbeVerdict == utils.ProbeAlive, !s.state.LinkBad, s.activeOnHy2(), s.onFallback(), utils.ReadLeg())
 	} else {
 		s.state.KeepaliveFails = 0
 		s.state.KeepaliveFailingSince = time.Time{}
 		s.state.LastKeepaliveMs = delay
 		s.state.LastKeepaliveError = ""
-		_ = n
 	}
+	// UDP silence must not strand a failed fallback. Recovery still requires
+	// three authenticated delivery checks; a bare TCP listener is not enough.
+	rescueStuck := action == legHold &&
+		s.state.KeepaliveFails >= fallbackEnterFails &&
+		s.onFallback() &&
+		!s.state.LinkBad &&
+		s.realityAddr != ""
+
 	s.noteHealthLocked()
 	_ = utils.WriteState(s.stateSnapshotLocked())
 	s.stateMu.Unlock()
@@ -842,11 +941,17 @@ func (s *Supervisor) keepaliveOnce() {
 	case legFallback:
 		s.enterFallback(fmt.Sprintf("keepalive dark ×%d on %s while the UDP probe still answers", fallbackEnterFails, RealityLegTag))
 	case legAbandonFallback:
-		s.releaseFallback(fmt.Sprintf("keepalive dark ×%d on the hy2 fallback as well — back to %s", fallbackEnterFails, RealityLegTag))
-	case legKick:
-		s.requestStallKick()
+		s.recoverPrimary()
+	}
+
+	if rescueStuck {
+		s.rescueStuckFallback()
 	}
 }
+
+// rescueStuckFallback requires real protocol delivery even when UDP probes are
+// silent. A TCP SYN-ACK alone cannot establish recovery of authenticated traffic.
+func (s *Supervisor) rescueStuckFallback() { s.recoverPrimary() }
 
 // activeOnHy2 reports whether traffic is on the hysteria2 ladder right now:
 // pinned there, or there because the primary failed, or there because the node
@@ -863,9 +968,9 @@ func (s *Supervisor) activeOnHy2() bool {
 
 // ladderTarget is the ladder rung that SHOULD carry traffic if hy2 is the leg:
 // the ceiling pin when it names a real rung, otherwise the clock's profile. The
-// self-heal backoff and a running stall kick are deliberately left out — those
-// are refinements the scheduler applies on its own tick; this is the resting
-// point the failover pre-warms and the comparative test dials.
+// self-heal backoff is deliberately left out — it is a refinement the scheduler
+// applies on its own tick; this is the resting point the failover pre-warms and
+// the comparative test dials.
 func (s *Supervisor) ladderTarget() string {
 	if pin := utils.ReadCeiling(); pin > 0 && s.schedule.HasRung(pin) {
 		return BandwidthRungTag(pin)
@@ -883,18 +988,34 @@ func (s *Supervisor) ladderTarget() string {
 // reason to have two of them.
 //
 // It drives exactly one thing: the leg failover, and only through the
-// comparative gate in considerLegFailover. Not the stall kick (that rotates a
-// five-tuple, and the five-tuple is not what is broken here), and not the
-// ceiling (measured 2026-09-01: the tunnel was near-idle at 0.0-0.1 Mbps with
+// comparative gate in considerLegFailover. Not the ceiling (measured
+// 2026-09-01: the tunnel was near-idle at 0.0-0.1 Mbps with
 // zero ENOBUFS through the whole episode, so there is no flood to back off —
 // and an A/B during the episode had the LOWER rung failing 25% of new
 // connections against 4% on the higher one, making a descent actively worse).
 func (s *Supervisor) dialOnce() {
+	// A bad first hop makes every fresh dial slow, and a window filled with
+	// those would convict whichever leg is in force the moment the link comes
+	// back. Sample nothing until it clears — the verdict is about the leg, and
+	// the leg is not what is being measured right now.
+	if s.linkBad() {
+		if !s.dialsPaused {
+			s.dialsPaused = true
+			log.Printf("fresh dial: sampling paused while the local link is bad — these would measure the Wi-Fi, not the leg")
+		}
+		return
+	}
+	s.dialsPaused = false
+	generation := s.probeGeneration.Load()
 	start := time.Now()
-	_, err := s.fetchThroughTunnel(s.dialClient(), keepaliveURL)
+	err := s.fetchMonitor(s.dialClient())
 	ms := int(time.Since(start) / time.Millisecond)
 
 	s.stateMu.Lock()
+	if generation != s.probeGeneration.Load() {
+		s.stateMu.Unlock()
+		return
+	}
 	s.state.RecordDial(ms, err)
 	bad, window := s.state.DialBad(), len(s.state.DialSamples)
 	// Logged per bad beat, not per streak: the complaint this whole arm answers
@@ -909,13 +1030,13 @@ func (s *Supervisor) dialOnce() {
 	// Read under the same lock that just updated them, act after releasing it:
 	// considerLegFailover dials the network and takes fallbackMu, and stateMu is
 	// never held across either.
-	slow := s.state.SlowNewFlows
+	failing := freshFlowsFailing(s.state)
 	probeAlive := s.state.LastProbeVerdict == utils.ProbeAlive
 	s.noteHealthLocked()
 	_ = utils.WriteState(s.stateSnapshotLocked())
 	s.stateMu.Unlock()
 
-	if slow && probeAlive {
+	if legGateOpen(failing, probeAlive, s.hasReality) {
 		s.considerLegFailover()
 	}
 }
@@ -942,13 +1063,29 @@ func (s *Supervisor) dialOnce() {
 // "your Wi-Fi is the problem" is the single most useful thing mole can say on
 // an evening when it has nothing to fix.
 //
-// With REALITY primary the idle leg is the hy2 ladder rung that should be in
-// force, and the switch it argues for is onto UDP. The caller has already
-// established the two preconditions: the fresh-dial latch is set, and the
-// out-of-tunnel probe is still being answered (so the VPS and the route are
-// up, and this is about how traffic is carried rather than whether the far end
-// is there).
+// The comparison only moves traffic on hard evidence: the active leg's NEW
+// connections must be FAILING, not merely slow. Measured 2026-10-14: the gate
+// fired six times between 09:03 and 13:37, and every enter was opened by
+// "slow or failed" samples that were in fact four SUCCESSFUL dials of 1.1-2.4s
+// — zero failures — while the standby's keeper dial happened to read faster
+// (371ms against REALITY's 768ms). Traffic moved onto a leg whose next five
+// real connections then timed out, and moved back on the mirror measurement.
+// A dial that answers in 1.2s is slow, not dead; acting on it is what made the
+// tunnel ping-pong and reset Brutal's ramp each time. Only a failed dial — a
+// connection that carried nothing — opens this gate. (on fallback, the same
+// bar applies to the hy2 ladder's new flows, which is what rescues the October
+// 7 case: warm flows fine, every new UDP flow timing out.)
+//
+// On primary it qualifies the scheduled UDP rung; on fallback it qualifies
+// REALITY for an early handback. The fresh-dial latch opens either comparison,
+// even when the UDP datagram probe is silent: the candidate's real requests
+// must prove that it carries traffic before a switch is allowed.
 func (s *Supervisor) considerLegFailover() {
+	// Not on a bad local link: the idle leg would be measured through the
+	// same radio and the answer would be about the Wi-Fi.
+	if s.linkBad() {
+		return
+	}
 	s.legTestMu.Lock()
 	if !legTestDue(s.hasReality, s.onFallback(), utils.ReadLeg(), time.Now(), s.legTestAt) {
 		s.legTestMu.Unlock()
@@ -957,28 +1094,96 @@ func (s *Supervisor) considerLegFailover() {
 	s.legTestAt = time.Now()
 	s.legTestMu.Unlock()
 
-	bad, window := s.dialWindow()
+	onFallback := s.onFallback()
+	_, fails, window := s.dialWindow()
 	idle := s.ladderTarget()
-	ms, err := s.clash.TestDelay(idle, s.probeURL, s.probeTimeMs)
-	if !legTestSaysTransport(ms, err, utils.DialSlowMs) {
-		if err != nil {
-			log.Printf("new connections failing (%d/%d) but %s will not dial either (%v) — both legs are down, so this is the path or the local link, not the transport; holding %s",
-				bad, window, idle, err, RealityLegTag)
-		} else {
-			log.Printf("new connections failing (%d/%d) but %s is no better (%dms) — both legs are slow, so the bottleneck is what they share (local link or route), not the transport; holding %s",
-				bad, window, idle, ms, RealityLegTag)
+	hy2, reality, err := s.legRace()
+	activeTag, candidateTag := RealityLegTag, idle
+	active, candidate := reality, hy2
+	if onFallback {
+		activeTag, candidateTag = idle, RealityLegTag
+		active, candidate = hy2, reality
+	}
+	// Another scheduler tick or a manual pin may have changed the leg while
+	// the spaced probes were running. Do not apply evidence to a new leg.
+	if s.onFallback() != onFallback || utils.ReadLeg() != utils.LegAuto || s.linkBad() {
+		return
+	}
+	if err != nil || !legComparison(candidate, active) {
+		switch {
+		case err != nil:
+			log.Printf("new connections failed (%d/%d), paired leg probe stopped (%v); holding %s", fails, window, err, activeTag)
+		case candidate.err != nil:
+			log.Printf("new connections failed (%d/%d), candidate %s failed (%v), active probe error=%v; holding %s", fails, window, candidateTag, candidate.err, active.err, activeTag)
+		case candidate.delay > time.Duration(utils.DialSlowMs)*time.Millisecond:
+			log.Printf("new connections failed (%d/%d), candidate %s is slow too (%dms against %s's %dms); holding %s",
+				fails, window, candidateTag, candidate.delay.Milliseconds(), activeTag, active.delay.Milliseconds(), activeTag)
+		default:
+			log.Printf("new connections failed (%d/%d), candidate %s is not meaningfully better (%dms against %s's %dms); holding %s",
+				fails, window, candidateTag, candidate.delay.Milliseconds(), activeTag, active.delay.Milliseconds(), activeTag)
 		}
 		return
 	}
-	s.enterFallback(fmt.Sprintf("%d of the last %d new connections were slow or failed on %s while %s dialled clean (%dms), which is a difference only the transport explains",
-		bad, window, RealityLegTag, idle, ms))
+	if onFallback {
+		s.handoffToPrimary(fmt.Sprintf("%d/%d new connections failed on %s; %s passed all %d paired probes (worst %dms) — abandoning unhealthy fallback before dwell",
+			fails, window, activeTag, RealityLegTag, legGateProbes, reality.delay.Milliseconds()))
+		return
+	}
+	s.enterFallback(fmt.Sprintf("%d/%d new connections failed on %s; standby %s passed all %d probes (worst %dms), primary worst %dms error=%v",
+		fails, window, RealityLegTag, idle, legGateProbes, hy2.delay.Milliseconds(), reality.delay.Milliseconds(), reality.err))
 }
 
-// dialWindow reports the fresh-dial verdict's shape for log lines.
-func (s *Supervisor) dialWindow() (bad, window int) {
+// Comparative gate: how many probes the idle leg has to pass, and how far
+// apart. One was not enough — 2026-09-04 09:10, a single 431ms probe declared
+// REALITY clean in the middle of a Wi-Fi stall and traffic was moved onto a
+// leg that then timed out 124 times in the hour. Three spaced by four seconds
+// span the ~10s lulls a bad link has between bursts.
+const (
+	legGateProbes  = 3
+	legGateSpacing = 4 * time.Second
+)
+
+// legRace times BOTH legs against the same destination, alternating, and
+// records the worst delay and any error separately on each leg. A leg is
+// only clean if all of its probes were; a failed primary does not prevent
+// gathering the standby's remaining samples.
+//
+// Both halves reach the same keeper and external TLS origin through separate,
+// transport-bound forwarders. Symmetric instruments avoid qualifying a leg
+// with a quick node-local response while real external connections time out.
+//
+// Alternating rather than running the two blocks back to back matters on an
+// intermittent path. The fault this gate exists to catch comes and goes on a
+// scale of seconds; measure one leg for twelve seconds and then the other for
+// twelve, and a lull that lands on one of them is indistinguishable from a leg
+// that is genuinely better. Interleaved, an outage is common-mode.
+func (s *Supervisor) legRace() (hy2, reality legMeasurement, err error) {
+	if s.verifyLegEgress {
+		// On fallback, measure the rung that is actually carrying new flows,
+		// including self-heal changes; on primary, qualify the target rung.
+		target := s.ladderTarget()
+		if s.onFallback() {
+			if live, e := s.clash.Selection(ProxySelectorTag); e == nil && BandwidthRungMbps(live) > 0 {
+				target = live
+			}
+		}
+		if e := s.clash.SelectProxy(Hy2ProbeSelectorTag, target); e != nil {
+			return hy2, reality, fmt.Errorf("select UDP probe rung %s: %w", target, e)
+		}
+	}
+	return measureLegs(func(port int) (time.Duration, error) {
+		return s.probeLeg(port)
+	}, s.waitLegProbe)
+}
+
+// dialWindow reports the fresh-dial verdict's shape for log lines: how many of
+// the window were slow-or-failed (the latch's reading, and what `mole status`
+// shows as degraded), how many carried NOTHING (the count that may open the
+// failover gate — see State.DialFails), and the window size.
+func (s *Supervisor) dialWindow() (bad, fails, window int) {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
-	return s.state.DialBad(), len(s.state.DialSamples)
+	return s.state.DialBad(), s.state.DialFails(), len(s.state.DialSamples)
 }
 
 // fetchThroughTunnel performs one GET on the given client and returns how many
@@ -1023,8 +1228,12 @@ func (s *Supervisor) fetchThroughTunnel(c *http.Client, url string) (int64, erro
 // answer. See dialClient for the arm that was missing.
 func (s *Supervisor) tunnelClient() *http.Client {
 	s.tunnelClientOnce.Do(func() {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = nil
 		s.tunnelHTTP = &http.Client{
-			Timeout: time.Duration(s.probeTimeMs) * time.Millisecond,
+			Timeout:       time.Duration(s.probeTimeMs) * time.Millisecond,
+			Transport:     transport,
+			CheckRedirect: rejectMonitorRedirect,
 		}
 	})
 	return s.tunnelHTTP
@@ -1044,65 +1253,14 @@ func (s *Supervisor) tunnelClient() *http.Client {
 func (s *Supervisor) dialClient() *http.Client {
 	s.dialClientOnce.Do(func() {
 		s.dialHTTP = &http.Client{
-			Timeout: time.Duration(s.probeTimeMs) * time.Millisecond,
+			Timeout:       time.Duration(s.probeTimeMs) * time.Millisecond,
+			CheckRedirect: rejectMonitorRedirect,
 			Transport: &http.Transport{
 				DisableKeepAlives: true,
 			},
 		}
 	})
 	return s.dialHTTP
-}
-
-// requestStallKick moves traffic onto a neighbouring ladder rung for
-// stallKickHold, then lets the scheduler put it back.
-//
-// The failure it answers: the keepalive stops passing traffic while the
-// out-of-tunnel probe keeps getting answers. That combination is not a dark
-// path — it is this particular five-tuple being throttled or blackholed while
-// the host and the route are fine. Measured 2026-08-22: 13 such events, each
-// lasting 27–42 seconds, which is hysteria's 30s MaxIdleTimeout plus change —
-// i.e. they ended when the session finally timed out and was re-dialed, and the
-// whole outage was time spent waiting for that.
-//
-// There is no Clash call that resets an outbound's session, so the kick works by
-// routing through a different outbound, which dials its own. See Sibling.
-func (s *Supervisor) requestStallKick() {
-	s.kickMu.Lock()
-	if time.Now().Before(s.kickUntil) {
-		s.kickMu.Unlock()
-		return // one already running; let it finish before judging it
-	}
-	s.stateMu.Lock()
-	down := s.state.BandwidthDownMbps
-	s.stateMu.Unlock()
-
-	sib := s.schedule.Sibling(down)
-	if sib == 0 {
-		s.kickMu.Unlock()
-		return // no ladder to step onto
-	}
-	s.kickUntil = time.Now().Add(stallKickHold)
-	s.kickRung = sib
-	s.kickMu.Unlock()
-
-	member := BandwidthRungTag(sib)
-	if err := s.clash.SelectProxy(ProxySelectorTag, member); err != nil {
-		log.Printf("stall kick: select %s failed: %v", member, err)
-		return
-	}
-	log.Printf("stall kick: keepalive dark ×%d while the probe answers — moving to %s for %s to dial a fresh session",
-		stallKickThreshold, member, stallKickHold)
-}
-
-// stallKick reports the rung a running kick is holding, and whether one is
-// running at all.
-func (s *Supervisor) stallKick() (int, bool) {
-	s.kickMu.Lock()
-	defer s.kickMu.Unlock()
-	if time.Now().After(s.kickUntil) {
-		return 0, false
-	}
-	return s.kickRung, true
 }
 
 // onFallback reports whether traffic is on the hy2 ladder because the primary
@@ -1168,19 +1326,24 @@ func (s *Supervisor) enterFallback(cause string) {
 	}
 	log.Printf("fallback: %s — moving to the hy2 ladder (%s, UDP/443) for %s; TCP/443 is what stopped carrying, and Brutal on UDP is the other bet",
 		cause, target, dwell)
+	go s.diagnoseRealityPort()
 	s.resetKeepaliveCount()
 }
 
 // tryReturnToPrimary re-tests REALITY once the dwell has elapsed and hands
 // traffic back if it will dial.
 //
-// A passing delay probe is weaker evidence than it looks: establishing a NEW
-// connection is precisely what can keep working while established ones are
-// being killed. So the probe GATES the attempt rather than proving the leg — if
-// TCP/443 is still dark, the keepalive says so within ~90s, the fallback fires
-// again, and fallbackState doubles the dwell so the next test costs less often.
+// Three spaced, fresh keeper requests must all succeed within the healthy
+// dial budget. This avoids returning on one fortunate moment of an intermittent
+// fault. The normal keepalive and fresh-dial arms still watch the returned leg;
+// fallbackState doubles the dwell if it fails again during probation.
 func (s *Supervisor) tryReturnToPrimary() {
 	if !s.hasReality {
+		return
+	}
+	// Not during a bad local link: the test would fail for the Wi-Fi's
+	// reasons and extend the dwell for the path's.
+	if s.linkBad() {
 		return
 	}
 	s.fallbackMu.Lock()
@@ -1189,7 +1352,29 @@ func (s *Supervisor) tryReturnToPrimary() {
 	if !due {
 		return
 	}
-	if _, err := s.clash.TestDelay(RealityLegTag, s.probeURL, s.probeTimeMs); err != nil {
+	// The port first, then the leg. A refused SYN is the node saying nothing
+	// is listening — the one answer that does not get better with waiting —
+	// and it is told apart here from a silent one, which the delay test
+	// below folds into the same generic error.
+	if s.realityAddr != "" {
+		rtt, v, perr := ProbeTCP(s.realityAddr, time.Duration(s.probeTimeMs)*time.Millisecond)
+		switch v {
+		case utils.ProbeRefused:
+			s.noteRealityServerDown(fmt.Sprintf("connection refused in %dms", int(rtt/time.Millisecond)))
+			s.fallbackMu.Lock()
+			s.fallback.extend(time.Now())
+			dwell := s.fallback.dwell
+			s.fallbackMu.Unlock()
+			log.Printf("fallback: %s REFUSED at %s (%v) — the node is up and nothing is listening on the port; this is the server, not the path. `mole server repair` reinstalls it. Re-testing in %s",
+				RealityLegTag, s.realityAddr, perr, dwell)
+			return
+		case utils.ProbeAlive:
+			s.noteRealityServerDown("")
+		}
+	}
+	if err := verifyLegRecovery(func() (time.Duration, error) {
+		return s.probeLeg(BrutalKeeperPort)
+	}, s.waitLegProbe); err != nil {
 		s.fallbackMu.Lock()
 		s.fallback.extend(time.Now())
 		dwell := s.fallback.dwell
@@ -1197,12 +1382,52 @@ func (s *Supervisor) tryReturnToPrimary() {
 		log.Printf("fallback: %s still will not dial (%v) — holding the hy2 ladder another %s", RealityLegTag, err, dwell)
 		return
 	}
-	s.fallbackMu.Lock()
-	left := s.fallback.leave(time.Now())
-	s.fallbackMu.Unlock()
-	if left {
-		log.Printf("fallback: %s dials again — handing traffic back to it, on probation for %s", RealityLegTag, fallbackProbation)
-		s.resetKeepaliveCount()
+	s.handoffToPrimary(fmt.Sprintf("%s passed %d spaced fresh dials; probation %s", RealityLegTag, legGateProbes, fallbackProbation))
+}
+
+// Commit the routing change before reporting recovery or discarding evidence.
+func (s *Supervisor) handoffToPrimary(reason string) {
+	if utils.ReadLeg() != utils.LegAuto || s.linkBad() {
+		return
+	}
+	if err := s.clash.SelectProxy(ProxySelectorTag, RealityLegTag); err != nil {
+		log.Printf("fallback: primary selection failed (%v); retaining fallback", err)
+		return
+	}
+	s.releaseFallback(reason)
+}
+
+// noteRealityServerDown records (or clears, with "") the out-of-tunnel
+// finding that the REALITY port refuses, so `mole status` can say "the server
+// is not installed" instead of "measured dark".
+func (s *Supervisor) noteRealityServerDown(reason string) {
+	s.stateMu.Lock()
+	changed := s.state.RealityServerDown != reason
+	s.state.RealityServerDown = reason
+	s.stateMu.Unlock()
+	if changed {
+		_ = utils.WriteState(s.snapshot())
+	}
+}
+
+// diagnoseRealityPort runs the TCP probe once, off the caller's goroutine, so
+// the first fallback of a node whose REALITY server never came up says so in
+// the log within seconds rather than after the first dwell.
+func (s *Supervisor) diagnoseRealityPort() {
+	if s.realityAddr == "" {
+		return
+	}
+	rtt, v, err := ProbeTCP(s.realityAddr, time.Duration(s.probeTimeMs)*time.Millisecond)
+	switch v {
+	case utils.ProbeRefused:
+		s.noteRealityServerDown(fmt.Sprintf("connection refused in %dms", int(rtt/time.Millisecond)))
+		log.Printf("fallback: diagnosis — %s REFUSES TCP at %s (%v): the node is up and no REALITY server is listening. Not a path problem; `mole server repair` reinstalls it",
+			RealityLegTag, s.realityAddr, err)
+	case utils.ProbeSilent:
+		log.Printf("fallback: diagnosis — %s is silent on TCP at %s: SYNs are being dropped on the path (or by the cloud firewall), the server may well be fine", RealityLegTag, s.realityAddr)
+	case utils.ProbeAlive:
+		s.noteRealityServerDown("")
+		log.Printf("fallback: diagnosis — %s accepts TCP at %s in %dms: the port answers, so it is the flow that is being killed, not the listener", RealityLegTag, s.realityAddr, int(rtt/time.Millisecond))
 	}
 }
 
@@ -1229,10 +1454,18 @@ func (s *Supervisor) releaseFallback(reason string) {
 // on the new one read as a continuing failure and could re-trip the very
 // threshold that caused the switch.
 func (s *Supervisor) resetKeepaliveCount() {
+	// A selector change leaves existing flows on their old outbound. Close
+	// only this monitor's idle connection so its next beat tests the new leg.
+	s.tunnelClient().CloseIdleConnections()
 	s.stateMu.Lock()
+	s.probeGeneration.Add(1)
 	s.state.KeepaliveFails = 0
 	s.state.KeepaliveFailingSince = time.Time{}
 	s.state.LastKeepaliveError = ""
+	// The fresh-dial window goes with it: every caller of this is a leg
+	// change, and dials made on the previous leg are not evidence about the
+	// one traffic is on now. See State.ResetDials for the episode.
+	s.state.ResetDials()
 	s.noteHealthLocked()
 	s.stateMu.Unlock()
 }
@@ -1259,10 +1492,14 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 	}
 
 	applied := ""
-	warnedPin := 0 // last bad pin we complained about, so we complain once per value
-	backoff := 0   // rungs currently stepped down below the clock/pin target
+	pushedRate, pushedAt := 0, time.Time{} // the TCP Brutal rate last CONFIRMED by the node's keeper
+	unconfirmed := 0                       // consecutive pushes the keeper would not confirm
+	warnedPin := 0                         // last bad pin we complained about, so we complain once per value
+	backoff := 0                           // rungs currently stepped down below the clock/pin target
 	var heal healState
 	apply := func() {
+		generation := s.probeGeneration.Load()
+		pacingChanged := false
 		now := time.Now()
 		member := s.schedule.Member(now)
 		name, _, down := s.schedule.Profile(now)
@@ -1302,20 +1539,18 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 				name = fmt.Sprintf("%s↓%d", name, backoff)
 			}
 		}
-		// A running stall kick outranks both the clock and the pin, for as long
-		// as it lasts. Without this the very next tick would select the target
-		// rung again — and with it the session the kick was shedding, since the
-		// outbound is only re-dialed once its old session has idled out.
-		if rung, kicking := s.stallKick(); kicking {
-			member, down = BandwidthRungTag(rung), rung
-			name += "↷kick"
-		}
-		// The leg decision sits above the kick and everything under it. REALITY
-		// is TCP, so no Brutal ceiling applies to it and none of the reasoning
-		// above — clock, pin, backoff, kick — has anything to say while it is
-		// the leg; all of that is the hy2 ladder's business and applies the
-		// moment traffic is on the ladder, whether pinned there or pushed there
-		// by the failover.
+		// The leg decision sits above everything under it. REALITY is TCP, so no
+		// Brutal ceiling applies to it and none of the reasoning above — clock,
+		// pin, backoff — has anything to say while it is the leg; all of that is
+		// the hy2 ladder's business and applies the moment traffic is on the
+		// ladder, whether pinned there or pushed there by the failover.
+		//
+		// Nothing else may write the ladder's selector between ticks. Until
+		// 2026-10-14 a "stall kick" did, moving the whole ladder onto a
+		// neighbouring rung for 45s whenever the keepalive failed twice; it was
+		// measured never to restore the tunnel (8 firings in one day, keepalive
+		// still failing across four of them) and only ever added a second writer
+		// to this selector. See spec.md F3.
 		//
 		// Above all of it sits `mole leg`. Everything else on this path is an
 		// inference from evidence about which leg or rung the tunnel should be
@@ -1326,11 +1561,26 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 		// progress — otherwise the pin would select a leg here every tick while
 		// the failover still believed it owned the decision.
 		switch utils.ReadLeg() {
+		case utils.LegBoth:
+			if s.onFallback() {
+				s.releaseFallback("dual routing enabled")
+			}
+			member, name = RealityLegTag, "both/"+name
+			s.stateMu.Lock()
+			preferHy2 := s.state.Balance != nil && s.state.Balance.Enabled && s.state.Balance.Hy2Lanes >= BalanceLanes/2
+			s.stateMu.Unlock()
+			if preferHy2 {
+				if live, e := s.clash.Selection(Hy2ProbeSelectorTag); e == nil {
+					member = live
+				} else {
+					member = BandwidthRungTag(down)
+				}
+			}
 		case utils.LegReality:
 			if s.onFallback() {
 				s.releaseFallback("pinned to reality by `mole leg`")
 			}
-			member, name, down = RealityLegTag, "leg-reality", 0
+			member, name = RealityLegTag, "leg-reality"
 		case utils.LegHy2:
 			if s.onFallback() {
 				s.releaseFallback("pinned to hy2 by `mole leg`")
@@ -1344,9 +1594,61 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 				if s.onFallback() {
 					name = "fallback-hy2/" + name
 				} else {
-					member, name, down = RealityLegTag, "reality", 0
+					member, name = RealityLegTag, "reality/"+name
 				}
 			}
+		}
+		// `down` is kept whichever leg carries traffic: since 2026-09-06 the
+		// node paces its TCP toward this client at the same rung (TCP Brutal,
+		// see cmd/brutal.go), so the ceiling governs REALITY too. Push it
+		// through the REALITY leg on change, and every ten minutes regardless
+		// in case the keeper or the node restarted — a GET through a named
+		// outbound is what the delay probe already is, one fresh connection.
+		tcpRate := down
+		if s.realityRateMbps > 0 {
+			tcpRate = s.realityRateMbps
+		}
+		if s.hasReality && tcpRate > 0 && (tcpRate != pushedRate || time.Since(pushedAt) > 10*time.Minute) {
+			pacingChanged = true
+			res, err := PushBrutalRate(tcpRate, s.probeTimeMs)
+			switch {
+			case err != nil:
+				unconfirmed++
+				if tcpRate != pushedRate || unconfirmed == brutalGiveUp {
+					log.Printf("brutal: no answer from the node's keeper for ↓%d Mbps (%v) — REALITY is unpaced", tcpRate, err)
+				}
+			case res.Applied == 0:
+				unconfirmed++
+				log.Printf("brutal: the node heard ↓%d Mbps and did not apply it (%s; %d peer(s)) — REALITY is unpaced",
+					tcpRate, res.Detail, res.Peers)
+			default:
+				if tcpRate != pushedRate || s.brutalUnpaced.Load() {
+					log.Printf("brutal: node paces TCP toward this client at ↓%d Mbps (%d of %d peer(s))",
+						tcpRate, res.Applied, res.Peers)
+				}
+				pushedRate, pushedAt, unconfirmed = tcpRate, time.Now(), 0
+				s.stateMu.Lock()
+				s.state.RealityRateMbps = tcpRate
+				s.stateMu.Unlock()
+				s.brutalUnpaced.Store(false)
+			}
+			if unconfirmed >= brutalGiveUp {
+				s.brutalUnpaced.Store(true)
+				// Pacing capability is optional. Transport health is decided by
+				// authenticated delivery, not the kernel module's availability.
+			}
+			s.stateMu.Lock()
+			s.state.RealityPacingState = "confirmed"
+			s.state.RealityPacingError = ""
+			if unconfirmed > 0 {
+				s.state.RealityPacingState = "unconfirmed"
+				if err != nil {
+					s.state.RealityPacingError = err.Error()
+				} else {
+					s.state.RealityPacingError = res.Detail
+				}
+			}
+			s.stateMu.Unlock()
 		}
 		// Compare against what the selector is *actually* pointing at, not against
 		// what we last set. `mole ceiling` drives the same selector directly, so
@@ -1365,6 +1667,9 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 			if _, err := s.clash.TestDelay(member, s.probeURL, s.probeTimeMs); err != nil {
 				log.Printf("bandwidth scheduler: pre-warm %s failed: %v", member, err)
 			}
+			if generation != s.probeGeneration.Load() {
+				return
+			}
 			if err := s.clash.SelectProxy(ProxySelectorTag, member); err != nil {
 				log.Printf("bandwidth scheduler: select %s failed: %v", member, err)
 				return
@@ -1377,7 +1682,7 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 		// already be right while the published state is stale (an out-of-band
 		// `mole ceiling` puts it exactly there), and this state is what `mole
 		// status` reads. Guarded on the recorded values so a steady tunnel still
-		// costs no writes.
+		// costs no writes unless pacing capability was refreshed.
 		s.stateMu.Lock()
 		stale := s.state.BandwidthProfile != name || s.state.BandwidthDownMbps != down
 		if stale {
@@ -1385,7 +1690,7 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 			s.state.BandwidthDownMbps = down
 		}
 		s.stateMu.Unlock()
-		if stale {
+		if stale || pacingChanged {
 			_ = utils.WriteState(s.snapshot())
 		}
 	}
@@ -1402,7 +1707,9 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 		// straddles two ticks and one short burst cannot descend a rung by
 		// itself.
 		flooding := TakeFloodSightings() > 0
-		if h == utils.HealthNoLink {
+		// No uplink, or an uplink whose first hop is dropping packets: neither
+		// is evidence about the tunnel. See healState.freeze.
+		if h == utils.HealthNoLink || h == utils.HealthLocalLink {
 			backoff = heal.freeze()
 			return
 		}
@@ -1411,7 +1718,7 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 		// that as unhealthy is what made the ceiling unable to climb — the probe
 		// loses three in a row often enough that the clean streak never survived
 		// to fifteen.
-		backoff = heal.tick(h.Usable(), flooding)
+		backoff = heal.tick(h.Usable(), flooding, h == utils.HealthPathDead)
 	}
 
 	apply()
@@ -1516,6 +1823,37 @@ func (s *Supervisor) recordLidDestroyPending(when time.Time, cause error) {
 // opened. Keeps PendingSince and the attempt count: they are the record of how
 // long the server billed unattended, which is the only thing anyone can still
 // learn from this once the tunnel is in use again.
+// recordLidDeferred records that the lid shut and the destroy is being held
+// for the grace period. Not persisted as debt: nothing has failed, and a
+// daemon that dies here leaves a server that was deliberately kept.
+func (s *Supervisor) recordLidDeferred(when time.Time) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.state.LidDestroy = utils.LidDestroyDeferred
+	s.state.LidDestroyPendingSince = when
+	s.state.LidDestroyAttempts = 0
+	s.state.LidDestroyReason = "lid shut; destroy held for the grace period"
+}
+
+// recordLidReopened re-arms the watcher after a lid that reopened inside the
+// grace period. The server was kept on purpose, so this is the armed state
+// again, not a cancelled one.
+func (s *Supervisor) recordLidReopened() {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.state.LidDestroy = utils.LidDestroyArmed
+	s.state.LidDestroyPendingSince = time.Time{}
+	s.state.LidDestroyAttempts = 0
+	s.state.LidDestroyReason = ""
+}
+
+// lidDeferred reports whether a destroy is being held, and since when.
+func (s *Supervisor) lidDeferred() (since time.Time, held bool) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.state.LidDestroyPendingSince, s.state.LidDestroy == utils.LidDestroyDeferred
+}
+
 func (s *Supervisor) recordLidDestroyCancelled(reason string) {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
@@ -1545,6 +1883,20 @@ func (s *Supervisor) lidIsClosed() int {
 		return lidClosed()
 	}
 	return s.lidClosedFn()
+}
+
+// hasUplink reports whether any physical interface could carry a request now.
+func hasUplink() bool {
+	_, err := utils.DefaultPhysicalInterface()
+	return err == nil
+}
+
+// uplinkUp reads the uplink through the injectable hook.
+func (s *Supervisor) uplinkUp() bool {
+	if s.uplinkFn == nil {
+		return hasUplink()
+	}
+	return s.uplinkFn()
 }
 
 // lidDestroyPending reports whether a destroy is still owed.
@@ -1577,61 +1929,4 @@ func closedChan() <-chan struct{} {
 	c := make(chan struct{})
 	close(c)
 	return c
-}
-
-// experimentInterval is how often each arm is sampled. Two arms at 20s is six
-// probes a minute through the tunnel — small next to the keepalive's own two,
-// and the cadence is what decides how long an answer takes: at 90 samples per
-// arm, a full window is half an hour.
-const experimentInterval = 20 * time.Second
-
-// runExperiment drives the paired A/B sampler.
-//
-// One beat probes EVERY arm, back to back, in shuffled order. That pairing is
-// the entire design. This tunnel's failure is intermittent at a scale that
-// swamps sequential trials — 73% of one afternoon and 0% of another day, same
-// node, same route — so an arm measured on Tuesday and an arm measured on
-// Wednesday cannot be compared at all, and every previous verdict on this
-// tunnel (port hopping, obfs) was reached exactly that way. Sampling both arms
-// in the same seconds makes the episode common-mode: whatever the path is doing
-// it is doing to both, and what survives the subtraction is the variable.
-//
-// Probes are sequential rather than concurrent for the same reason the two
-// keepalive arms are: two requests racing through one tunnel measure each other.
-//
-// The sampler never touches the selector, never fails over and never changes a
-// ceiling. It is an instrument, and an instrument that steers is one that
-// cannot be trusted about what it steered.
-func (s *Supervisor) runExperiment(ctx context.Context) {
-	if err := s.waitClashReady(ctx, 10*time.Second); err != nil {
-		log.Printf("experiment: Clash API never came up (%v) — not sampling", err)
-		return
-	}
-	e := utils.ReadExperiment()
-	if e == nil {
-		return
-	}
-	log.Printf("experiment %q: sampling %d arms every %s (%s)", e.Name, len(e.Arms), experimentInterval, e.Note)
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	t := time.NewTicker(experimentInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-s.stopCh:
-			return
-		case <-t.C:
-		}
-		for _, i := range armOrder(len(e.Arms), r) {
-			arm := &e.Arms[i]
-			ms, err := s.clash.TestDelay(ExperimentArmTag(arm.Name), s.probeURL, s.probeTimeMs)
-			arm.Record(ms, err)
-		}
-		// Checkpointed every beat so an evening of samples survives the restart
-		// that any of these experiments is eventually going to involve.
-		if err := utils.WriteExperiment(e); err != nil {
-			log.Printf("experiment: could not persist samples: %v", err)
-		}
-	}
 }

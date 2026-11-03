@@ -1,6 +1,10 @@
 package core
 
-import "time"
+import (
+	"time"
+
+	"github.com/LeonTing1010/mole/utils"
+)
 
 // RealityLegTag names the selector member carrying the VLESS+REALITY leg.
 //
@@ -20,6 +24,12 @@ import "time"
 // what the fallback is for.
 const RealityLegTag = "proxy-reality"
 
+// brutalGiveUp is how many consecutive unconfirmed rate pushes it takes before
+// the REALITY leg is treated as unpaced. Two, not one: the push rides the leg
+// it describes, so a single miss is as likely to be the blip the fallback
+// exists to survive as it is a missing kernel module.
+const brutalGiveUp = 2
+
 const (
 	// fallbackEnterFails is how many consecutive in-tunnel keepalive failures —
 	// with the out-of-tunnel probe still answering — hand traffic from REALITY
@@ -33,9 +43,8 @@ const (
 	// was only ever a bet.
 	fallbackEnterFails = 6
 
-	// fallbackMinDwell is how long traffic stays on hy2 before REALITY is even
-	// reconsidered. These episodes last minutes, not seconds; returning early
-	// just spends another 90s of dark tunnel discovering that.
+	// fallbackMinDwell delays routine handback while hy2 is healthy. Fresh-flow
+	// failures may override it after a paired comparison verifies REALITY.
 	fallbackMinDwell = 10 * time.Minute
 	// fallbackMaxDwell caps the doubling below, so a bad night cannot strand the
 	// tunnel on the fallback indefinitely once the path recovers.
@@ -124,6 +133,20 @@ func (b *fallbackState) extend(now time.Time) {
 // active reports whether traffic is on the fallback leg right now.
 func (b *fallbackState) active() bool { return b.on }
 
+// freshFlowsFailing is the fresh-dial verdict stripped to hard evidence: new
+// connections that carried NOTHING, past the same count the slow-or-failed
+// latch uses to enter its hysteresis band.
+//
+// It is what opens the comparative leg gate, and it is deliberately not
+// State.DialBad: a dial that answered in 1.2s is slow, not dead, and swapping
+// the leg for it costs the keepalive count and Brutal's ramp while proving
+// nothing about the other leg. Named rather than inlined so the rule reads the
+// same in the test as in the scheduler — see State.DialFails for the evening
+// (2026-10-14) that turned on the distinction.
+func freshFlowsFailing(st *utils.State) bool {
+	return st.DialFails() >= utils.DialBadEnter
+}
+
 // legTestDue reports whether a comparative leg test is warranted right now.
 //
 // Separated from the test itself, and from the network, for the same reason
@@ -131,12 +154,12 @@ func (b *fallbackState) active() bool { return b.on }
 // that takes a live QoS event to reproduce, and logic that only ever runs in
 // production is logic nobody has checked.
 func legTestDue(hasReality, onFallback bool, pin string, now, lastTest time.Time) bool {
-	if !hasReality || onFallback {
+	if !hasReality {
 		return false
 	}
-	// Any pin at all. `mole leg hy2` has already put traffic where this test
-	// would send it, and `mole leg reality` is a refusal to go there; in both
-	// cases the measurement decides nothing and is only a dial nobody asked for.
+	// Both directions must be measurable. Dwell protects a healthy fallback
+	// from flapping; it must not strand fresh flows on a broken fallback.
+	// A manual leg pin still takes the decision away from the measurement.
 	if pin != "" {
 		return false
 	}
@@ -152,8 +175,24 @@ func legTestDue(hasReality, onFallback bool, pin string, now, lastTest time.Time
 //
 // slowMs is passed in rather than read from utils so this comparison and the
 // fresh-dial latch that triggers it cannot drift apart unnoticed.
-func legTestSaysTransport(ms int, err error, slowMs int) bool {
-	return err == nil && ms <= slowMs
+func legTestSaysTransport(hy2, reality time.Duration, err error, slowMs int) bool {
+	if err != nil {
+		return false
+	}
+	// Absolute bar first: a leg that is itself slow is not somewhere to move
+	// traffic to, however badly the other one is doing. Without this the gate
+	// would happily switch onto a 3s leg because the active one had reached 5s,
+	// which is the local-link case wearing the transport's clothes.
+	if hy2 > time.Duration(slowMs)*time.Millisecond {
+		return false
+	}
+	// Then the comparison, with a margin. "Better" inside the noise of three
+	// probes is not evidence, and the cost of acting on it is asymmetric: a
+	// wrong switch commits the tunnel to the other leg for the whole dwell,
+	// while a missed one is re-tested on the next tick. Two-thirds is wide
+	// enough that the 3-9x gaps a real transport fault opens still clear it,
+	// and narrow enough to exclude the coin-flips.
+	return hy2*3 < reality*2
 }
 
 // legAction is what the keepalive streak asks the supervisor to do about the
@@ -162,10 +201,6 @@ type legAction int
 
 const (
 	legHold legAction = iota
-	// legKick rotates the hy2 five-tuple (the stall kick). Only meaningful on
-	// the ladder: REALITY has no rung to step onto, and stepping onto one would
-	// move traffic across transports for 45s under the name of a kick.
-	legKick
 	// legFallback hands traffic from the primary to the hy2 ladder.
 	legFallback
 	// legAbandonFallback hands traffic back from a fallback that is dark too.
@@ -178,12 +213,15 @@ const (
 // whether that is because the failover put it there; pin is the `mole leg`
 // pin, which disarms every automatic move. probeAlive is the out-of-tunnel UDP
 // probe: with it dead the host or the route is gone and no leg is an answer.
-func keepaliveLegAction(fails int, probeAlive, onHy2, onFallback bool, pin string) legAction {
-	if !probeAlive || fails == 0 {
+//
+// linkOK is the local-link verdict (utils/link.go). With the first hop
+// dropping packets the streak is a measurement of the radio, and a leg change
+// would move traffic across transports for nothing — measured 2026-09-04
+// 09:04-09:45: four leg changes in half an hour of bad Wi-Fi, each justified by
+// a keepalive streak the Wi-Fi had produced.
+func keepaliveLegAction(fails int, probeAlive, linkOK, onHy2, onFallback bool, pin string) legAction {
+	if !probeAlive || !linkOK || fails == 0 {
 		return legHold
-	}
-	if onHy2 && fails == stallKickThreshold {
-		return legKick
 	}
 	if fails < fallbackEnterFails || pin != "" {
 		return legHold

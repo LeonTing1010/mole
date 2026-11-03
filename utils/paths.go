@@ -123,8 +123,3 @@ func CeilingPath() string { return filepath.Join(MoleDir(), "ceiling") }
 // here also a different question: the ceiling asks how fast, the leg asks over
 // what.
 func LegPath() string { return filepath.Join(MoleDir(), "leg") }
-
-// ExperimentPath holds the paired A/B declaration and its accumulated samples
-// (`mole ab`). Absent means no experiment is running and no probe-only
-// outbounds are materialized.
-func ExperimentPath() string { return filepath.Join(MoleDir(), "experiment.json") }

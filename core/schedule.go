@@ -43,17 +43,18 @@ func BandwidthRungMbps(tag string) int {
 }
 
 // standardRungs are the ceilings the ladder always offers when they fit under
-// the configured maximum. Roughly 1.5×-spaced up to 50: fine enough to track a
-// link that swings by an order of magnitude, coarse enough that switching is a
-// decision rather than a twitch.
+// the configured maximum. Roughly 1.5×-spaced up to 100, then tighter above —
+// the upper band is where the path gets saturated and the supervisor needs
+// intermediate steps to descend without jumping straight from 400 to 100.
 //
-// The spacing tightens above 50 on purpose. Down low, picking a rung too small
-// only leaves throughput unused, so wide steps cost little. Up high you are
-// closing in on the physical link, where the two directions stop being
-// symmetric: one rung short is a few Mbps unused, one rung long is Brutal
-// declaring more than the path can carry and flooding it into ENOBUFS. Near the
-// measured cap, step carefully.
-var standardRungs = []int{1, 2, 3, 5, 8, 12, 20, 30, 50, 65, 80, 100}
+// Spacing rationale: 1×-3× below 50 (swings here are cheap, one rung short
+// leaves Mbps on the table but nothing worse), 1.3× between 50-100 (close
+// enough that a descent lands on a rung that is still meaningful), and
+// sub-linear above 100 so 400 only requires 3 intermediate steps to reach.
+// No rung ever exceeds one of: the operator's measured peak, or the standard
+// set — climbing above a known-good ceiling is how Brutal floods the path
+// into ENOBUFS collapse.
+var standardRungs = []int{1, 2, 3, 5, 8, 12, 20, 30, 50, 65, 80, 100, 150, 200, 300}
 
 // Default Brutal ceiling for a server that carries no explicit one. Lives here
 // because both the config builder and the server list must resolve "unset" to
@@ -187,37 +188,6 @@ func (s BandwidthSchedule) StepDown(down, steps int) int {
 		i = 0
 	}
 	return rungs[i]
-}
-
-// Sibling returns a rung adjacent to `down`, or 0 when the ladder has nothing
-// else to offer.
-//
-// This is not a bandwidth decision — it is how the supervisor gets a FRESH QUIC
-// session. An outbound's session is not addressable through the Clash API: there
-// is no "reconnect" call, only a selector that says which outbound carries
-// traffic. So when the established session is the thing that has gone bad — the
-// keepalive failing while a fresh out-of-tunnel probe still gets answers, which
-// is per-five-tuple throttling — the only lever is to route through a different
-// outbound, which dials its own session on its own source port.
-//
-// Prefers one rung DOWN, because the alternative is momentarily declaring more
-// bandwidth than the rung that was already struggling. Falls back to one rung up
-// when there is nothing below.
-func (s BandwidthSchedule) Sibling(down int) int {
-	rungs := s.Rungs()
-	if len(rungs) < 2 {
-		return 0
-	}
-	i := 0
-	for j, n := range rungs {
-		if n <= down {
-			i = j
-		}
-	}
-	if i > 0 {
-		return rungs[i-1]
-	}
-	return rungs[i+1]
 }
 
 // HasRung reports whether the ladder carries a given DOWN ceiling — i.e. whether

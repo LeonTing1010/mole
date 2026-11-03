@@ -41,10 +41,10 @@ func TestStepDownWithNoLadder(t *testing.T) {
 func TestHealDescendsOnlyAfterSustainedTrouble(t *testing.T) {
 	var h healState
 
-	if got := h.tick(false, true); got != 0 {
+	if got := h.tick(false, true, false); got != 0 {
 		t.Fatalf("one bad tick moved the ceiling to backoff %d; it should wait for confirmation", got)
 	}
-	if got := h.tick(false, true); got != 1 {
+	if got := h.tick(false, true, false); got != 1 {
 		t.Fatalf("backoff after %d bad ticks = %d, want 1", healBackoffTicks, got)
 	}
 }
@@ -54,15 +54,15 @@ func TestHealDescendsOnlyAfterSustainedTrouble(t *testing.T) {
 // up into the same failure every couple of minutes.
 func TestHealDoesNotClimbOnABriefRecovery(t *testing.T) {
 	var h healState
-	h.tick(false, true)
-	h.tick(false, true) // backoff 1
+	h.tick(false, true, false)
+	h.tick(false, true, false) // backoff 1
 
 	for i := 0; i < healRecoverTicks-1; i++ {
-		if got := h.tick(true, false); got != 1 {
+		if got := h.tick(true, false, false); got != 1 {
 			t.Fatalf("backoff dropped to %d after only %d clean ticks", got, i+1)
 		}
 	}
-	if got := h.tick(true, false); got != 0 {
+	if got := h.tick(true, false, false); got != 0 {
 		t.Fatalf("backoff after %d clean ticks = %d, want 0", healRecoverTicks, got)
 	}
 }
@@ -83,7 +83,7 @@ func TestHealDoesNotClimbOnABriefRecovery(t *testing.T) {
 func TestHealIgnoresFlapping(t *testing.T) {
 	var h healState
 	for i := 0; i < 40; i++ {
-		if got := h.tick(true, i%2 == 0); got != 0 {
+		if got := h.tick(true, i%2 == 0, false); got != 0 {
 			t.Fatalf("alternating flood evidence moved the ceiling to backoff %d at tick %d", got, i)
 		}
 	}
@@ -95,7 +95,7 @@ func TestHealDescentIsBounded(t *testing.T) {
 	var h healState
 	got := 0
 	for i := 0; i < 200; i++ {
-		got = h.tick(false, true)
+		got = h.tick(false, true, false)
 	}
 	if got != healMaxBackoff {
 		t.Errorf("backoff under continuous failure = %d, want it capped at %d", got, healMaxBackoff)
@@ -107,16 +107,16 @@ func TestHealDescentIsBounded(t *testing.T) {
 func TestHealReturnsToTheTargetAndStops(t *testing.T) {
 	var h healState
 	for i := 0; i < 200; i++ {
-		h.tick(false, true)
+		h.tick(false, true, false)
 	}
 	for i := 0; i < healMaxBackoff*healRecoverTicks; i++ {
-		h.tick(true, false)
+		h.tick(true, false, false)
 	}
 	if h.backoff != 0 {
 		t.Fatalf("backoff after a long clean stretch = %d, want 0", h.backoff)
 	}
 	for i := 0; i < 100; i++ {
-		if got := h.tick(true, false); got != 0 {
+		if got := h.tick(true, false, false); got != 0 {
 			t.Fatalf("backoff went negative (%d) — the ceiling climbed above its target", got)
 		}
 	}
@@ -130,7 +130,7 @@ func TestHealReturnsToTheTargetAndStops(t *testing.T) {
 func TestHealBackoffResetsWhenTheCeilingTargetChanges(t *testing.T) {
 	h := healState{target: 30}
 	for i := 0; i < healBackoffTicks*2; i++ {
-		h.tick(false, true)
+		h.tick(false, true, false)
 	}
 	if h.backoff == 0 {
 		t.Fatal("setup failed: the path was unhealthy long enough to descend, but backoff is 0")
@@ -155,7 +155,7 @@ func TestHealBackoffResetsWhenTheCeilingTargetChanges(t *testing.T) {
 func TestHealBackoffResetsWhenThePinIsRetired(t *testing.T) {
 	h := healState{target: 30}
 	for i := 0; i < healBackoffTicks*2; i++ {
-		h.tick(false, true)
+		h.tick(false, true, false)
 	}
 	h.retarget(0)
 	if h.backoff != 0 {
@@ -169,7 +169,7 @@ func TestHealRetargetIsInertWhenTheTargetIsUnchanged(t *testing.T) {
 	h := healState{target: 30}
 	for i := 0; i < healBackoffTicks*2; i++ {
 		h.retarget(30)
-		h.tick(false, true)
+		h.tick(false, true, false)
 	}
 	if h.backoff == 0 {
 		t.Error("repeated retarget with the same pin wiped the descent; a steady pin must not block self-healing")
@@ -184,7 +184,7 @@ func TestHealRetargetIsInertWhenTheTargetIsUnchanged(t *testing.T) {
 func TestHealHoldsTheCeilingOnADarkPath(t *testing.T) {
 	var h healState
 	for i := 0; i < 200; i++ {
-		if got := h.tick(false, false); got != 0 {
+		if got := h.tick(false, false, false); got != 0 {
 			t.Fatalf("a dark path with no flooding descended to backoff %d at tick %d; the ceiling is not what is wrong", got, i)
 		}
 	}
@@ -195,13 +195,13 @@ func TestHealHoldsTheCeilingOnADarkPath(t *testing.T) {
 // climbs straight back up while the link is still down.
 func TestHealDoesNotClimbWhileThePathIsDark(t *testing.T) {
 	var h healState
-	h.tick(false, true)
-	h.tick(false, true) // backoff 1, earned against real flooding
+	h.tick(false, true, false)
+	h.tick(false, true, false) // backoff 1, earned against real flooding
 	if h.backoff != 1 {
 		t.Fatalf("setup failed: backoff = %d, want 1", h.backoff)
 	}
 	for i := 0; i < healRecoverTicks*3; i++ {
-		if got := h.tick(false, false); got != 1 {
+		if got := h.tick(false, false, false); got != 1 {
 			t.Fatalf("dark ticks moved the ceiling to backoff %d at tick %d; they must hold it", got, i)
 		}
 	}
@@ -212,9 +212,9 @@ func TestHealDoesNotClimbWhileThePathIsDark(t *testing.T) {
 // still needs healBackoffTicks worth of it.
 func TestHealDoesNotDescendOnASingleFloodingTick(t *testing.T) {
 	var h healState
-	h.tick(false, true)
+	h.tick(false, true, false)
 	for i := 0; i < 50; i++ {
-		if got := h.tick(false, false); got != 0 {
+		if got := h.tick(false, false, false); got != 0 {
 			t.Fatalf("one flooding tick descended to backoff %d; it takes %d", got, healBackoffTicks)
 		}
 	}
@@ -225,9 +225,9 @@ func TestHealDoesNotDescendOnASingleFloodingTick(t *testing.T) {
 // individual minutes come back quiet.
 func TestHealDescendsOnFloodingSpreadAcrossABadStretch(t *testing.T) {
 	var h healState
-	h.tick(false, true)
-	h.tick(false, false)
-	if got := h.tick(false, true); got != 1 {
+	h.tick(false, true, false)
+	h.tick(false, false, false)
+	if got := h.tick(false, true, false); got != 1 {
 		t.Errorf("backoff after two flooding ticks either side of a dark one = %d, want 1", got)
 	}
 }
@@ -236,49 +236,10 @@ func TestHealDescendsOnFloodingSpreadAcrossABadStretch(t *testing.T) {
 // proved itself at that rung, so the next descent starts from scratch.
 func TestHealFloodEvidenceIsClearedByARecovery(t *testing.T) {
 	var h healState
-	h.tick(false, true)
-	h.tick(true, false)
-	if got := h.tick(false, true); got != 0 {
+	h.tick(false, true, false)
+	h.tick(true, false, false)
+	if got := h.tick(false, true, false); got != 0 {
 		t.Errorf("backoff = %d after a healthy minute reset the count, want 0", got)
-	}
-}
-
-// The stall kick needs a rung that is NOT the one it is leaving — the whole
-// point is to route through a different outbound so a fresh QUIC session gets
-// dialed. Returning the same rung would select the stuck session again.
-func TestSiblingAlwaysMoves(t *testing.T) {
-	// Rungs: 1, 2, 3, 5, 8, 12, 20
-	s := BandwidthSchedule{OffUp: 5, OffDown: 20, PeakUp: 2, PeakDown: 5, StartHour: 12, EndHour: 2}
-
-	for _, down := range s.Rungs() {
-		got := s.Sibling(down)
-		if got == 0 {
-			t.Errorf("Sibling(%d) = 0, want a rung to step onto", down)
-			continue
-		}
-		if got == down {
-			t.Errorf("Sibling(%d) = %d — the kick would re-select the stuck session", down, got)
-		}
-		if !s.HasRung(got) {
-			t.Errorf("Sibling(%d) = %d, which is not a rung the config carries", down, got)
-		}
-	}
-	// Prefers stepping down: momentarily declaring MORE bandwidth than the rung
-	// that was already struggling is the wrong direction.
-	if got := s.Sibling(20); got != 12 {
-		t.Errorf("Sibling(20) = %d, want 12 (one rung down)", got)
-	}
-	// ...except at the bottom, where down is not available.
-	if got := s.Sibling(1); got != 2 {
-		t.Errorf("Sibling(1) = %d, want 2 (nothing below to step to)", got)
-	}
-}
-
-// With no ladder there is nothing to kick onto, and saying so is what keeps the
-// supervisor from selecting a member sing-box never defined.
-func TestSiblingWithNoLadder(t *testing.T) {
-	if got := (BandwidthSchedule{}).Sibling(20); got != 0 {
-		t.Errorf("Sibling with no ladder = %d, want 0", got)
 	}
 }
 
@@ -291,7 +252,7 @@ func TestFreezePreservesTheCleanStreak(t *testing.T) {
 
 	// Earn a backoff the honest way: unhealthy AND flooding.
 	for i := 0; i < healBackoffTicks; i++ {
-		h.tick(false, true)
+		h.tick(false, true, false)
 	}
 	if h.backoff != 1 {
 		t.Fatalf("setup: backoff = %d, want 1", h.backoff)
@@ -299,7 +260,7 @@ func TestFreezePreservesTheCleanStreak(t *testing.T) {
 
 	// Bank most of the clean run needed to climb back.
 	for i := 0; i < healRecoverTicks-1; i++ {
-		h.tick(true, false)
+		h.tick(true, false, false)
 	}
 	banked := h.good
 
@@ -315,7 +276,7 @@ func TestFreezePreservesTheCleanStreak(t *testing.T) {
 
 	// One more good tick and the ceiling climbs — the frozen ticks neither
 	// helped nor hurt.
-	if got := h.tick(true, false); got != 0 {
+	if got := h.tick(true, false, false); got != 0 {
 		t.Errorf("tick after the link returned = %d, want 0 (climbed a rung)", got)
 	}
 }
@@ -327,12 +288,12 @@ func TestDegradedTicksAsUsable(t *testing.T) {
 	var h healState
 	h.target = 20
 	for i := 0; i < healBackoffTicks; i++ {
-		h.tick(false, true)
+		h.tick(false, true, false)
 	}
 
 	// utils.HealthDegraded.Usable() is true, so this is what retune passes.
 	for i := 0; i < healRecoverTicks; i++ {
-		h.tick(true, false)
+		h.tick(true, false, false)
 	}
 	if h.backoff != 0 {
 		t.Errorf("backoff = %d after %d usable ticks, want 0", h.backoff, healRecoverTicks)
@@ -352,7 +313,7 @@ func TestFloodingDescendsThroughFlappingHealth(t *testing.T) {
 	// Alternate healthy/unhealthy while flooding throughout — the exact shape
 	// that used to produce no descent at all.
 	for i := 0; i < healBackoffTicks*2; i++ {
-		h.tick(i%2 == 0, true)
+		h.tick(i%2 == 0, true, false)
 	}
 	if h.backoff == 0 {
 		t.Fatal("flooding through a flapping health verdict produced no descent")
@@ -367,7 +328,7 @@ func TestUnhealthyWithoutFloodingStillHolds(t *testing.T) {
 	var h healState
 	h.target = 65
 	for i := 0; i < healRecoverTicks*3; i++ {
-		if got := h.tick(false, false); got != 0 {
+		if got := h.tick(false, false, false); got != 0 {
 			t.Fatalf("dark path descended to backoff %d — no rung passes traffic through a blackhole", got)
 		}
 	}
@@ -379,26 +340,43 @@ func TestFloodingResetsTheClimb(t *testing.T) {
 	var h healState
 	h.target = 65
 	for i := 0; i < healBackoffTicks; i++ {
-		h.tick(true, true)
+		h.tick(true, true, false)
 	}
 	if h.backoff != 1 {
 		t.Fatalf("setup: backoff = %d, want 1", h.backoff)
 	}
 	for i := 0; i < healRecoverTicks-1; i++ {
-		h.tick(true, false)
+		h.tick(true, false, false)
 	}
-	h.tick(true, true) // one flood mid-recovery
+	h.tick(true, true, false) // one flood mid-recovery
 	if h.good != 0 {
 		t.Errorf("clean streak = %d after a flood, want it reset", h.good)
 	}
 	for i := 0; i < healRecoverTicks-1; i++ {
-		h.tick(true, false)
+		h.tick(true, false, false)
 	}
 	if h.backoff != 1 {
 		t.Errorf("backoff = %d — the climb must restart from the flood, not resume", h.backoff)
 	}
-	h.tick(true, false)
+	h.tick(true, false, false)
 	if h.backoff != 0 {
 		t.Errorf("backoff = %d after a full clean run, want 0", h.backoff)
+	}
+}
+
+// ENOBUFS inside a keepalive blackout holds the ceiling; the same flood with
+// the tunnel answering still descends. 2026-09-03..05: eighteen bursts, all
+// inside blackouts, nine descents, none of them useful.
+func TestHealHoldsFloodDuringBlackout(t *testing.T) {
+	var h healState
+	for i := 0; i < 20; i++ {
+		if got := h.tick(false, true, true); got != 0 {
+			t.Fatalf("flood during blackout descended to backoff %d at tick %d", got, i)
+		}
+	}
+	// The blackout ends, the flood does not: now it is the ceiling.
+	h.tick(true, true, false)
+	if got := h.tick(true, true, false); got != 1 {
+		t.Fatalf("flood with the tunnel answering did not descend: backoff %d", got)
 	}
 }

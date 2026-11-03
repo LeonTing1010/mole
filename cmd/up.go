@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,6 +24,7 @@ var internalDaemon bool
 var noKillSwitch bool
 var noDestroyOnLidClose bool
 var lidCloseDryRun bool
+var lidGrace time.Duration
 
 // maskURI replaces the user:password portion of a URI with "***" for logging.
 func maskURI(s string) string {
@@ -49,6 +51,7 @@ func init() {
 	// It was never accurate about what fired: idle and maintenance sleep counted
 	// too, which is the bug this rename came out of.
 	upCmd.Flags().BoolVar(&noDestroyOnLidClose, "no-destroy-on-sleep", false, "")
+	upCmd.Flags().DurationVar(&lidGrace, "lid-grace", 5*time.Minute, "keep the server this long after the lid shuts; it is destroyed on the first wake after that if the lid is still shut (0 = destroy at lid close)")
 	_ = upCmd.Flags().MarkDeprecated("no-destroy-on-sleep", "use --no-destroy-on-lid-close")
 	// A flag rather than an environment variable on purpose: `mole up` re-execs
 	// itself through sudo, and sudo's env_reset drops anything not on its
@@ -195,6 +198,9 @@ func runParent() error {
 	if err := config.Save(cfg, cfgPath); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
+	if err := core.PreflightEngine(cfgPath); err != nil {
+		return fmt.Errorf("engine preflight: %w", err)
+	}
 	fmt.Printf("📋 Config: %s\n", cfgPath)
 
 	fmt.Println("🚀 Starting VPN...")
@@ -248,6 +254,9 @@ func runDaemon() error {
 	}
 
 	cfgPath := utils.SingboxConfigPath()
+	if err := core.PreflightEngine(cfgPath); err != nil {
+		return fmt.Errorf("engine preflight before network takeover: %w", err)
+	}
 
 	// TUN needs DNS takeover on macOS. Defer restore so any clean exit path resets it.
 	if err := utils.TakeOverDNS(); err != nil {
@@ -278,26 +287,41 @@ func runDaemon() error {
 			fmt.Printf("⚠️  kill switch failed to arm: %v — foreign traffic will LEAK direct if sing-box dies\n", err)
 		} else {
 			fmt.Println("🛡️  kill switch armed: foreign egress locked to the tunnel, CN direct unrestricted")
+			// Replay what the direct rules were last seen to dial, and drop
+			// whatever those rules no longer claim. A domain routed direct is
+			// routed into the block rule above until its addresses are back in
+			// the exemption table, so this runs before sing-box does.
+			utils.SeedDirectExemptions(config.DirectDomains())
 			defer utils.UnloadKillSwitch()
 		}
 	}
 
 	armed, dryRun, offReason := lidDestroyPlan()
 
-	// The stashed key is only needed while this daemon runs. Remove it on any
-	// clean exit so the extra copy of a root-scoped credential does not outlive
-	// the feature that asked for it.
-	if armed && !dryRun {
-		defer os.Remove(utils.VultrKeyPath())
-	}
+	// 2026-10-07: do NOT defer os.Remove(utils.VultrKeyPath()) on exit.
+	// The daemon (this runDaemon process) does not own that file — it is
+	// written by stashVultrKey() in runParent (up.go:142, the user-shell
+	// process before sudo) and by deployViaVultr (server.go:587, the
+	// `mole server deploy` CLI). Removing it here on daemon exit means
+	// `mole down` wipes the key, the next `mole up` finds nothing, and
+	// destroy-on-lid-close silently disarms — exactly what happened on
+	// 2026-10-07 after redeploy. The key lives at 0600 under ~/.mole/,
+	// the same pattern as ssh keys and kubeconfig; persistence is the
+	// default and matches how users expect a long-term credential to work.
 
-	core.SetServerAddress(srv.IP)
+	// Probe address must use the same host mole actually connects to, which
+	// IPv4 preferred but falls back to IPv6 when the node is v6-only.
+	probeHost := serverHost(*srv)
+	if strings.Contains(probeHost, ":") && !strings.HasPrefix(probeHost, "[") {
+		probeHost = "[" + probeHost + "]"
+	}
+	probeAddr := fmt.Sprintf("%s:%d", probeHost, srv.Port)
 
 	sup := core.NewSupervisor(cfgPath, srv.Name, core.SupervisorOpts{
 		// Direct UDP probe to the VPS hy2 endpoint — avoids the DNS-loop bug
 		// where DoT-to-1.1.1.1 hiccups got misread as VPS death and reported a
 		// healthy VPS as down in `mole status`.
-		ProbeAddr: fmt.Sprintf("%s:%d", srv.IP, srv.Port),
+		ProbeAddr: probeAddr,
 		// The probe has to speak the server's obfuscation or it decodes to
 		// noise on arrival, goes unanswered, and reports a dark path through a
 		// working tunnel.
@@ -305,13 +329,18 @@ func runDaemon() error {
 		// Time-of-day Brutal ceiling. Inert unless the server sets a peak profile;
 		// when set, the config (built from the same server URI) carries the
 		// peak/off-peak selector and the supervisor flips it by the clock.
-		Schedule: srv.Schedule(),
+		Schedule:        srv.Schedule(),
+		RealityRateMbps: srv.RealityDownMbps,
 		// Arms the automatic failover to the REALITY leg. Derived from the same
 		// StandbyURI the parent built the config from, so the flag and the
 		// selector member it names can never disagree — selecting a member
 		// sing-box never heard of would fail the call and strand traffic on a
 		// leg already proven dark.
-		HasRealityLeg: srv.StandbyURI() != "",
+		HasRealityLeg:   srv.StandbyURI() != "",
+		VerifyLegEgress: srv.StandbyURI() != "",
+		// For the out-of-tunnel TCP probe that separates "the node refuses the
+		// port" from "the path drops it" when the leg is being re-tested.
+		RealityAddr: srv.realityAddr(),
 		// Idle-destroy. Off unless asked for; when on, the watcher deletes this
 		// server once nothing has gone abroad for the configured window and then
 		// stops the daemon, so the deferred DNS restore and kill-switch unload
@@ -326,10 +355,15 @@ func runDaemon() error {
 		// daemon path.
 		DestroyOnLidClose:   armed,
 		LidCloseDryRun:      dryRun,
+		LidGrace:            lidGrace,
 		LidDestroyOffReason: offReason,
 		// 规则热更：守护进程监听 custom-rules.json，改完即时生效，不需要任何命令，
 		// 也不重启 sing-box / 不断 TUN（见 core/ruleswatch.go 与 config/hotrules.go）。
 		OnRulesChanged: RecompileHotRules,
+		// 让 PF 的 direct 豁免表跟上这些规则实际拨出去的地址。没有它，
+		// custom-rules.json 里任何一条指向境外的 "outbound": "direct"
+		// 都会被 kill switch 自己静默丢掉（见 utils/directexempt.go）。
+		DirectDomains: config.DirectDomains,
 		// Resolved at call time, not closed over as srv.Name: after the first lid
 		// close destroys the server, the name this daemon started with refers to
 		// nothing, and asking to destroy it again used to be filed as a failed
@@ -495,8 +529,7 @@ func autoWakeServer() error {
 		return fmt.Errorf("start was accepted but %s is still not running after 3m", target.Name)
 	}
 
-	servers[idx].Stopped = false
-	if err := saveServers(servers); err != nil {
+	if err := changeServer(target.InstanceID, target.Name, func(s *Server) { s.Stopped = false; s.Verification = nil }); err != nil {
 		return err
 	}
 	fmt.Printf("✅ %s started\n", target.Name)

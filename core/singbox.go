@@ -22,7 +22,6 @@ var (
 	exitCh         chan struct{}
 	exitErr        error
 	processMutex   sync.Mutex
-	serverAddress  string
 )
 
 // Start launches sing-box with the given configuration.
@@ -39,6 +38,16 @@ func Start(configPath string) error {
 	if err != nil {
 		processMutex.Unlock()
 		return err
+	}
+
+	if err := checkEngineConfig(singboxPath, configPath); err != nil {
+		processMutex.Unlock()
+		return err
+	}
+
+	if err := recoverFakeIPCache(configPath); err != nil {
+		processMutex.Unlock()
+		return fmt.Errorf("preserve FakeIP cache before engine restart: %w", err)
 	}
 
 	fmt.Printf("🔧 sing-box: %s\n", singboxPath)
@@ -67,10 +76,7 @@ func Start(configPath string) error {
 	sink := io.MultiWriter(logFile, &singboxFlood)
 	cmd.Stdout = sink
 	cmd.Stderr = sink
-	cmd.Env = append(os.Environ(),
-		"ENABLE_DEPRECATED_LEGACY_DNS_SERVERS=true",
-		"ENABLE_DEPRECATED_MISSING_DOMAIN_RESOLVER=true",
-	)
+	cmd.Env = engineEnv()
 
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
@@ -181,12 +187,6 @@ func ExitError() error {
 	defer processMutex.Unlock()
 	return exitErr
 }
-
-// SetServerAddress records which server is currently active (for diagnostics).
-func SetServerAddress(addr string) { serverAddress = addr }
-
-// ServerAddress returns the last set server address.
-func ServerAddress() string { return serverAddress }
 
 // KillOrphanedSingboxes finds and kills sing-box processes that mole started
 // but no longer owns. Two-stage:

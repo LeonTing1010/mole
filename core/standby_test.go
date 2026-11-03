@@ -111,10 +111,8 @@ func TestStandbyLeaveAndExtendAreNoOpsWhenOff(t *testing.T) {
 }
 
 // The keepalive escalation policy, as a table. Every row is a shape that has
-// been seen: the kick is hy2-only because REALITY has no rung to step onto and
-// stepping onto one would move traffic across transports under the name of a
-// kick; a dead UDP probe means the host or the route is gone and no leg is an
-// answer; a pin disarms every move; a fallback that is dark too goes home.
+// been seen: a dead UDP probe means the host or the route is gone and no leg is
+// an answer; a pin disarms every move; a fallback that is dark too goes home.
 func TestKeepaliveLegActionPolicy(t *testing.T) {
 	cases := []struct {
 		name             string
@@ -125,8 +123,7 @@ func TestKeepaliveLegActionPolicy(t *testing.T) {
 	}{
 		{"no failures", 0, true, false, false, "", legHold},
 		{"probe dead: nothing to move to", fallbackEnterFails, false, false, false, "", legHold},
-		{"kick on hy2 at the threshold", stallKickThreshold, true, true, false, "", legKick},
-		{"no kick on REALITY at the threshold", stallKickThreshold, true, false, false, "", legHold},
+		{"hy2 dark below the fallback threshold: hold", fallbackEnterFails - 1, true, true, false, "", legHold},
 		{"REALITY dark past the threshold: fall back", fallbackEnterFails, true, false, false, "", legFallback},
 		{"fallback dark too: go home", fallbackEnterFails, true, true, true, "", legAbandonFallback},
 		{"pinned hy2 dark: hold, the pin is an instruction", fallbackEnterFails, true, true, false, "hy2", legHold},
@@ -135,8 +132,54 @@ func TestKeepaliveLegActionPolicy(t *testing.T) {
 		{"below the threshold on REALITY: hold", fallbackEnterFails - 1, true, false, false, "", legHold},
 	}
 	for _, c := range cases {
-		if got := keepaliveLegAction(c.fails, c.probe, c.hy2, c.onFB, c.pin); got != c.want {
+		if got := keepaliveLegAction(c.fails, c.probe, true, c.hy2, c.onFB, c.pin); got != c.want {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// A bad local link holds every move, whatever the streak says.
+func TestKeepaliveLegActionHoldsOnBadLink(t *testing.T) {
+	for _, fails := range []int{1, fallbackEnterFails, fallbackEnterFails * 3} {
+		for _, onHy2 := range []bool{true, false} {
+			if got := keepaliveLegAction(fails, true, false, onHy2, false, ""); got != legHold {
+				t.Errorf("fails=%d onHy2=%v with a bad link: got %v, want hold", fails, onHy2, got)
+			}
+		}
+	}
+}
+
+// rescueStuck fires when keepaliveLegAction would return legHold (because
+// the UDP probe is dead) but we're stranded on the hy2 fallback with
+// enough failures past the threshold. In that case the caller runs a
+// direct TCP probe to REALITY as a second opinion.
+func TestRescueStuckFallbackTrigger(t *testing.T) {
+	cases := []struct {
+		name         string
+		action       legAction
+		fails        int
+		onFallback   bool
+		linkBad      bool
+		hasReality   bool
+		wantRescue   bool
+	}{
+		{"not on fallback: nothing to rescue", legHold, fallbackEnterFails, false, false, true, false},
+		{"on fallback but fails below threshold: not yet", legHold, fallbackEnterFails - 1, true, false, true, false},
+		{"on fallback, threshold met, link bad: skip (Wi-Fi fault)", legHold, fallbackEnterFails, true, true, true, false},
+		{"on fallback, threshold met, no reality addr: skip (no primary to go to)", legHold, fallbackEnterFails, true, false, false, false},
+		{"on fallback, threshold met, legFallback action: normal path handles it", legFallback, fallbackEnterFails, true, false, true, false},
+		{"on fallback, threshold met, probe alive: normal legAbandonFallback handles it", legAbandonFallback, fallbackEnterFails, true, false, true, false},
+		{"on fallback, threshold met, probe dead, link ok: rescue!", legHold, fallbackEnterFails, true, false, true, true},
+		{"on fallback, way past threshold: still rescue", legHold, fallbackEnterFails * 2, true, false, true, true},
+	}
+	for _, c := range cases {
+		got := c.action == legHold &&
+			c.fails >= fallbackEnterFails &&
+			c.onFallback &&
+			!c.linkBad &&
+			c.hasReality
+		if got != c.wantRescue {
+			t.Errorf("%s: rescueStuck=%v, want %v", c.name, got, c.wantRescue)
 		}
 	}
 }
