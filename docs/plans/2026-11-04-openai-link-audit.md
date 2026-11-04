@@ -71,3 +71,12 @@ not establish login, streaming, request processing or model output speed.
 For source changes use `bash scripts/verify-performance.sh <temporary-binary>`.
 For diagnostic artifacts verify successful parsing, exact byte accounting,
 failure retention, no secrets in tracked content, and production preservation.
+
+## Completed audit
+
+The source/path inventory, rotated native comparison, application reuse,
+cold-start repeats, concurrent load and corrected delayed HTTP/2 validation are
+complete. Failed/invalid trials are retained and excluded from acceptance.
+Seventeen receipt and preservation checks passed. No production behavioral
+patch or configuration activation was made; the report identifies a qualified
+smux canary and monitoring follow-up with remaining application acceptance.
