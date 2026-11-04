@@ -73,7 +73,7 @@ func Start(configPath string) error {
 	// file, which rotates. Assigning the *same* writer to both streams matters:
 	// os/exec reuses one pipe when Stdout and Stderr are the same value, so
 	// lines cannot interleave mid-write the way two independent copiers would.
-	sink := io.MultiWriter(logFile, &singboxFlood)
+	sink := io.MultiWriter(logFile, &singboxFlood, &singboxNodeDials)
 	cmd.Stdout = sink
 	cmd.Stderr = sink
 	cmd.Env = engineEnv()

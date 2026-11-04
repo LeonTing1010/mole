@@ -23,5 +23,8 @@ func dialStatus(st *utils.State) string {
 	if !st.LastDialAt.IsZero() {
 		freshness = "last sample " + st.LastDialAt.Local().Format("2006-01-02 15:04:05")
 	}
+	if st.ApplicationNodeDialFailures > 0 {
+		freshness += fmt.Sprintf("; %d application node-dial failures observed since start, last %s", st.ApplicationNodeDialFailures, st.LastApplicationNodeDialFailureAt.Local().Format("15:04:05"))
+	}
 	return fmt.Sprintf("%d/%d probe requests slow or failed (%d slow >%dms, %d failed; %s) — %s", bad, n, bad-fails, utils.DialSlowMs, fails, freshness, verdict)
 }

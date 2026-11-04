@@ -120,8 +120,9 @@ type Supervisor struct {
 	// fresh keeper and (when configured) external TLS/body requests.
 	legProbeFn func(port, timeoutMs int) (time.Duration, error)
 	// Enabled only with the transport-bound external forwarders in the config.
-	verifyLegEgress    bool
-	pressureSnapshotFn func() floodSnapshot // Nil uses the live sing-box log sensor.
+	verifyLegEgress           bool
+	pressureSnapshotFn        func() floodSnapshot    // Nil uses the live sing-box log sensor.
+	applicationDialSnapshotFn func() nodeDialSnapshot // Nil observes this engine's node dials.
 
 	// dialsPaused records that fresh-dial sampling is suspended for a bad
 	// local link, so the suspension is logged once per stretch.
@@ -212,6 +213,7 @@ type SupervisorOpts struct {
 
 // NewSupervisor builds a supervisor ready to start. It does not start sing-box.
 func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervisor {
+	singboxNodeDials.configure(opts.RealityAddr)
 	if opts.ClashAddr == "" {
 		opts.ClashAddr = "127.0.0.1:9090"
 	}
@@ -785,13 +787,27 @@ func (s *Supervisor) shouldSampleFreshDial(last time.Time) bool {
 	if s.linkBad() {
 		return false
 	}
+	snapshot := singboxNodeDials.snapshot()
+	if s.applicationDialSnapshotFn != nil {
+		snapshot = s.applicationDialSnapshotFn()
+	}
 	s.stateMu.Lock()
+	s.state.ApplicationNodeDialFailures = snapshot.sequence
+	s.state.LastApplicationNodeDialFailureAt = snapshot.last
 	wellKnownHealthy := len(s.state.DialSamples) == utils.DialWindow &&
 		s.state.DialBad() == 0 && !s.state.SlowNewFlows
 	s.stateMu.Unlock()
 	interval := s.keepaliveEvery
 	if wellKnownHealthy {
 		interval = healthyFreshDialEvery
+		// A clean sparse monitor does not erase real application failures.
+		// Request another real sample at normal cadence; never insert a failed
+		// vote or bypass the existing comparative handoff and local-link gates.
+		age := time.Since(snapshot.last)
+		pin := utils.ReadLeg()
+		if age >= 0 && age <= 30*time.Second && !s.onFallback() && pin != utils.LegHy2 && pin != utils.LegBoth {
+			interval = s.keepaliveEvery
+		}
 	}
 	return last.IsZero() || time.Since(last) >= interval
 }

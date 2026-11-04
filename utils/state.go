@@ -90,6 +90,9 @@ type State struct {
 	// newest last, capped at DialWindow. Persisted so `mole status` can show
 	// the shape of the last few minutes rather than one instantaneous number.
 	DialSamples []DialSample `json:"dial_samples,omitempty"`
+	// Raw current-node REALITY dial sightings, separate from sampled probe votes.
+	ApplicationNodeDialFailures      uint64    `json:"application_node_dial_failures,omitempty"`
+	LastApplicationNodeDialFailureAt time.Time `json:"last_application_node_dial_failure_at,omitempty"`
 	// SlowNewFlows is the latched verdict: new connections are being broken
 	// often enough to be the user's problem. Latched (see UpdateNewFlowLatch)
 	// because the underlying rate sits near the threshold — an unlatched

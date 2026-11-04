@@ -567,10 +567,7 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("deploy: generate reality identity: %w", err)
 		}
 		script = realityBootScript(port, srv.DownMbps, id)
-		srv.UUID = id.UUID
-		srv.RealityPubKey = id.PublicKey
-		srv.RealityShortID = id.ShortID
-		srv.RealityDest = id.Dest
+		configureDeployedReality(&srv, id)
 	} else {
 		id, err := newServerIdentity()
 		if err != nil {
@@ -606,10 +603,7 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 				fmt.Printf("⚠️  Standby REALITY leg skipped: %v (the hysteria2 leg is unaffected)\n", err)
 			} else {
 				script = dualBootScript(password, port, srv.DownMbps, id, rid)
-				srv.UUID = rid.UUID
-				srv.RealityPubKey = rid.PublicKey
-				srv.RealityShortID = rid.ShortID
-				srv.RealityDest = rid.Dest
+				configureDeployedReality(&srv, rid)
 			}
 		} else {
 			fmt.Println("   🎭 REALITY standby leg skipped (--no-reality)")
@@ -655,6 +649,14 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 // receive. That ordering matters: recording a pin, an obfs key or a REALITY
 // public key the server never installed doesn't leave the tunnel merely
 // unverified, it blackholes it, on a box reachable no other way.
+// Only fresh templates explicitly install server multiplex support. Imports
+// retain their existing opt-in; deployment verification qualifies real delivery.
+func configureDeployedReality(srv *Server, id *realityIdentity) {
+	srv.UUID, srv.RealityPubKey = id.UUID, id.PublicKey
+	srv.RealityShortID, srv.RealityDest = id.ShortID, id.Dest
+	srv.RealityMultiplex = true
+}
+
 func configureDeployCeiling(srv *Server) {
 	if srv.isReality() {
 		return
