@@ -40,7 +40,7 @@ net.core.wmem_max=16777216
 net.ipv4.udp_rmem_min=8388608
 net.ipv4.udp_wmem_min=8388608
 net.core.netdev_max_backlog=250000
-net.core.default_qdisc=fq
+net.core.default_qdisc=fq_codel
 net.ipv4.tcp_congestion_control=bbr
 net.ipv4.tcp_fastopen=3
 net.ipv4.tcp_tw_reuse=1
@@ -95,9 +95,8 @@ try:
 except (OSError,ValueError):r['server_tcp_fast_open']=False
 sockets=run(['ss','-tin','state','established','(','sport','=',':443',')'],False)
 r['active_tcp_cc']=[cc for cc in ['brutal','bbr','cubic','reno'] if any(line.lstrip().startswith(cc+' ') for line in sockets.splitlines())]
-if r['qdisc']!='fq':errors.append('effective qdisc differs from fq target')
+if not r['qdisc'] or r['qdisc']!=r['default_qdisc']:errors.append('effective qdisc differs from configured default')
 if r['apply_status']!='applied':errors.append('sysctl application not confirmed')
-if r['default_qdisc']!='fq':errors.append('default qdisc differs from fq target')
 if r['default_tcp_cc']!='bbr':errors.append('default TCP congestion control differs from bbr target')
 if r['tcp_fastopen']!='3':errors.append('TCP Fast Open capability differs from target')
 r['errors']=errors

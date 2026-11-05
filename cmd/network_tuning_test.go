@@ -32,6 +32,18 @@ func TestNetworkTuningReportsEffectiveQueue(t *testing.T) {
 	if report.Status != "degraded" || report.Qdisc != "fq_codel" || report.DefaultQdisc != "fq" {
 		t.Fatal(string(out))
 	}
+	// Quality/what: a validated retained policy must not be condemned by a
+	// hardcoded candidate algorithm. Why: rejected experiments are not defaults.
+	os.WriteFile(filepath.Join(bin, "sysctl"), []byte("#!/bin/sh\ncase \"$2\" in net.core.default_qdisc) echo fq_codel;; net.ipv4.tcp_congestion_control) echo bbr;; *) echo 3;; esac\n"), 0700)
+	cmd = exec.Command("python3", "-c", script)
+	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	out, err = cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(out, &report); err != nil || report.Status != "ready" {
+		t.Fatalf("retained configured policy falsely degraded: %s %v", out, err)
+	}
 }
 
 // Quality/what-x-what: the same tuning stage is present for every provisioning path.
