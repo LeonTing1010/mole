@@ -1,0 +1,628 @@
+{
+  "source_commit": "f022fa19efa6cbf8d8f360e01ab52ffdf5bf65fe",
+  "controller_sha256": "4f433fd3b469039b74d200a1cf332963eaaf40367ecf108f76cd0363542a24fd",
+  "source_branch": "codex/performance-execution-20261105",
+  "tfo": {
+    "before": [
+      {
+        "client_tfo": false,
+        "samples": 30,
+        "failures": 0,
+        "tls_median_ms": 340.422,
+        "tls_p95_ms": 1652.965
+      },
+      {
+        "client_tfo": true,
+        "samples": 30,
+        "failures": 0,
+        "tls_median_ms": 338.73400000000004,
+        "tls_p95_ms": 379.521
+      }
+    ],
+    "after": [
+      {
+        "client_tfo": false,
+        "samples": 30,
+        "failures": 0,
+        "tls_median_ms": 341.7375,
+        "tls_p95_ms": 444.213
+      },
+      {
+        "client_tfo": true,
+        "samples": 30,
+        "failures": 0,
+        "tls_median_ms": 230.065,
+        "tls_p95_ms": 280.964
+      }
+    ]
+  },
+  "rate_scan": [
+    {
+      "target_mbps": 300,
+      "rounds": 5,
+      "payload_mbps_median": 296.882642344867,
+      "https_ttfb_median_ms": 439.2395,
+      "https_ttfb_p95_ms": 2640.504,
+      "https_samples": 71,
+      "https_failures": 3,
+      "payload_bytes": 3925868544,
+      "bulk_failures": 0,
+      "client_enobufs": 0,
+      "at_least_20s": 5
+    },
+    {
+      "target_mbps": 400,
+      "rounds": 5,
+      "payload_mbps_median": 395.97387337038447,
+      "https_ttfb_median_ms": 454.96799999999996,
+      "https_ttfb_p95_ms": 2101.9199999999996,
+      "https_samples": 72,
+      "https_failures": 0,
+      "payload_bytes": 5167382528,
+      "bulk_failures": 0,
+      "client_enobufs": 0,
+      "at_least_20s": 5
+    },
+    {
+      "target_mbps": 500,
+      "rounds": 5,
+      "payload_mbps_median": 488.53516283877934,
+      "https_ttfb_median_ms": 610.0385,
+      "https_ttfb_p95_ms": 1862.182,
+      "https_samples": 64,
+      "https_failures": 0,
+      "payload_bytes": 5368709120,
+      "bulk_failures": 0,
+      "client_enobufs": 0,
+      "at_least_20s": 0
+    },
+    {
+      "target_mbps": 600,
+      "rounds": 5,
+      "payload_mbps_median": 521.2714709428706,
+      "https_ttfb_median_ms": 688.475,
+      "https_ttfb_p95_ms": 1551.002,
+      "https_samples": 58,
+      "https_failures": 0,
+      "payload_bytes": 5368709120,
+      "bulk_failures": 0,
+      "client_enobufs": 0,
+      "at_least_20s": 0
+    }
+  ],
+  "node_final": {
+    "checked_at": "2026-11-05T01:32:14.881369+00:00",
+    "default_qdisc": "fq_codel",
+    "default_tcp_cc": "bbr",
+    "tcp_fastopen": "3",
+    "apply_status": "applied",
+    "interface": "enp1s0",
+    "qdisc": "fq_codel",
+    "versions": {
+      "sing-box": "sing-box version 1.14.4",
+      "hysteria": "Version:\tv2.13.0"
+    },
+    "services": {
+      "sing-box": "active",
+      "hysteria-server": "active"
+    },
+    "server_tcp_fast_open": true,
+    "active_tcp_cc": [
+      "brutal"
+    ],
+    "errors": [],
+    "status": "ready"
+  },
+  "local_activation": {
+    "accepted": true,
+    "same_packet_config": true,
+    "state": {
+      "pid": 93799,
+      "singbox_pid": 93839,
+      "lid_destroy": "armed",
+      "reality_rate_mbps": 600,
+      "reality_pacing_state": "confirmed"
+    },
+    "tun_bulk": {
+      "requests": [
+        {
+          "ok": true,
+          "bytes": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "bytes": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "bytes": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "bytes": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "bytes": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "bytes": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "bytes": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "bytes": 8388608,
+          "error": ""
+        }
+      ],
+      "bytes": 67108864,
+      "mbps": 317.811113749163,
+      "seconds": 1.6892767080000013
+    },
+    "new_enobufs": 0,
+    "preserved_prior_overlay": true
+  },
+  "upload": [
+    {
+      "protocol": "vless",
+      "round": 1,
+      "seconds": 1.4864491670159623,
+      "mbps": 90.29419301935583,
+      "bytes": 16777216,
+      "verified": true
+    },
+    {
+      "protocol": "hysteria2",
+      "round": 1,
+      "seconds": 27.645824749954045,
+      "mbps": 4.8549004854783036,
+      "bytes": 16777216,
+      "verified": true
+    },
+    {
+      "protocol": "hysteria2",
+      "round": 2,
+      "seconds": 29.014170832990203,
+      "mbps": 4.625937055812376,
+      "bytes": 16777216,
+      "verified": true
+    },
+    {
+      "protocol": "vless",
+      "round": 2,
+      "seconds": 0.8298152909846976,
+      "mbps": 161.74410071514947,
+      "bytes": 16777216,
+      "verified": true
+    },
+    {
+      "protocol": "vless",
+      "round": 3,
+      "seconds": 0.7988476660102606,
+      "mbps": 168.01417054935237,
+      "bytes": 16777216,
+      "verified": true
+    },
+    {
+      "protocol": "hysteria2",
+      "round": 3,
+      "seconds": 27.91774504102068,
+      "mbps": 4.807613501835067,
+      "bytes": 16777216,
+      "verified": true
+    },
+    {
+      "protocol": "vless",
+      "scope": "production TUN",
+      "seconds": 13.198868458974175,
+      "mbps": 10.168881402007054,
+      "bytes": 16777216,
+      "verified": true
+    }
+  ],
+  "upload_caps": [
+    {
+      "kind": "isolated HY2",
+      "up_cap_mbps": 64,
+      "round": 1,
+      "bytes": 8388608,
+      "seconds": 12.706671707972419,
+      "mbps": 5.281388041047331,
+      "verified": true
+    },
+    {
+      "kind": "isolated HY2",
+      "up_cap_mbps": 64,
+      "round": 2,
+      "bytes": 8388608,
+      "seconds": 13.781595708045643,
+      "mbps": 4.86945528091657,
+      "verified": true
+    },
+    {
+      "kind": "isolated HY2",
+      "up_cap_mbps": 128,
+      "round": 1,
+      "bytes": 8388608,
+      "seconds": 13.46313312498387,
+      "mbps": 4.984639413203485,
+      "verified": true
+    },
+    {
+      "kind": "isolated HY2",
+      "up_cap_mbps": 128,
+      "round": 2,
+      "bytes": 8388608,
+      "seconds": 13.866846832970623,
+      "mbps": 4.8395186597459245,
+      "verified": true
+    },
+    {
+      "kind": "isolated HY2",
+      "up_cap_mbps": 256,
+      "round": 1,
+      "bytes": 8388608,
+      "seconds": 13.497344833042007,
+      "mbps": 4.972004852073941,
+      "verified": true
+    },
+    {
+      "kind": "isolated HY2",
+      "up_cap_mbps": 256,
+      "round": 2,
+      "bytes": 8388608,
+      "seconds": 13.791966958029661,
+      "mbps": 4.865793559701745,
+      "verified": true
+    }
+  ],
+  "calm_tun_upload": {
+    "kind": "calm TUN",
+    "bytes": 4194304,
+    "seconds": 20.719452999997884,
+    "mbps": 1.619465147077166,
+    "verified": true,
+    "exit": 0,
+    "error": "",
+    "chains": [
+      [
+        "proxy-reality",
+        "proxy",
+        "flow-7"
+      ]
+    ]
+  },
+  "isolated_tun": {
+    "models": [
+      {
+        "stack": "gvisor",
+        "mtu": 9000,
+        "https_ok": true,
+        "download": {
+          "upload": false,
+          "exit": 0,
+          "status": 200,
+          "seconds": 0.6801405420000001,
+          "error": "",
+          "verified": true,
+          "mbps": 49.33455650405853
+        },
+        "uploads": [
+          {
+            "upload": true,
+            "exit": 0,
+            "status": 200,
+            "seconds": 2.0291048750000003,
+            "error": "",
+            "verified": true,
+            "mbps": 16.536568618711733
+          },
+          {
+            "upload": true,
+            "exit": 0,
+            "status": 200,
+            "seconds": 1.2909177920000001,
+            "error": "",
+            "verified": true,
+            "mbps": 25.992694661071024
+          }
+        ],
+        "interface_removed": true
+      },
+      {
+        "stack": "gvisor",
+        "mtu": 1500,
+        "https_ok": true,
+        "download": {
+          "upload": false,
+          "exit": 0,
+          "status": 200,
+          "seconds": 0.6720922500000004,
+          "error": "",
+          "verified": true,
+          "mbps": 49.92533688641698
+        },
+        "uploads": [
+          {
+            "upload": true,
+            "exit": 0,
+            "status": 200,
+            "seconds": 1.982858832999999,
+            "error": "",
+            "verified": true,
+            "mbps": 16.922249552800118
+          },
+          {
+            "upload": true,
+            "exit": 0,
+            "status": 200,
+            "seconds": 1.2832265419999995,
+            "error": "",
+            "verified": true,
+            "mbps": 26.148486570191295
+          }
+        ],
+        "interface_removed": true
+      },
+      {
+        "stack": "system",
+        "mtu": 9000,
+        "https_ok": false,
+        "error": "isolated HTTPS pilot failed",
+        "interface_removed": true
+      },
+      {
+        "stack": "mixed",
+        "mtu": 9000,
+        "https_ok": false,
+        "error": "isolated HTTPS pilot failed",
+        "interface_removed": true
+      }
+    ],
+    "production_upload_after_reconnect": {
+      "upload": true,
+      "exit": 0,
+      "status": 200,
+      "seconds": 7.051580208999999,
+      "error": "",
+      "verified": true,
+      "mbps": 4.758427331958043
+    },
+    "dns_unchanged": true,
+    "default_route_unchanged": true
+  },
+  "pool_diagnostic": [
+    {
+      "pool": 0,
+      "round": 1,
+      "complete": true,
+      "aggregate_mbps": 174.34233014600295,
+      "delivered_bytes": 67108864
+    },
+    {
+      "pool": 0,
+      "round": 2,
+      "complete": true,
+      "aggregate_mbps": 158.827687785084,
+      "delivered_bytes": 67108864
+    },
+    {
+      "pool": 0,
+      "round": 3,
+      "complete": true,
+      "aggregate_mbps": 157.08114372868405,
+      "delivered_bytes": 67108864
+    },
+    {
+      "pool": 4,
+      "round": 1,
+      "complete": true,
+      "aggregate_mbps": 192.95197575762018,
+      "delivered_bytes": 67108864
+    },
+    {
+      "pool": 4,
+      "round": 2,
+      "complete": true,
+      "aggregate_mbps": 402.7903342094462,
+      "delivered_bytes": 67108864
+    },
+    {
+      "pool": 4,
+      "round": 3,
+      "complete": true,
+      "aggregate_mbps": 374.87784065025187,
+      "delivered_bytes": 67108864
+    },
+    {
+      "pool": 8,
+      "round": 1,
+      "complete": true,
+      "aggregate_mbps": 193.47503062833775,
+      "delivered_bytes": 67108864
+    },
+    {
+      "pool": 8,
+      "round": 2,
+      "complete": true,
+      "aggregate_mbps": 400.06193285174356,
+      "delivered_bytes": 67108864
+    },
+    {
+      "pool": 8,
+      "round": 3,
+      "complete": true,
+      "aggregate_mbps": 407.0456774956279,
+      "delivered_bytes": 67108864
+    },
+    {
+      "pool": 16,
+      "round": 1,
+      "complete": true,
+      "aggregate_mbps": 106.98516118165932,
+      "delivered_bytes": 67108864
+    },
+    {
+      "pool": 16,
+      "round": 2,
+      "complete": true,
+      "aggregate_mbps": 370.90549350395435,
+      "delivered_bytes": 67108864
+    },
+    {
+      "pool": 16,
+      "round": 3,
+      "complete": true,
+      "aggregate_mbps": 235.532877256472,
+      "delivered_bytes": 67108864
+    }
+  ],
+  "fallback": {
+    "scenario": "unreachable documentation IPv6 address, working IPv4 loopback origin",
+    "samples": [
+      {
+        "exit": 0,
+        "body": "FALLBACK",
+        "elapsed_ms": 330.2363080001669
+      },
+      {
+        "exit": 0,
+        "body": "FALLBACK",
+        "elapsed_ms": 314.81639900039227
+      },
+      {
+        "exit": 0,
+        "body": "FALLBACK",
+        "elapsed_ms": 315.43985400003294
+      },
+      {
+        "exit": 0,
+        "body": "FALLBACK",
+        "elapsed_ms": 314.41525999980513
+      },
+      {
+        "exit": 0,
+        "body": "FALLBACK",
+        "elapsed_ms": 314.93118700018385
+      }
+    ]
+  },
+  "final_https": [
+    {
+      "url": "https://api.openai.com/v1/models",
+      "exit": 0,
+      "result": "401 0",
+      "ok": true
+    },
+    {
+      "url": "https://www.gstatic.com/generate_204",
+      "exit": 0,
+      "result": "204 0",
+      "ok": true
+    },
+    {
+      "url": "https://cloudflare.com/cdn-cgi/trace",
+      "exit": 0,
+      "result": "200 0",
+      "ok": true
+    },
+    {
+      "url": "https://api.openai.com/v1/models",
+      "exit": 0,
+      "result": "401 0",
+      "ok": true
+    },
+    {
+      "url": "https://www.gstatic.com/generate_204",
+      "exit": 0,
+      "result": "204 0",
+      "ok": true
+    },
+    {
+      "url": "https://cloudflare.com/cdn-cgi/trace",
+      "exit": 0,
+      "result": "200 0",
+      "ok": true
+    },
+    {
+      "url": "https://api.openai.com/v1/models",
+      "exit": 0,
+      "result": "401 0",
+      "ok": true
+    },
+    {
+      "url": "https://www.gstatic.com/generate_204",
+      "exit": 0,
+      "result": "204 0",
+      "ok": true
+    },
+    {
+      "url": "https://cloudflare.com/cdn-cgi/trace",
+      "exit": 0,
+      "result": "200 0",
+      "ok": true
+    }
+  ],
+  "quantile_method": "nearest rank, successful HTTPS observations only; failures separate",
+  "rejected_queue_trials": [
+    {
+      "evidence": "aborted-transfer-experiment.json",
+      "completed_phases": 5,
+      "restored": true,
+      "errors": [
+        {
+          "phase": "queue-r1-n16-fq_codel",
+          "queue": "fq_codel",
+          "connections": 16,
+          "errors": [
+            "\u0000HTTP/1.0 200 OK\r\n",
+            "\u0000HTTP/1.0 200 OK\r\n",
+            "\u0000HTTP/1.0 200 OK\r\n"
+          ]
+        }
+      ]
+    },
+    {
+      "evidence": "experiment.json",
+      "completed_phases": 4,
+      "restored": true,
+      "errors": [
+        {
+          "phase": "queue-r1-n8-fq",
+          "queue": "fq",
+          "connections": 8,
+          "errors": [
+            "\u0000HTTP/1.0 200 OK\r\n"
+          ]
+        }
+      ]
+    }
+  ],
+  "raw_sha256": {
+    "rate-experiment.json": "211aa73581314bbadddb0e0e1ec75a01260cb928fd81756c44a686a77a84a9ef",
+    "cold-before.json": "a0bb5864256345529736003de52145b89bc4776a63235a8654e03b27dc08ca89",
+    "cold-after.json": "00cff991858262eff6fec1eb5ee043ede601523603aa14409314e837802557ce",
+    "local-final-activation.json": "298651aae25373cb9c338f76986dc8fbb582784bc5327e59f6148ada9330bf07",
+    "finalize-node.py.stdout": "8ee711aab07719721e934c44a5a775a183706884b56b6ee891bdeea042f8a8b1",
+    "adopt-retained-queue-policy.py.stdout": "07876be7fa31b3a4682d7da68ecb43c9e86b90aa04e015fc3b52c30c6077bfbc",
+    "aborted-transfer-experiment.json": "2f6c133e0c3bfb125150de5245c5cd95513be2c2567c19e1d8f67cda4e060e96",
+    "experiment.json": "b308ee70864deb7d2a9dcff7acce6b0cad11fa077a1117edc02db642d60fe1ad",
+    "pool-diagnostic.json": "2997ced4b41faaf0c438228127941d33c6b972dc7675304e15565d09737bb235",
+    "upload.json": "8db042c0f52801db82279a205fda23eb9ccddc3b8781aab22440f45b9a9a87d1",
+    "extra-upload.json": "63eb98b11afcaeca000360d200a90d23e6da500dc0cf30148b40fbe3c799dca8",
+    "isolated-tun-upload.json": "41ea5c076c8c8933706680fe391ac71c7aac161ac619b6f3d8215f888b637de8",
+    "final-overlay-gates.log": "bf2e9f2db904ce5f9e4dfd083934a1e5c6d2b76062342a90a0eab76a5ed1c2e8",
+    "accepted-protocols-root.log": "eb67d37889e1aa9e0a3c286bcd32992ba5d1bb690f5ca13685fba9fea7fe5dd8"
+  }
+}
