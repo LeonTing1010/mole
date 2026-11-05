@@ -589,15 +589,10 @@ func parseVLESS(u *url.URL) (*OutboundConfig, error) {
 		Server: u.Hostname(), ServerPort: port,
 		UUID: u.User.Username(),
 	}
-	// TCP Fast Open sends the first payload inside the SYN, removing one RTT
-	// from every new connection. The node already runs net.ipv4.tcp_fastopen=3
-	// (see cmd's boot script); without this flag the client never asks for it.
-	//
-	// A/B tested 2026-10-14 (spec.md D4) on the hypothesis that a data-carrying
-	// SYN is what access networks drop when they shape :443. It is not: with
-	// TFO off a QoS window still dropped new connections at the same rate
-	// (130 "dial tcp VPS:443: i/o timeout" in 30min vs 65 in 14min with it on).
-	// The shaper discards plain SYNs too, so the RTT this saves is kept.
+	// TCP Fast Open can reduce cold outer-session setup when both the server
+	// listener and network path support SYN data. Warm multiplex streams already
+	// reuse a connection; configuration alone does not prove a saved RTT.
+	// Keep server listener opt-in aligned with the node boot template.
 	//
 	// Multiplex stays opt-in: older nodes did not explicitly enable it on the
 	// inbound, and reject requests via the deprecated global mux handler.

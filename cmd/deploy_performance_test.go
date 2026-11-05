@@ -109,9 +109,10 @@ if [ "$1" = disable ]; then
   touch "$MOLE_TEST_ROOT/cleanup-ran"
 fi
 `)
-	for _, name := range []string{"ufw", "iptables", "sysctl", "chown", "sing-box"} {
+	for _, name := range []string{"ufw", "iptables", "chown", "sing-box"} {
 		write(name, "exit 0\n")
 	}
+	write("sysctl", `test "${MOLE_TEST_SYSCTL_FAIL:-}" != 1`+"\n")
 	write("date", `
 if [ "${1:-}" = -Is ]; then exec /bin/date -u '+%Y-%m-%dT%H:%M:%SZ'; fi
 exec /bin/date "$@"
@@ -126,7 +127,7 @@ mole_install_hy2(){ "$MOLE_TEST_ROOT/bin/install-leg" hy2; }
 mole_install_singbox(){ "$MOLE_TEST_ROOT/bin/install-leg" reality; }
 `)
 	script = strings.ReplaceAll(script, brutalKeeperSnippet(80), "\n: # optional optimization sandbox\n")
-	script = strings.NewReplacer("/etc/", root+"/etc/", "/var/log/", root+"/var/log/", "/root/", root+"/root/").Replace(script)
+	script = strings.NewReplacer("/usr/local/lib", root+"/usr/local/lib", "/etc/", root+"/etc/", "/var/log/", root+"/var/log/", "/root/", root+"/root/").Replace(script)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bash", "-c", script)
@@ -137,4 +138,16 @@ mole_install_singbox(){ "$MOLE_TEST_ROOT/bin/install-leg" reality; }
 		t.Fatalf("boot sandbox: %v\n%s", err, out)
 	}
 	return root
+}
+
+// Quality/what-x-what: unsupported optional sysctls must leave both protocols usable.
+func TestTuningFailurePreservesProtocolReadiness(t *testing.T) {
+	t.Setenv("MOLE_TEST_SYSCTL_FAIL", "1")
+	root := runDeployBootSandbox(t, "", true)
+	assertBootFile(t, root, "running-sing-box")
+	assertBootFile(t, root, "running-hysteria-server")
+	data, err := os.ReadFile(filepath.Join(root, "var/log/mole/network-apply.status"))
+	if err != nil || strings.TrimSpace(string(data)) != "degraded" {
+		t.Fatalf("apply failure lost: %s %v", data, err)
+	}
 }

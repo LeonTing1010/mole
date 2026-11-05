@@ -1555,11 +1555,9 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 				name = fmt.Sprintf("%s↓%d", name, backoff)
 			}
 		}
-		// The leg decision sits above everything under it. REALITY is TCP, so no
-		// Brutal ceiling applies to it and none of the reasoning above — clock,
-		// pin, backoff — has anything to say while it is the leg; all of that is
-		// the hy2 ladder's business and applies the moment traffic is on the
-		// ladder, whether pinned there or pushed there by the failover.
+		// The leg decision selects a transport. The ladder controls HY2; REALITY
+		// also has node-side TCP Brutal pacing, independently overridden by
+		// realityRateMbps below. A HY2 descent does not change that override.
 		//
 		// Nothing else may write the ladder's selector between ticks. Until
 		// 2026-10-14 a "stall kick" did, moving the whole ladder onto a

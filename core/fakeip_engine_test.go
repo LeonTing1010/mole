@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"io"
@@ -99,6 +100,12 @@ func TestFakeIPRecoveryWithRealEngine(t *testing.T) {
 					c, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(socks)), 20*time.Millisecond)
 					if err == nil {
 						c.Close()
+						ready, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+						err := waitDNSReady(ready, net.JoinHostPort("127.0.0.1", strconv.Itoa(dns)), []string{"a.example"}, make(chan struct{}))
+						cancel()
+						if err != nil {
+							t.Fatalf("real engine DNS readiness: %v", err)
+						}
 						return
 					}
 					time.Sleep(20 * time.Millisecond)

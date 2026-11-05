@@ -44,10 +44,11 @@ func verifyNodeLegs(srv Server, budget time.Duration) (legReport, legReport) {
 }
 
 type nodeVerification struct {
-	Status    string    `json:"status"`
-	CheckedAt string    `json:"checked_at"`
-	HY2       legReport `json:"hy2"`
-	Reality   legReport `json:"reality"`
+	Status    string            `json:"status"`
+	Tuning    *nodeTuningReport `json:"tuning,omitempty"`
+	CheckedAt string            `json:"checked_at"`
+	HY2       legReport         `json:"hy2"`
+	Reality   legReport         `json:"reality"`
 }
 
 type nodeVerifyOptions struct {
@@ -171,7 +172,13 @@ func verifyNode(ctx context.Context, srv Server, w io.Writer) (nodeVerification,
 		return empty, err
 	}
 	defer helper.Close()
-	return verifyNodeWith(ctx, srv, nodeVerifyOptions{Writer: w, Probe: helper.Probe})
+	result, verifyErr := verifyNodeWith(ctx, srv, nodeVerifyOptions{Writer: w, Probe: helper.Probe})
+	tuning := helper.Tuning(ctx)
+	result.Tuning = &tuning
+	if w != nil {
+		fmt.Fprintf(w, "Network tuning: %s (protocol readiness: %s)\n", tuning.Status, result.Status)
+	}
+	return result, verifyErr
 }
 
 func describeLeg(r legReport) string {

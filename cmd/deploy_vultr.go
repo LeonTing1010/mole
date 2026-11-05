@@ -389,7 +389,7 @@ const hopIntervalSeconds = 120
 // Both children inherit one absolute deadline and are joined before script exit.
 // Deployment readiness is still determined by external authenticated HTTPS.
 func dualBootScript(password string, port, downMbps int, id *serverIdentity, rid *realityIdentity) string {
-	return "#!/bin/bash\n" + nodeBootPrelude + sshHardeningScript(id.SSHPubKey) +
+	return "#!/bin/bash\n" + nodeBootPrelude + sshHardeningScript(id.SSHPubKey) + nodeNetworkTuning +
 		"\n(\n" + hy2ServerSnippet(password, port, id) + "\n) &\nhy2_pid=$!\n" +
 		"(\n" + realityServerSnippet(port, downMbps, rid) + "\n) &\nreality_pid=$!\n" +
 		"wait \"$hy2_pid\" || true\nwait \"$reality_pid\" || true\n"
@@ -424,7 +424,7 @@ func dualBootScript(password string, port, downMbps int, id *serverIdentity, rid
 // Installing the key before disabling passwords keeps the order safe; the Vultr
 // web console remains the backstop either way.
 func hy2BootScript(password string, port int, id *serverIdentity) string {
-	return "#!/bin/bash\n" + nodeBootPrelude + sshHardeningScript(id.SSHPubKey) + hy2ServerSnippet(password, port, id)
+	return "#!/bin/bash\n" + nodeBootPrelude + sshHardeningScript(id.SSHPubKey) + nodeNetworkTuning + hy2ServerSnippet(password, port, id)
 }
 
 // hy2ServerSnippet keeps the required leg independent from the optional cleanup.
@@ -494,47 +494,6 @@ WantedBy=multi-user.target
 HOP_EOF
 systemctl daemon-reload
 systemctl enable --now mole-porthop.service 2>/dev/null || true
-cat > /etc/sysctl.d/99-mole.conf << 'SYSCTL_EOF'
-# QUIC carries its whole receive window in one UDP socket buffer, and Linux
-# defaults that buffer to 208KB. On this path — ~107ms to Seoul — the
-# bandwidth-delay product at 100 Mbps is 1.34MB, so the default clamps the
-# tunnel long before the link does. Measured 2026-08-20 on the icn node: the
-# ceiling sweep plateaued at ~77 Mbps with the default and at ~85 with 16MB,
-# and the rungs above 100 stopped adding anything either way. Hysteria raises
-# the buffer itself at startup but cannot exceed rmem_max, and it does not
-# always say so in the log.
-net.core.rmem_max=16777216
-net.core.wmem_max=16777216
-# UDP socket minimums: the kernel default (208KB) is what hy2 sees on the
-# very first packet, before it has a chance to raise rmem/wmem at runtime.
-# Bumping the minimum means QUIC starts at a sane buffer instead of growing
-# through several iterations — no more "slow start clamp" on the first burst.
-# UDP socket minimums: doubled from 4MB → 8MB. A lower initial buffer forces
-# QUIC to grow its window through several slow iterations before it can hold
-# a real burst; with 8MB it starts with enough headroom for one full BBR RTT
-# on the ~107ms Seoul path (BDP at 250Mbps = 3.3MB, so 8MB holds two).
-net.ipv4.udp_rmem_min=8388608
-net.ipv4.udp_wmem_min=8388608
-# High-PPS ceiling: when Brutal floods at 400 Mbps on a ~107ms path, the
-# incoming UDP datagrams can exceed the kernel's default 1000-packet RX queue
-# and get dropped before the socket even sees them. 250k matches what the
-# card drivers expect for a saturated 1Gbps link.
-net.core.netdev_max_backlog=250000
-# The REALITY leg is plain TCP, so its congestion control is the kernel's, and
-# the kernel default (cubic) halves its window on every loss. On a path that
-# shows 5-8%% loss on a bad evening that is the one place TCP loses to Brutal.
-# BBR paces on measured bandwidth and RTT instead, which is as close to Brutal
-# as a TCP leg gets, and it is what makes REALITY viable as the primary rather
-# than the slow standby. fq is the qdisc BBR's pacing expects.
-net.core.default_qdisc=fq
-net.ipv4.tcp_congestion_control=bbr
-# Small TCP fast-open + TCP timestamp reuse to shave a handshake off every new
-# connection on the REALITY leg — not a throughput win, but it eliminates the
-# 1-RTT cold-start penalty when Brutal hands a stream over to TCP.
-net.ipv4.tcp_fastopen=3
-net.ipv4.tcp_tw_reuse=1
-SYSCTL_EOF
-sysctl -p /etc/sysctl.d/99-mole.conf >/dev/null 2>&1 || true
 mole_run systemctl enable --now hysteria-server
 mole_run systemctl is-active --quiet hysteria-server
 echo "mole stage hy2 service_active $(date -Is)"
@@ -616,7 +575,7 @@ func realityBootScript(port, downMbps int, id *realityIdentity) string {
 	// install that fails must not also cost the ability to log in and fix it.
 	// The snippet carries its own subshell and "set -e", so this script needs no
 	// top-level one.
-	return "#!/bin/bash\n" + nodeBootPrelude + sshHardeningScript(id.SSHPubKey) + "\n" + realityServerSnippet(port, downMbps, id)
+	return "#!/bin/bash\n" + nodeBootPrelude + sshHardeningScript(id.SSHPubKey) + nodeNetworkTuning + "\n" + realityServerSnippet(port, downMbps, id)
 }
 
 // realityServerSnippet installs and starts the REALITY server, with no shebang
@@ -644,17 +603,9 @@ func realityBootScript(port, downMbps int, id *realityIdentity) string {
 // from the node's own 2401:c080:… while cloudflare.com, which has both records,
 // exited from its 141.164.35.8. Same node, same tunnel, two exit families.
 //
-// Prefer, not promise, and with no safety net under it: an IPv4-only
-// destination still leaves from the node's IPv4, and sing-box dials only the
-// FIRST address the resolver sorted out — it does not walk down the list when
-// that dial fails. So a site publishing a dead AAAA becomes an unreachable site
-// rather than a slower one. Measured 2026-09-27 with a throwaway local sing-box
-// carrying this same outbound, against a host that has both records and a
-// machine whose v6 egress the kill switch refuses: prefer_ipv6 failed every
-// request in 5–15ms (`raw read: connection refused`, no second attempt), while
-// the identical config with prefer_ipv4 returned 200 in 0.46s. The node's own
-// v6 egress is verified working, which is what makes the risk per-destination
-// instead of total.
+// In sing-box 1.14.4 this direct dialer uses parallel address fallback. Keep
+// IPv6 preference separate from the client's IPv4-only node connection; verify
+// both exit families and dead-AAAA fallback when upgrading the engine.
 //
 // The `dns.servers` entry above exists only so the resolver has a tag to name;
 // `local` is what the node was already resolving with. It is spelled this way
@@ -692,6 +643,7 @@ cat > /etc/sing-box/config.json << 'EOF'
       "tag": "in",
       "listen": "::",
       "listen_port": %d,
+      "tcp_fast_open": true,
       "users": [{"uuid": "%s", "flow": "xtls-rprx-vision"}],
       "multiplex": {"enabled": true},
       "tls": {

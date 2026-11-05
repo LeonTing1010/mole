@@ -194,7 +194,7 @@ func runRepair(_ *cobra.Command, args []string) error {
 // user — the 217/USER failure seen 2026-09-05), and the postinst finished
 // before the unit is started.
 func repairScript(configBlock string, downMbps int) string {
-	return nodeInstallFunctions + `
+	return nodeInstallFunctions + nodeNetworkTuning + `
 mole_install_singbox
 ` + configBlock + `
 test -s /etc/sing-box/config.json || { echo "no /etc/sing-box/config.json"; exit 4; }

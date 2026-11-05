@@ -57,7 +57,7 @@ func TestBootConfigurationRemainsReadableByServiceGroup(t *testing.T) {
 		}
 	}
 	script := strings.Replace(hy2BootScript("test-password", 443, id), nodeInstallFunctions, "set -euo pipefail\nmole_install_hy2(){ :; }\nmole_run(){ \"$@\"; }\n", 1)
-	script = strings.NewReplacer("/etc/", root+"/etc/", "/var/log/", root+"/var/log/", "/root/", root+"/root/").Replace(script)
+	script = strings.NewReplacer("/usr/local/lib", root+"/usr/local/lib", "/etc/", root+"/etc/", "/var/log/", root+"/var/log/", "/root/", root+"/root/").Replace(script)
 	cmd := exec.Command("bash", "-c", script)
 	cmd.Env = append(os.Environ(), "PATH="+filepath.Join(root, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if out, err := cmd.CombinedOutput(); err != nil {

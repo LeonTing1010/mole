@@ -78,6 +78,19 @@ func newProtocolProbe(parent context.Context, srv Server) (*protocolProbe, error
 		inbounds = append(inbounds, map[string]any{"type": "direct", "tag": leg, "listen": "127.0.0.1", "listen_port": port, "override_address": "cloudflare.com", "override_port": 443})
 		rules = append(rules, map[string]any{"inbound": []string{leg}, "action": "route", "outbound": out.Tag})
 	}
+	// Read tuning through the authenticated node loopback, independently of
+	// external HTTPS protocol readiness. Older nodes may have no such endpoint.
+	if r {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, err
+		}
+		port := l.Addr().(*net.TCPAddr).Port
+		l.Close()
+		p.ports["tuning"] = port
+		inbounds = append(inbounds, map[string]any{"type": "direct", "tag": "tuning", "listen": "127.0.0.1", "listen_port": port, "override_address": "127.0.0.1", "override_port": 8098})
+		rules = append(rules, map[string]any{"inbound": []string{"tuning"}, "action": "route", "outbound": "verify-reality"})
+	}
 	data, err := json.Marshal(map[string]any{"log": map[string]any{"level": "error"}, "inbounds": inbounds, "outbounds": outbounds, "route": map[string]any{"rules": rules, "default_interface": ifi.Name}})
 	if err != nil {
 		return nil, err
@@ -161,4 +174,27 @@ func describeProbeError(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func (p *protocolProbe) Tuning(parent context.Context) nodeTuningReport {
+	port := p.ports["tuning"]
+	if port == 0 {
+		return nodeTuningReport{Status: "unobserved"}
+	}
+	ctx, cancel := context.WithTimeout(parent, 4*time.Second)
+	defer cancel()
+	transport := &http.Transport{Proxy: nil}
+	defer transport.CloseIdleConnections()
+	req, _ := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("http://127.0.0.1:%d/tuning", port), nil)
+	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nodeTuningReport{Status: "unobserved"}
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 65537))
+	if err != nil || len(data) > 65536 || resp.StatusCode != 200 {
+		return nodeTuningReport{Status: "unobserved"}
+	}
+	return decodeNodeTuning(data)
 }
