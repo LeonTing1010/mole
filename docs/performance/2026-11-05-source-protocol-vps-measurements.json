@@ -1,0 +1,233 @@
+{
+  "audit_date": "2026-11-05",
+  "baseline": "fb2592e9806bc81959f0f81b2ca1e24e97a2d06f",
+  "scope": "Existing fixed keeper forwarders, production engine; loopback node source; no production selector changes.",
+  "production_configuration_changed": false,
+  "short_trials": [
+    {
+      "phase": "r1-REALITY-warm",
+      "elapsed_seconds": 0.3097433329676278,
+      "total_connections": 1,
+      "aggregate_mbps": 108.32979576515008,
+      "complete": true,
+      "delivered_bytes": 4194304,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r1-REALITY-single",
+      "elapsed_seconds": 0.720118708035443,
+      "total_connections": 1,
+      "aggregate_mbps": 186.38278175852366,
+      "complete": true,
+      "delivered_bytes": 16777216,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r1-REALITY-eight",
+      "elapsed_seconds": 0.9234537499723956,
+      "total_connections": 8,
+      "aggregate_mbps": 290.6864106708367,
+      "complete": true,
+      "delivered_bytes": 33554432,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r1-HY2-warm",
+      "elapsed_seconds": 0.6180951669812202,
+      "total_connections": 1,
+      "aggregate_mbps": 54.28683767886425,
+      "complete": true,
+      "delivered_bytes": 4194304,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r1-HY2-single",
+      "elapsed_seconds": 1.231072166992817,
+      "total_connections": 1,
+      "aggregate_mbps": 109.02506904031331,
+      "complete": true,
+      "delivered_bytes": 16777216,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r1-HY2-eight",
+      "elapsed_seconds": 1.327085040975362,
+      "total_connections": 8,
+      "aggregate_mbps": 202.2744946342769,
+      "complete": true,
+      "delivered_bytes": 33554432,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r1-BOTH-eight",
+      "elapsed_seconds": 0.9321459170314483,
+      "total_connections": 8,
+      "aggregate_mbps": 287.9757890855447,
+      "complete": true,
+      "delivered_bytes": 33554432,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r2-HY2-warm",
+      "elapsed_seconds": 0.409782417002134,
+      "total_connections": 1,
+      "aggregate_mbps": 81.88353284036894,
+      "complete": true,
+      "delivered_bytes": 4194304,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r2-HY2-single",
+      "elapsed_seconds": 1.01824837498134,
+      "total_connections": 1,
+      "aggregate_mbps": 131.81236650877014,
+      "complete": true,
+      "delivered_bytes": 16777216,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r2-HY2-eight",
+      "elapsed_seconds": 1.3297209580196068,
+      "total_connections": 8,
+      "aggregate_mbps": 201.87352420149034,
+      "complete": true,
+      "delivered_bytes": 33554432,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r2-REALITY-warm",
+      "elapsed_seconds": 0.3113367920159362,
+      "total_connections": 1,
+      "aggregate_mbps": 107.77535087559606,
+      "complete": true,
+      "delivered_bytes": 4194304,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r2-REALITY-single",
+      "elapsed_seconds": 0.8302510409848765,
+      "total_connections": 1,
+      "aggregate_mbps": 161.6592107379783,
+      "complete": true,
+      "delivered_bytes": 16777216,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r2-REALITY-eight",
+      "elapsed_seconds": 1.0344041249481961,
+      "total_connections": 8,
+      "aggregate_mbps": 259.50733328083305,
+      "complete": true,
+      "delivered_bytes": 33554432,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r2-BOTH-eight",
+      "elapsed_seconds": 1.026487291965168,
+      "total_connections": 8,
+      "aggregate_mbps": 261.5087961645305,
+      "complete": true,
+      "delivered_bytes": 33554432,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r3-REALITY-warm",
+      "elapsed_seconds": 0.30819995899219066,
+      "total_connections": 1,
+      "aggregate_mbps": 108.87227924923319,
+      "complete": true,
+      "delivered_bytes": 4194304,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r3-REALITY-single",
+      "elapsed_seconds": 0.7110128339845687,
+      "total_connections": 1,
+      "aggregate_mbps": 188.76976839902298,
+      "complete": true,
+      "delivered_bytes": 16777216,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r3-REALITY-eight",
+      "elapsed_seconds": 0.814235917001497,
+      "total_connections": 8,
+      "aggregate_mbps": 329.67773884077684,
+      "complete": true,
+      "delivered_bytes": 33554432,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r3-HY2-warm",
+      "elapsed_seconds": 0.4103933330043219,
+      "total_connections": 1,
+      "aggregate_mbps": 81.76164011818055,
+      "complete": true,
+      "delivered_bytes": 4194304,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r3-HY2-single",
+      "elapsed_seconds": 1.2477310000103898,
+      "total_connections": 1,
+      "aggregate_mbps": 107.56944245104303,
+      "complete": true,
+      "delivered_bytes": 16777216,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r3-HY2-eight",
+      "elapsed_seconds": 1.4192407910013571,
+      "total_connections": 8,
+      "aggregate_mbps": 189.14017811635978,
+      "complete": true,
+      "delivered_bytes": 33554432,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "r3-BOTH-eight",
+      "elapsed_seconds": 1.036713959008921,
+      "total_connections": 8,
+      "aggregate_mbps": 258.929142091054,
+      "complete": true,
+      "delivered_bytes": 33554432,
+      "new_enobufs_lines": 0
+    }
+  ],
+  "larger_budget_trials": [
+    {
+      "phase": "Reality",
+      "elapsed_seconds": 1.6324292079661973,
+      "total_connections": 8,
+      "aggregate_mbps": 328.87852617442076,
+      "complete": true,
+      "delivered_bytes": 67108864,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "Hysteria2",
+      "elapsed_seconds": 2.359274959017057,
+      "total_connections": 8,
+      "aggregate_mbps": 227.55758498944783,
+      "complete": true,
+      "delivered_bytes": 67108864,
+      "new_enobufs_lines": 0
+    },
+    {
+      "phase": "Both",
+      "elapsed_seconds": 1.7443192499922588,
+      "total_connections": 8,
+      "aggregate_mbps": 307.78248419971436,
+      "complete": true,
+      "delivered_bytes": 67108864,
+      "new_enobufs_lines": 0
+    }
+  ],
+  "raw_sha256": {
+    "throughput.json": "10384a31a0e213cd83bf3a0aac3aba416377c303060e6308615b4329bd341d1e",
+    "load-confirmation.json": "0ecb49566002aaf385423b3d322afa7a3e6b8f57c2308aa0c03e3ece8dcb3a3b",
+    "node-runtime.json": "fdc93977f8fd307cf601d261f3c69e50474e6f9ef020eac653aa60d097b795a7",
+    "node-load.py.stdout": "9aa661b6b33439dfb067f532c7c2ef010838eadb5cdcfd620fbde1093adfdb96",
+    "node-egress.py.stdout": "535ed75be451539cf209696d68e13b15ac40da5ed93e901d03e8f4ce5fff6d29"
+  }
+}
