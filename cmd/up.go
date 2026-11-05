@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"os/exec"
@@ -259,10 +260,15 @@ func runDaemon() error {
 	}
 
 	// TUN needs DNS takeover on macOS. Defer restore so any clean exit path resets it.
+	// Register recovery before takeover, including partially applied failures.
+	defer func() {
+		if err := utils.RestoreDNS(); err != nil {
+			log.Printf("DNS restoration incomplete (backup retained): %v", err)
+		}
+	}()
 	if err := utils.TakeOverDNS(); err != nil {
-		fmt.Printf("⚠️  DNS takeover failed: %v\n", err)
+		return fmt.Errorf("DNS takeover failed: %w", err)
 	}
-	defer utils.RestoreDNS()
 
 	// Raise UDP socket buffers so hy2/QUIC can saturate the link on macOS, and
 	// stop the interface AQM from turning Wi-Fi congestion into a killed QUIC

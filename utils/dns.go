@@ -2,6 +2,8 @@ package utils
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,31 +39,91 @@ func TakeOverDNS() error {
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
-	services, err := listNetworkServices()
+	return systemDNSSettings().takeOver()
+}
+
+type dnsSettings struct {
+	path string
+	list func() ([]string, error)
+	get  func(string) ([]string, error)
+	set  func(string, []string) error
+}
+
+func systemDNSSettings() dnsSettings {
+	return dnsSettings{dnsBackupPath(), listNetworkServices, getDNS, setDNS}
+}
+
+// Persist before mutation; preserve originals left by a crashed daemon.
+func (m dnsSettings) takeOver() error {
+	services, err := m.list()
 	if err != nil {
 		return err
 	}
-	// Only capture a backup when one doesn't already exist. A leftover backup
-	// means a previous run was killed before RestoreDNS could run: the current
-	// system DNS is already the TUN gateway, so re-capturing now would record
-	// 172.19.0.1 as each service's "previous" resolver and a later RestoreDNS
-	// would strand every service on a dead TUN gateway — breaking all DNS until
-	// the user manually resets it. The existing backup still holds the real
-	// pre-takeover values, so leave it untouched.
-	if _, err := os.Stat(dnsBackupPath()); err != nil {
-		backup := make(map[string][]string, len(services))
-		for _, svc := range services {
-			dns, _ := getDNS(svc)
-			// Belt-and-suspenders: never record the TUN gateway itself, even if
-			// the backup file was somehow removed mid-run.
-			backup[svc] = stripTunGateway(dns)
-		}
-		data, _ := json.MarshalIndent(backup, "", "  ")
-		_ = os.WriteFile(dnsBackupPath(), data, 0644)
+	backup, err := m.readBackup()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	for _, svc := range services {
-		_ = setDNS(svc, []string{tunGatewayDNS})
+		if _, exists := backup[svc]; exists {
+			continue
+		}
+		dns, err := m.get(svc)
+		if err != nil {
+			return fmt.Errorf("read DNS for %s: %w", svc, err)
+		}
+		backup[svc] = stripTunGateway(dns)
 	}
+	if err := m.saveBackup(backup); err != nil {
+		return fmt.Errorf("save DNS backup: %w", err)
+	}
+	var errs []error
+	for _, svc := range services {
+		if err := m.set(svc, []string{tunGatewayDNS}); err != nil {
+			errs = append(errs, fmt.Errorf("set DNS for %s: %w", svc, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (m dnsSettings) readBackup() (map[string][]string, error) {
+	backup := make(map[string][]string)
+	data, err := os.ReadFile(m.path)
+	if err != nil {
+		return backup, err
+	}
+	if err := json.Unmarshal(data, &backup); err != nil {
+		return nil, fmt.Errorf("decode DNS backup: %w", err)
+	}
+	if backup == nil {
+		return nil, fmt.Errorf("invalid null DNS backup")
+	}
+	return backup, nil
+}
+
+func (m dnsSettings) saveBackup(backup map[string][]string) error {
+	data, err := json.MarshalIndent(backup, "", "  ")
+	if err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(m.path), ".dns-backup-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err = f.Write(data); err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if err := os.Rename(f.Name(), m.path); err != nil {
+		return err
+	}
+	ChownToMoleDirOwner(m.path)
 	return nil
 }
 
@@ -79,39 +141,61 @@ func stripTunGateway(dns []string) []string {
 	return out
 }
 
-// RestoreDNS puts every network service's DNS back to what TakeOverDNS
-// recorded. If no backup exists (e.g., after an unclean shutdown), it
-// resets every active network service to "Empty" so the system falls back to
-// DHCP-provided DNS instead of leaving the TUN gateway (172.19.0.1) as the
-// sole resolver, which breaks all network access when the TUN is gone.
-// Safe to call even if no backup exists.
-func RestoreDNS() {
+// RestoreDNS reports incomplete recovery and retains its backup for retry.
+// With no backup, recover a dead TUN resolver using DHCP defaults.
+func RestoreDNS() error {
 	if runtime.GOOS != "darwin" {
-		return
+		return nil
 	}
-	data, err := os.ReadFile(dnsBackupPath())
-	if err != nil {
-		// No backup — reset all services to DHCP defaults.
-		services, err := listNetworkServices()
+	return systemDNSSettings().restore()
+}
+
+func (m dnsSettings) restore() error {
+	backup, err := m.readBackup()
+	if errors.Is(err, os.ErrNotExist) {
+		services, err := m.list()
 		if err != nil {
-			return
+			return err
 		}
+		var errs []error
 		for _, svc := range services {
-			_ = setDNS(svc, []string{"Empty"})
+			current, err := m.get(svc)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("read DNS for %s: %w", svc, err))
+				continue
+			}
+			clean := stripTunGateway(current)
+			if len(clean) == len(current) {
+				continue
+			}
+			if len(clean) == 0 {
+				clean = []string{"Empty"}
+			}
+			if err := m.set(svc, clean); err != nil {
+				errs = append(errs, fmt.Errorf("restore DNS for %s: %w", svc, err))
+			}
 		}
-		return
+		return errors.Join(errs...)
 	}
-	var backup map[string][]string
-	if json.Unmarshal(data, &backup) != nil {
-		return
+	if err != nil {
+		return err
 	}
+	pending := make(map[string][]string)
+	var errs []error
 	for svc, dns := range backup {
+		original := dns
 		if len(dns) == 0 {
 			dns = []string{"Empty"}
 		}
-		_ = setDNS(svc, dns)
+		if err := m.set(svc, dns); err != nil {
+			pending[svc] = original
+			errs = append(errs, fmt.Errorf("restore DNS for %s: %w", svc, err))
+		}
 	}
-	_ = os.Remove(dnsBackupPath())
+	if len(pending) > 0 {
+		return errors.Join(errors.Join(errs...), m.saveBackup(pending))
+	}
+	return os.Remove(m.path)
 }
 
 func listNetworkServices() ([]string, error) {

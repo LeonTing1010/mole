@@ -146,10 +146,13 @@ func runDown(cmd *cobra.Command, args []string) error {
 		if utils.KillSwitchLoaded() {
 			utils.UnloadKillSwitch()
 		}
-		utils.RestoreDNS()
+		dnsErr := utils.RestoreDNS()
 		utils.RestoreNetworkStack()
 		utils.RemovePID()
 		utils.RemoveState()
+		if dnsErr != nil {
+			return fmt.Errorf("VPN stopped but DNS restoration incomplete: %w", dnsErr)
+		}
 		fmt.Println("✅ VPN stopped")
 		return nil
 	}
@@ -191,7 +194,7 @@ func runDown(cmd *cobra.Command, args []string) error {
 	// SIGKILL path the anchor is still armed. Unload is idempotent, so just
 	// always disarm here.
 	utils.UnloadKillSwitch()
-	utils.RestoreDNS()
+	dnsErr := utils.RestoreDNS()
 	utils.RestoreNetworkStack()
 	utils.RemovePID()
 	utils.RemoveState()
@@ -212,6 +215,9 @@ func runDown(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("VPN not fully stopped: %s (try `sudo kill -9 <pid>` and re-run)", strings.Join(parts, ", "))
 	}
 
+	if dnsErr != nil {
+		return fmt.Errorf("VPN stopped but DNS restoration incomplete: %w", dnsErr)
+	}
 	fmt.Println("✅ VPN stopped")
 	return nil
 }

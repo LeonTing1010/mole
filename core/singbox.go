@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -25,7 +26,7 @@ var (
 )
 
 // Start launches sing-box with the given configuration.
-// It returns once the process has stayed alive for 2 seconds (basic config smoke test).
+// It checks process survival and, for full configs, real direct and FakeIP DNS answers.
 func Start(configPath string) error {
 	processMutex.Lock()
 
@@ -107,6 +108,17 @@ func Start(configPath string) error {
 		return fmt.Errorf("sing-box exited unexpectedly (see %s)", utils.LogPath())
 	case <-time.After(2 * time.Second):
 	}
+	addr, err := engineDNSAddress(configPath)
+	if err == nil && addr != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		err = waitDNSReady(ctx, addr, []string{"www.baidu.com", "example.com"}, currentExitCh)
+		cancel()
+	}
+	if err != nil {
+		Stop()
+		return fmt.Errorf("engine DNS not ready: %w", err)
+	}
+
 	return nil
 }
 
