@@ -195,9 +195,9 @@ def apply(force=False):
     n = 0
     with lock:
         for ip in ips:
-            if not force and applied.get(ip) == rate:
-                n += 1
-                continue
+            # Rate equality is not kernel-state evidence: a route/module
+            # reset can remove pacing for new sessions while old sockets
+            # remain brutal. Reconcile the idempotent rule every sweep.
             r = subprocess.run(["brutalctl", "add", str(ipaddress.ip_network(ip)), str(rate)], capture_output=True, text=True)
             if r.returncode == 0:
                 applied[ip] = rate
@@ -258,6 +258,15 @@ class H(http.server.BaseHTTPRequestHandler):
             # This request arrived through an authenticated tunnel. It proves
             # transport delivery, independently of the optional kernel module.
             self.reply("rate=%d\napplied=0\npeers=0\nreachable=1\n" % read_rate())
+        elif u.path == "/tuning":
+            try:
+                result = subprocess.run(["python3", "/usr/local/lib/mole-network-state.py"], capture_output=True, text=True, timeout=12)
+                if result.returncode == 0:
+                    self.reply(result.stdout)
+                else:
+                    self.reply('{"status":"unobserved"}', 503)
+            except (OSError, subprocess.TimeoutExpired):
+                self.reply('{"status":"unobserved"}', 503)
         elif u.path == "/health":
             ok, detail = module_ok()
             ips = peers()
