@@ -12,6 +12,7 @@ The measurements below are short samples on one Wi-Fi connection and one node, n
 - Two 8 MiB comparisons of one versus four simultaneous streams gave HY2 4.52/4.51 Mbps versus 4.55/4.56 Mbps. The four streams share one configured HY2 outbound; this is consistent with a connection-wide or shared-path limit, but does not identify it.
 - The official macOS arm64 Hysteria v2.13.0 release was checked against GitHub's published SHA-256 before use. Three alternating 4 MiB samples gave native Hysteria and sing-box medians of 4.64 and 4.62 Mbps. Both use the same node, UDP path, authentication and upload origin, but differ in implementation and potentially QUIC behavior. Similar results do not prove an ISP cause.
 - With the same 400 Mbps HY2 upload declaration and initial packet size 1200, three alternating samples gave 4.76 Mbps with path MTU discovery disabled and 4.78 Mbps with it enabled. This does not establish the effective discovered MTU or cover other paths.
+- Three additional alternating 4 MiB samples compared the 400 Mbps declaration against an isolated configuration with both bandwidth fields omitted, which requests adaptive BBR according to [sing-box's HY2 documentation](https://github.com/SagerNet/sing-box/blob/testing/docs/configuration/outbound/hysteria2.zh.md). The medians were 4.76 and 4.71 Mbps respectively. The test did not independently inspect the negotiated congestion-control state or compare download performance, and provides no reason to switch production.
 
 ## Upload rate and QUIC signals
 
