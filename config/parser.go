@@ -636,7 +636,10 @@ func parseVLESS(u *url.URL) (*OutboundConfig, error) {
 		// One active stream can open another session: the 4/4 pool helped
 		// fresh flows but constrained eight-flow downloads on the measured
 		// path. 8/1 retains idle-session reuse without that concurrency clamp.
-		o.Multiplex = &MultiplexConfig{Enabled: true, Protocol: protocol, MaxConnections: 8, MinStreams: 1}
+		// yamux is rejected here: Brutal's fixed-rate pacing + yamux's
+		// adaptive window control fought each other on icn and throughput
+		// collapsed to 10–180 Mbps vs smux's 400–460 at the same rate.
+		o.Multiplex = &MultiplexConfig{Enabled: true, Protocol: "smux", MaxConnections: 8, MinStreams: 1}
 	}
 	if flow := q.Get("flow"); flow != "" {
 		o.Flow = flow
