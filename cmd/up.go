@@ -350,6 +350,7 @@ func runDaemon() error {
 		// peak/off-peak selector and the supervisor flips it by the clock.
 		Schedule:        srv.Schedule(),
 		RealityRateMbps: srv.RealityDownMbps,
+		RealityRateAuto: srv.RealityRateAuto,
 		BrutalGain:      srv.BrutalGain,
 		// Arms the automatic failover to the REALITY leg. Derived from the same
 		// StandbyURI the parent built the config from, so the flag and the

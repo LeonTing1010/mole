@@ -148,6 +148,40 @@ Measured on a good Vultr IP, default gain=20 (aggressive) was 2× faster than
 gain=15; on a TransitWireless IP, gain=10 was 3× the concurrent throughput of
 gain=20.
 
+### The declared rate is not adaptive — unless you ask it to be
+
+TCP Brutal paces at exactly the rate it is told and never probes for more. That
+is why it beats BBR on long, lossy paths: no slow-start climb, and path loss is
+not mistaken for congestion. The price is that a wrong rate is never
+self-corrected, and the bottleneck is usually the side the node cannot see —
+Wi-Fi, a saturated uplink, a tethering quota. Declare 600 Mbps over a 30 Mbps
+Wi-Fi link and Brutal will keep flooding it; single streams collapse to a
+fraction of the link.
+
+Set `reality_rate_auto` on the server entry to hand the declared rate to a
+client-side governor instead:
+
+```json
+{ "name": "icn-...", "reality_down_mbps": 35, "reality_rate_auto": true }
+```
+
+`reality_down_mbps` then seeds the loop, and the peak profile is its ceiling.
+Every third supervisor tick the client measures what the tunnel actually
+delivers (8 concurrent streams, burst sized to about one second at the declared
+rate, capped at 6 MB) and moves the declaration:
+
+| Measured vs declared | Action |
+|---|---|
+| < 50% | cut to 25% of the declaration, floored at 1.5× measured |
+| 50–88%, two samples in a row | cut 15% |
+| 88–95% | hold |
+| ≥ 95%, two samples in a row | climb 12% |
+
+The asymmetry is deliberate: a collapsed link is felt immediately and is fixed
+on one sample, while jitter and transient lulls need corroboration so the loop
+does not chase noise in either direction. Off by default — leaving
+`reality_rate_auto` unset keeps `reality_down_mbps` a fixed pin.
+
 ### Self-healing supervisor
 
 Once `mole up` the daemon runs a scheduler that:

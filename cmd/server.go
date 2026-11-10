@@ -19,8 +19,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -56,6 +54,12 @@ type Server struct {
 	// RealityDownMbps paces the node's TCP Brutal sender independently of the
 	// hysteria2 ladder. Zero keeps the historical shared-ceiling behavior.
 	RealityDownMbps int `json:"reality_down_mbps,omitempty"`
+	// RealityRateAuto hands RealityDownMbps to the client-side rate governor
+	// instead of treating it as a fixed pin: Brutal never probes for bandwidth,
+	// and the bottleneck (Wi-Fi, uplink, tethering) is only observable on this
+	// side. RealityDownMbps then seeds the loop rather than capping it. Leave
+	// false to keep the pin.
+	RealityRateAuto bool `json:"reality_rate_auto,omitempty"`
 	// BrutalGain sets TCP Brutal's cwnd_gain (tenths of window multiplier: 5=0.5x
 	//…80=8.0x). Zero lets the keeper use its built-in default (currently 20).
 	// Gain tunes how aggressively Brutal opens its congestion window: higher
@@ -1255,33 +1259,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 // of a single-stream metric that used to mis-pick gain on IPs where
 // concurrent and single-stream optima diverge.
 func bulkConcurrent(baseURL string, n, bytesPerStream int) (float64, error) {
-	var wg sync.WaitGroup
-	var errs int32
-	wg.Add(n)
-	start := time.Now()
-	for i := 0; i < n; i++ {
-		go func() {
-			defer wg.Done()
-			bulkURL := fmt.Sprintf("%s/bulk?bytes=%d", baseURL, bytesPerStream)
-			resp, err := http.Get(bulkURL)
-			if err != nil {
-				atomic.AddInt32(&errs, 1)
-				return
-			}
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-		}()
-	}
-	wg.Wait()
-	elapsed := time.Since(start).Seconds()
-	if errs > 0 {
-		return 0, fmt.Errorf("%d/%d streams failed", errs, n)
-	}
-	if elapsed < 0.1 {
-		return 0, fmt.Errorf("elapsed <0.1s (rule not applied?)")
-	}
-	totalBytes := int64(n) * int64(bytesPerStream)
-	return float64(totalBytes*8) / elapsed / 1e6, nil
+	return core.BulkConcurrent(baseURL, n, bytesPerStream)
 }
 
 // scanAndPickGain probes four Brutal cwnd_gain candidates on the live tunnel

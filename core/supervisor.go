@@ -45,6 +45,9 @@ type Supervisor struct {
 	realityRateMbps int
 	// brutalGain forwards the per-server cwnd_gain to the keeper; zero = skip.
 	brutalGain int
+	// realityRateAuto hands the declared REALITY rate to the client-side
+	// RateGovernor instead of pinning it. See SupervisorOpts.RealityRateAuto.
+	realityRateAuto bool
 
 	// Destroy-on-lid-close. Inert unless both are set; see runSleepDestroy.
 	destroyOnLidClose bool
@@ -186,6 +189,12 @@ type SupervisorOpts struct {
 	// rate push. Zero skips the gain parameter and lets the keeper use its
 	// built-in default. See cmd/server.go:Server.BrutalGain for full doc.
 	BrutalGain int
+	// RealityRateAuto hands the REALITY leg's declared Brutal rate to the
+	// client-side RateGovernor instead of treating RealityRateMbps as a fixed
+	// pin. RealityRateMbps then seeds the loop, and the peak profile (four times
+	// the seed when no peak is configured) is its ceiling. See core/governor.go
+	// for why the correction has to happen on this side.
+	RealityRateAuto bool
 
 	// DestroyOnLidClose destroys the server when the lid is shut — the sleep
 	// notification, gated on the clamshell actually being closed, so idle and
@@ -250,7 +259,8 @@ func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervis
 		probeTimeMs:       opts.ProbeTimeMs,
 		schedule:          opts.Schedule,
 		realityRateMbps:   opts.RealityRateMbps,
-		brutalGain:         opts.BrutalGain,
+		brutalGain:        opts.BrutalGain,
+		realityRateAuto:   opts.RealityRateAuto,
 		hasReality:        opts.HasRealityLeg,
 		verifyLegEgress:   opts.VerifyLegEgress,
 		realityAddr:       opts.RealityAddr,
@@ -1520,6 +1530,18 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 	warnedPin := 0                         // last bad pin we complained about, so we complain once per value
 	backoff := 0                           // rungs currently stepped down below the clock/pin target
 	var heal healState
+
+	// Client-side rate governor (opt-in). When enabled it owns the declared
+	// REALITY rate, seeded from the configured value; otherwise the configured
+	// value stays a fixed pin. The governor runs on this goroutine only, so
+	// govRate needs no lock — it is read by apply below and written by the
+	// sampling branch in the same loop.
+	govRate := 0
+	var gov *RateGovernor
+	if s.realityRateAuto && s.realityRateMbps > 0 {
+		govRate = s.realityRateMbps
+		gov = NewRateGovernor(govRate, 3, s.governorCeiling(govRate))
+	}
 	apply := func() {
 		generation := s.probeGeneration.Load()
 		pacingChanged := false
@@ -1592,7 +1614,9 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 		// in case the keeper or the node restarted — a GET through a named
 		// outbound is what the delay probe already is, one fresh connection.
 		tcpRate := down
-		if s.realityRateMbps > 0 {
+		if govRate > 0 {
+			tcpRate = govRate
+		} else if s.realityRateMbps > 0 {
 			tcpRate = s.realityRateMbps
 		}
 		if s.hasReality && tcpRate > 0 && (tcpRate != pushedRate || time.Since(pushedAt) > 10*time.Minute) {
@@ -1673,6 +1697,11 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
+	// The governor samples every third tick. A probe costs real bandwidth
+	// (it saturates the link for about a second), so it cannot ride every
+	// minute; three minutes is the compromise between noticing a degraded
+	// Wi-Fi link and not spending the user's quota on diagnostics.
+	ticks := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -1682,8 +1711,67 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 		case <-t.C:
 			retune()
 			apply()
+			ticks++
+			if gov == nil || ticks%3 != 0 || !s.healthUsable() {
+				continue
+			}
+			next, changed, why := s.sampleGovernor(gov)
+			if !changed {
+				continue
+			}
+			log.Printf("rate governor: ↓%d → ↓%d Mbps (%s)", govRate, next, why)
+			govRate = next
+			apply()
 		}
 	}
+}
+
+// governorCeiling bounds how far the rate governor may climb. The peak profile
+// is the operator's statement about what the path can carry at its best, so it
+// wins when configured; otherwise the seed gets four rungs of headroom.
+func (s *Supervisor) governorCeiling(seed int) int {
+	if s.schedule.PeakDown > seed {
+		return s.schedule.PeakDown
+	}
+	return seed * 4
+}
+
+// healthUsable reports whether the path is in a state where a throughput probe
+// says something about capacity rather than about an outage.
+func (s *Supervisor) healthUsable() bool {
+	s.stateMu.Lock()
+	h := s.state.Health()
+	s.stateMu.Unlock()
+	return h.Usable() && h != utils.HealthPathDead
+}
+
+// sampleGovernor measures what the tunnel actually delivers right now and feeds
+// it to the governor.
+//
+// The burst is sized to about one second at the declared rate, capped at 6 MB:
+// scaling it with the rate keeps a low rung from taking a full minute to probe,
+// and the cap keeps an over-declared rate from turning a diagnostic into a
+// download. A failed probe is not evidence about the path — the health machine
+// owns "dead" — so it is dropped rather than reported as zero.
+func (s *Supervisor) sampleGovernor(g *RateGovernor) (int, bool, string) {
+	rate := g.Rate()
+	total := int64(rate) * 125000 // Mbps → bytes for one second
+	if total < 1<<20 {
+		total = 1 << 20
+	}
+	if total > 6<<20 {
+		total = 6 << 20
+	}
+	const streams = 8
+	perStream := int(total) / streams
+	if perStream < 64<<10 {
+		perStream = 64 << 10
+	}
+	achieved, err := BulkConcurrent(fmt.Sprintf("http://127.0.0.1:%d", BrutalKeeperPort), streams, perStream)
+	if err != nil {
+		return rate, false, ""
+	}
+	return g.Observe(achieved)
 }
 
 // schedulerPushBrutal pushes the REALITY leg's TCP Brutal pacing rate to the
