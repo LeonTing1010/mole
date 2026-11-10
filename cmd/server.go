@@ -1282,6 +1282,49 @@ func bulkConcurrent(baseURL string, n, bytesPerStream int) (float64, error) {
 	return float64(totalBytes*8) / elapsed / 1e6, nil
 }
 
+// scanAndPickGain probes four Brutal cwnd_gain candidates on the live tunnel
+// and returns the highest-concurrent-throughput one. Runs 8 parallel GETs to
+// keeper's /bulk at each gain (matching mole's smux workload). Pure — does
+// not write servers.json or touch any file; callers decide what to do with
+// the result. Returns the best gain, its Mbps, the full results map, and
+// an error only if ALL candidates failed (partial failure is reported as
+// best-effort: we pick the best of what we got).
+func scanAndPickGain(keeperURL string) (int, float64, map[int]float64, error) {
+	candidates := []int{10, 15, 20, 25}
+	results := make(map[int]float64, len(candidates))
+
+	const streams = 8
+	const bytesPerStream = 8 << 20 // 8 MB each → 64 MB total across 8 streams
+
+	for _, g := range candidates {
+		// Set gain via keeper's /gain endpoint (keeper applies synchronously,
+		// so /proc has the rule before we send bulk bytes).
+		gainURL := fmt.Sprintf("%s/gain?g=%d", keeperURL, g)
+		resp, err := http.Get(gainURL)
+		if err != nil {
+			continue
+		}
+		resp.Body.Close()
+		// Allow a moment for the pacing rule to settle on the kernel side.
+		time.Sleep(500 * time.Millisecond)
+
+		mbps, err := bulkConcurrent(keeperURL, streams, bytesPerStream)
+		if err != nil {
+			continue
+		}
+		results[g] = mbps
+	}
+
+	if len(results) == 0 {
+		return 0, 0, nil, fmt.Errorf("no gain candidate produced a measurable bulk; tunnel may be down or keeper module missing")
+	}
+
+	// Pick highest Mbps. sort.Slice gives ascending; candidates[0] after
+	// reorder is the best.
+	sort.Slice(candidates, func(i, j int) bool { return results[candidates[i]] > results[candidates[j]] })
+	return candidates[0], results[candidates[0]], results, nil
+}
+
 func runGainTune(_ *cobra.Command, args []string) error {
 	var srv *Server
 	var err error
@@ -1310,50 +1353,24 @@ func runGainTune(_ *cobra.Command, args []string) error {
 	}
 	probe.Body.Close()
 
-	candidates := []int{10, 15, 20, 25}
-	results := make(map[int]float64, len(candidates))
-
-	const streams = 8
-	const bytesPerStream = 8 << 20 // 8 MB each → 64 MB total across 8 streams
-
 	fmt.Printf("📊 Scanning Brutal cwnd_gain on %s (%s)...\n", srv.Name, srv.IP)
-	fmt.Printf("   (metric: %d concurrent × %d MB = %d MB total — matches smux workload)\n",
-		streams, bytesPerStream>>20, (streams*bytesPerStream)>>20)
 	fmt.Println("   gain   Mbps")
 
-	for _, g := range candidates {
-		// Set gain via keeper's /gain endpoint (write_gain + apply=True →
-		// keeper calls apply() synchronously, so the rule is in /proc before
-		// we send our first bulk byte).
-		gainURL := fmt.Sprintf("%s/gain?g=%d", keeperURL, g)
-		resp, err := http.Get(gainURL)
-		if err != nil {
-			fmt.Printf("   %2d     error: %v\n", g, err)
-			continue
-		}
-		resp.Body.Close()
-
-		// Allow a moment for the pacing rule to settle on the kernel side.
-		time.Sleep(500 * time.Millisecond)
-
-		mbps, err := bulkConcurrent(keeperURL, streams, bytesPerStream)
-		if err != nil {
-			fmt.Printf("   %2d     error: %v\n", g, err)
-			continue
-		}
-		results[g] = mbps
-		fmt.Printf("   %2d     %6.1f Mbps\n", g, mbps)
+	bestGain, bestMbps, results, err := scanAndPickGain(keeperURL)
+	if err != nil {
+		return err
 	}
 
-	if len(results) == 0 {
-		return fmt.Errorf("gain-tune: no gain candidate produced a measurable bulk; tunnel may be down or keeper module missing")
+	const streams = 8
+	const bytesPerStream = 8 << 20
+	for _, g := range []int{10, 15, 20, 25} {
+		mbps, ok := results[g]
+		if !ok {
+			fmt.Printf("   %2d     — (skipped/failed)\n", g)
+		} else {
+			fmt.Printf("   %2d     %6.1f Mbps\n", g, mbps)
+		}
 	}
-
-	// Pick the highest Mbps. sort.Slice gives ascending; candidates[0] after
-	// reorder is the best.
-	sort.Slice(candidates, func(i, j int) bool { return results[candidates[i]] > results[candidates[j]] })
-	bestGain := candidates[0]
-	bestMbps := results[bestGain]
 
 	fmt.Printf("\n✅ Optimal gain for %s (%s) = %d → %.1f Mbps\n", srv.Name, srv.IP, bestGain, bestMbps)
 
