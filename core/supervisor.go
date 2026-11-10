@@ -1702,6 +1702,10 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 	// minute; three minutes is the compromise between noticing a degraded
 	// Wi-Fi link and not spending the user's quota on diagnostics.
 	ticks := 0
+	// Seeded before the loop so the first sample is not mistaken for a link
+	// change. Compared from here on to catch the discrete jumps the bands handle
+	// badly — a 2.4GHz roam to 5GHz, or Wi-Fi swapped for a cable.
+	phySig := wifiLinkSignature(s.readWiFiPHY())
 	for {
 		select {
 		case <-ctx.Done():
@@ -1712,7 +1716,29 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 			retune()
 			apply()
 			ticks++
-			if gov == nil || ticks%3 != 0 || !s.healthUsable() {
+			if gov == nil || ticks%3 != 0 {
+				continue
+			}
+			if sig := wifiLinkSignature(s.readWiFiPHY()); sig != phySig {
+				phySig = sig
+				// The previous declaration describes a different path. Neither a
+				// cut nor an incremental climb can find the new one from it, so
+				// declare the ceiling and let a single measurement correct it.
+				prev := govRate
+				gov.Reset(s.governorCeiling(govRate))
+				govRate = gov.Rate()
+				log.Printf("rate governor: local link changed (%s) — re-declaring ↓%d → ↓%d Mbps", describeLink(sig), prev, govRate)
+				apply()
+				next, changed, why := s.sampleGovernor(gov)
+				if !changed {
+					continue
+				}
+				log.Printf("rate governor: ↓%d → ↓%d Mbps (%s)", govRate, next, why)
+				govRate = next
+				apply()
+				continue
+			}
+			if !s.healthUsable() {
 				continue
 			}
 			next, changed, why := s.sampleGovernor(gov)

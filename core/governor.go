@@ -32,6 +32,11 @@ type RateGovernor struct {
 
 	hits   int // consecutive samples saturating the declared rate
 	misses int // consecutive samples falling short of it
+
+	// anchor makes the next measurement authoritative in one step. It is set by
+	// Reset, where the previous declaration describes a different path and the
+	// usual bands would take far too long to find the new one.
+	anchor bool
 }
 
 const (
@@ -57,6 +62,17 @@ const (
 	// Streaks required in each direction before acting.
 	govLowStreak  = 2
 	govHighStreak = 2
+
+	// govFarCeilRatio is how far below the ceiling counts as "far" (three
+	// quarters of it). Far below, one saturating sample earns a big step: the
+	// loop cannot discover headroom any other way, since a probe taken at the
+	// declared rate can never measure more than that rate, and a cautious climb
+	// from a collapsed declaration takes hours to find the path again.
+	govFarCeilRatio  = 3 // rate*4 < ceiling*3
+	govFarClimbScale = 1.35
+	// govAnchorScale keeps a small margin over the measurement taken right after
+	// a link change.
+	govAnchorScale = 1.15
 )
 
 // NewRateGovernor seeds the loop at initial and clamps it to [minRate,maxRate].
@@ -79,6 +95,16 @@ func (g *RateGovernor) Observe(achievedMbps float64) (int, bool, string) {
 		return g.rate, false, ""
 	}
 	ratio := achievedMbps / float64(g.rate)
+
+	if g.anchor {
+		g.anchor = false
+		g.hits, g.misses = 0, 0
+		if ratio >= govHighRatio {
+			return g.rate, false, ""
+		}
+		return g.move(int(achievedMbps*govAnchorScale)+1,
+			fmt.Sprintf("link changed — anchored to %.1f", achievedMbps))
+	}
 
 	switch {
 	case ratio < govCollapseRatio:
@@ -103,8 +129,13 @@ func (g *RateGovernor) Observe(achievedMbps float64) (int, bool, string) {
 		}
 
 	case ratio >= govHighRatio:
-		g.hits++
 		g.misses = 0
+		if g.farBelowCeiling() {
+			g.hits = 0
+			return g.move(int(float64(g.rate)*govFarClimbScale)+1,
+				fmt.Sprintf("saturated ↓%d far below the ceiling (%.1f)", g.rate, achievedMbps))
+		}
+		g.hits++
 		if g.hits >= govHighStreak {
 			g.hits = 0
 			return g.move(int(float64(g.rate)*govHighScale)+1,
@@ -115,6 +146,26 @@ func (g *RateGovernor) Observe(achievedMbps float64) (int, bool, string) {
 		g.hits, g.misses = 0, 0
 	}
 	return g.rate, false, ""
+}
+
+// Reset re-declares the ceiling and trusts the next measurement to correct it in
+// one step.
+//
+// This is for the case the bands handle badly: the local link changed (Wi-Fi to
+// wired, a 2.4GHz roam to 5GHz), so the previous declaration describes a
+// different path entirely. Climbing there by increments would take hours, since
+// a probe can never measure more than the rate currently declared. Declaring the
+// ceiling overshoots on purpose, and the immediate sample is taken as
+// authoritative instead of waiting a full interval.
+func (g *RateGovernor) Reset(ceiling int) {
+	g.rate = g.clamp(ceiling)
+	g.hits, g.misses, g.anchor = 0, 0, true
+}
+
+// farBelowCeiling reports whether the declaration is far enough below the
+// operator's best-case statement to justify a single-sample climb.
+func (g *RateGovernor) farBelowCeiling() bool {
+	return g.maxRate > 0 && g.rate*4 < g.maxRate*govFarCeilRatio
 }
 
 func (g *RateGovernor) move(next int, reason string) (int, bool, string) {

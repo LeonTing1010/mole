@@ -205,11 +205,25 @@ func icmpChecksum(b []byte) uint16 {
 // sampled here rather than on a timer because system_profiler costs a second
 // of CPU, which is nothing once an episode and everything every five seconds.
 func (s *Supervisor) logWiFiPHY() {
+	phy := s.readWiFiPHY()
+	if phy == "" {
+		return
+	}
+	log.Printf("link: radio says %s", phy)
+	s.stateMu.Lock()
+	s.state.LinkPHY = phy
+	s.stateMu.Unlock()
+}
+
+// readWiFiPHY returns the radio's own short report, or "" when it cannot be
+// read (no Wi-Fi interface, or system_profiler failed). Callers that only need
+// to notice a change should compare wifiLinkSignature of the result.
+func (s *Supervisor) readWiFiPHY() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "/usr/sbin/system_profiler", "SPAirPortDataType").Output()
 	if err != nil {
-		return
+		return ""
 	}
 	var keep []string
 	for _, line := range strings.Split(string(out), "\n") {
@@ -224,12 +238,26 @@ func (s *Supervisor) logWiFiPHY() {
 			break
 		}
 	}
-	if len(keep) == 0 {
-		return
+	return strings.Join(keep, "; ")
+}
+
+// wifiLinkSignature reduces a radio report to the part that changes when the
+// path does: band and channel. Transmit rate and signal strength are dropped
+// deliberately — rate adaptation moves them constantly, so keeping them would
+// make every sample look like a link change and reset the governor on noise.
+func wifiLinkSignature(phy string) string {
+	for _, part := range strings.Split(phy, "; ") {
+		if strings.HasPrefix(part, "Channel:") {
+			return part
+		}
 	}
-	phy := strings.Join(keep, "; ")
-	log.Printf("link: radio says %s", phy)
-	s.stateMu.Lock()
-	s.state.LinkPHY = phy
-	s.stateMu.Unlock()
+	return ""
+}
+
+// describeLink turns a wifiLinkSignature into something readable in a log line.
+func describeLink(sig string) string {
+	if sig == "" {
+		return "wired or no Wi-Fi interface"
+	}
+	return strings.TrimPrefix(sig, "Channel: ")
 }

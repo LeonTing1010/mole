@@ -26,7 +26,8 @@ func TestRateGovernorCollapsesWhenDeclarationIsFarAbovePath(t *testing.T) {
 }
 
 func TestRateGovernorClimbsOnlyAfterTwoSaturatingSamples(t *testing.T) {
-	g := NewRateGovernor(30, 3, 600)
+	// Ceiling within reach, so the cautious step applies.
+	g := NewRateGovernor(30, 3, 40)
 
 	if r, changed, _ := g.Observe(31); changed {
 		t.Fatalf("one saturating sample moved rate to %d, want no change", r)
@@ -37,8 +38,44 @@ func TestRateGovernorClimbsOnlyAfterTwoSaturatingSamples(t *testing.T) {
 	}
 }
 
+func TestRateGovernorTakesABigStepFarBelowTheCeiling(t *testing.T) {
+	// The declaration has collapsed onto a bad link while the operator says the
+	// path can carry 400: one saturating sample earns a large step, because a
+	// probe at the declared rate can never reveal headroom above it.
+	g := NewRateGovernor(19, 3, 400)
+
+	r, changed, _ := g.Observe(19)
+	if !changed || r != 26 {
+		t.Fatalf("far-below climb: got %d changed=%v, want 26 true", r, changed)
+	}
+}
+
+func TestRateGovernorResetAnchorsOnTheFirstMeasurement(t *testing.T) {
+	// A 2.4GHz roam to 5GHz: declare the ceiling, then trust one measurement.
+	g := NewRateGovernor(19, 3, 400)
+	g.Reset(400)
+	if g.Rate() != 400 {
+		t.Fatalf("after reset: got %d, want 400", g.Rate())
+	}
+	r, changed, why := g.Observe(210)
+	if !changed || r != 242 || why == "" {
+		t.Fatalf("anchor: got %d changed=%v why=%q, want 242 true with a reason", r, changed, why)
+	}
+}
+
+func TestRateGovernorResetKeepsACeilingMeasurement(t *testing.T) {
+	g := NewRateGovernor(19, 3, 400)
+	g.Reset(400)
+	if r, changed, _ := g.Observe(400); changed {
+		t.Fatalf("measuring at the ceiling moved rate to %d, want no change", r)
+	}
+	if g.anchor {
+		t.Fatal("anchor was not consumed by the measurement")
+	}
+}
+
 func TestRateGovernorHoldsInsideTheBand(t *testing.T) {
-	g := NewRateGovernor(30, 3, 600)
+	g := NewRateGovernor(30, 3, 40)
 	for _, sample := range []float64{27, 28.5, 27.2} {
 		if r, changed, _ := g.Observe(sample); changed {
 			t.Fatalf("sample %.1f inside the hold band moved rate to %d", sample, r)

@@ -175,12 +175,28 @@ rate, capped at 6 MB) and moves the declaration:
 | < 50% | cut to 25% of the declaration, floored at 1.5× measured |
 | 50–88%, two samples in a row | cut 15% |
 | 88–95% | hold |
+| ≥ 95%, one sample, below 75% of the ceiling | climb 35% |
 | ≥ 95%, two samples in a row | climb 12% |
 
 The asymmetry is deliberate: a collapsed link is felt immediately and is fixed
 on one sample, while jitter and transient lulls need corroboration so the loop
-does not chase noise in either direction. Off by default — leaving
-`reality_rate_auto` unset keeps `reality_down_mbps` a fixed pin.
+does not chase noise in either direction. Climbing gets the same treatment from
+the other side — a probe taken at the declared rate can never measure more than
+that rate, so the loop has to overshoot on purpose to find headroom, and it
+overshoots in bigger steps when it is far below the ceiling. Without those big
+steps, recovering from a collapsed declaration on improved Wi-Fi would take
+hours of millimetric climbing.
+
+There is one thing no band handles well: a discrete jump. Moving from a 2.4GHz
+roam to 5GHz, or swapping Wi-Fi for a cable, changes the path by an order of
+magnitude, and the old declaration says nothing about the new one. The loop
+watches the radio's channel and band — not transmit rate or signal, which drift
+constantly — and on a change it re-declares the peak, then treats the very next
+measurement as authoritative instead of waiting an interval. That single
+overshoot is visible in the log as `local link changed ... re-declaring`.
+
+Off by default — leaving `reality_rate_auto` unset keeps `reality_down_mbps` a
+fixed pin.
 
 ### Self-healing supervisor
 
