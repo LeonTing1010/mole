@@ -63,7 +63,7 @@ fi
 
 // Only whitelist performance fields; never return credentials or full config.
 // Called at boot and on authenticated /tuning requests for current readback.
-const nodeNetworkStatePython = `import json,subprocess,pathlib,datetime
+const nodeNetworkStatePython = `import json,re,subprocess,pathlib,datetime
 errors=[]
 def run(args,required=True):
  try:
@@ -89,6 +89,21 @@ for k in ['sing-box','hysteria']:
  lines=run([k,'version'],False).splitlines()
  r['versions'][k]=next((line.strip() for line in lines if line.lower().startswith(('version:', 'sing-box version'))),next(iter(lines),'unobserved'))
 r['services']={k:run(['systemctl','is-active',k],False) or 'inactive' for k in ['sing-box','hysteria-server']}
+# Node CPU load — tells us whether a bigger plan would actually help.
+# vc2-1c-1gb is 1 vCPU; at 2026-11-10 icn peak we saw 464 Mbps at 40–50%
+# load, so going 2c wouldn't move the ceiling. If load >90% on a sustained
+# run, that's the one case where a hardware upgrade is worth the extra $6/mo.
+try:
+    ua=run(['uptime'],False).strip()
+    m=re.search(r'load average: ([0-9.]+), ([0-9.]+), ([0-9.]+)',ua)
+    r['load']={'1m':float(m.group(1)),'5m':float(m.group(2)),'15m':float(m.group(3))} if m else None
+except Exception: r['load']=None
+try:
+    v=run(['vmstat','1'],False)
+    lines=[l for l in v.splitlines() if l.strip()][-1]
+    parts=lines.split()
+    r['cpu_idle_pct']=int(parts[-1]) if parts else None
+except Exception: r['cpu_idle_pct']=None
 try:
  cfg=json.loads(pathlib.Path('/etc/sing-box/config.json').read_text())
  r['server_tcp_fast_open']=any(v.get('type')=='vless' and v.get('tcp_fast_open',False) for v in cfg.get('inbounds',[]))
