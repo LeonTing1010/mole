@@ -110,6 +110,13 @@ systemctl start --no-block mole-brutal-install
 
 // brutalKeeperPy is the keeper. Standard library only: the node is a fresh
 // Ubuntu with python3 and nothing else.
+//
+// 2026-11-10: switched from brutcalctl CLI to direct /proc/net/tcp_brutal/rules
+// writes so we can set cwnd_gain alongside rate. Brutal's INIT_CWND_GAIN=20
+// (2.0x window, most aggressive) caused lossy paths to buffer too many
+// in-flight packets and collapse throughput — rate=400 actually beat rate=600
+// by 45% in A/B. Default gain=15 (1.5x, documented sweet spot) gives the
+// congestion window more headroom without overcommitting the path.
 var brutalKeeperPy = `#!/usr/bin/env python3
 # mole-brutal-keeper: see cmd/brutal.go in mole. Loopback only.
 import http.server, ipaddress, os, socketserver, subprocess, threading, time, urllib.parse
@@ -117,10 +124,14 @@ import http.server, ipaddress, os, socketserver, subprocess, threading, time, ur
 # The two env overrides exist so the keeper can be run and tested off the node.
 # Unset — which is how systemd starts it — they are exactly the old constants.
 RATE_FILE = os.environ.get("MOLE_BRUTAL_RATE_FILE", "/etc/mole-brutal-rate")
+GAIN_FILE = os.environ.get("MOLE_BRUTAL_GAIN_FILE", "/etc/mole-brutal-gain")
+PROC_RULES = "/proc/net/tcp_brutal/rules"
 PORT = int(os.environ.get("MOLE_BRUTAL_PORT", ` + fmt.Sprint(core.BrutalKeeperPort) + `))
 LISTEN = "127.0.0.1"
 LEG_PORT = 443
 BLOCK = os.urandom(1 << 20)  # 1 MiB of incompressible bytes, repeated for /bulk
+DEFAULT_GAIN = 15   # 1.5x window — Brutal README sweet spot, vs kernel default 20 (2.0x)
+PROC_HANDLE = open(PROC_RULES, "w") if os.path.exists(PROC_RULES) else None
 
 def read_rate():
     try:
@@ -133,6 +144,21 @@ def write_rate(n):
     with open(tmp, "w") as f:
         f.write("%d\n" % n)
     os.replace(tmp, RATE_FILE)
+
+def read_gain():
+    try:
+        g = int(open(GAIN_FILE).read().strip())
+        return max(5, min(80, g))  # Brutal kernel bounds
+    except Exception:
+        return DEFAULT_GAIN
+
+def write_gain(n):
+    g = max(5, min(80, int(n)))
+    tmp = GAIN_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        f.write("%d\n" % g)
+    os.replace(tmp, GAIN_FILE)
+    return g
 
 def peers():
     """Addresses currently established on the leg port, as the node sees them.
@@ -178,33 +204,36 @@ def module_ok():
     return False, "kernel module 'brutal' is not loaded"
 
 def apply(force=False):
-    """Install the pacing rule for every current peer.
+    """Install the pacing rule for every current peer via /proc/net/tcp_brutal/rules.
 
-    Returns (applied, peers, detail), where applied counts rules this call could
-    account for, and it is what the client is told: a rate that was received
-    and not installed is a rate that is not in effect, and the endpoint used
-    to answer 200 to that case exactly as it did to success. That made the
-    client's confirmation unfalsifiable, which is how REALITY ran unpaced for
-    three days while the log said it was paced at 100 Mbps.
+    Writes directly instead of shelling out to brutcalctl so we can set
+    cwnd_gain alongside rate — brutcalctl's 'add' syntax takes only Mbps
+    while the /proc writer accepts 'rate=<bytes/s> gain=<tenths>'. This also
+    eliminates a subprocess fork per peer per sweep.
     """
     rate = read_rate()
+    gain = read_gain()
     ok, detail = module_ok()
     ips = peers()
     if not ok:
         return 0, len(ips), detail
+    rate_bytes = int(rate) * 125000  # 1 Mbps = 125,000 bytes/s
     n = 0
     with lock:
         for ip in ips:
             # Rate equality is not kernel-state evidence: a route/module
             # reset can remove pacing for new sessions while old sockets
             # remain brutal. Reconcile the idempotent rule every sweep.
-            r = subprocess.run(["brutalctl", "add", str(ipaddress.ip_network(ip)), str(rate)], capture_output=True, text=True)
-            if r.returncode == 0:
+            try:
+                prefix = str(ipaddress.ip_network(ip))
+                rule = "add %s rate=%d gain=%d\n" % (prefix, rate_bytes, gain)
+                with open(PROC_RULES, "w") as f:
+                    f.write(rule)
                 applied[ip] = rate
                 n += 1
-            else:
+            except OSError as e:
                 applied.pop(ip, None)
-                detail = (r.stderr or r.stdout or "brutalctl exited %d" % r.returncode).strip().replace("\n", " ")[:200]
+                detail = "/proc write failed: %s" % str(e)[:200]
     if n == 0 and not detail:
         detail = "no peer established on TCP/%d" % LEG_PORT
     return n, len(ips), detail
@@ -232,14 +261,35 @@ class H(http.server.BaseHTTPRequestHandler):
                 n = 0
             if n:
                 write_rate(n)
+            # Allow callers to set gain together with rate so a single request
+            # configures both knobs — saves one round-trip and one apply().
+            try:
+                g = max(5, min(80, int(q.get("gain", ["0"])[0])))
+                if g:
+                    write_gain(g)
+            except ValueError:
+                pass
             # Applied synchronously, not in a thread: the caller is asking
             # whether the rate is in effect, and an answer sent before the
             # work is done cannot say.
             got, npeers, detail = apply(True)
-            body = "rate=%d\napplied=%d\npeers=%d\n" % (read_rate(), got, npeers)
+            body = "rate=%d\ngain=%d\napplied=%d\npeers=%d\n" % (read_rate(), read_gain(), got, npeers)
             if detail:
                 body += "detail=%s\n" % detail
             self.reply(body, 200 if got else 503)
+        elif u.path == "/gain":
+            # Dynamic gain adjustment — cwnd_gain in tenths (5=0.5x…80=8.0x).
+            # Default 15 (1.5x) is Brutal README sweet spot vs kernel default 20.
+            try:
+                g = max(5, min(80, int(q.get("g", [str(read_gain())])[0])))
+            except ValueError:
+                g = read_gain()
+            write_gain(g)
+            got, npeers, detail = apply(True)
+            body = "gain=%d\napplied=%d\npeers=%d\n" % (read_gain(), got, npeers)
+            if detail:
+                body += "detail=%s\n" % detail
+            self.reply(body, 200)
         elif u.path == "/bulk":
             try:
                 n = max(1, min(64 << 20, int(q.get("bytes", ["2000000"])[0])))

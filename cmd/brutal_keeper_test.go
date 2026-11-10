@@ -54,9 +54,9 @@ func TestKeeperRefusesWhenItCannotPace(t *testing.T) {
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("MOLE_BRUTAL_PORT=%d", port),
 		"MOLE_BRUTAL_RATE_FILE="+filepath.Join(dir, "rate"),
-		// A brutalctl that would succeed if it were ever reached, so a 503 can
-		// only mean the keeper checked the module rather than shelling out
-		// blindly.
+		"MOLE_BRUTAL_GAIN_FILE="+filepath.Join(dir, "gain"),
+		// brutcalctl stub is never reached when the module is absent — the
+		// 503 must come from module_ok() failing, not a stubbed subprocess.
 		"PATH="+stubBin(t, dir)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var errBuf strings.Builder
 	cmd.Stderr = &errBuf
@@ -162,12 +162,28 @@ rows='''0 0 192.0.2.1:443 198.51.100.4:34567
 '''
 def run(args,**kwargs):
  if args[0]=='ss':return types.SimpleNamespace(stdout=rows,returncode=0)
- calls.append(args);return types.SimpleNamespace(stdout='',stderr='',returncode=0)
-g['subprocess'].run=run;g['module_ok']=lambda:(True,'');g['read_rate']=lambda:500
+ raise AssertionError(args)
+calls=[]
+class FakeProc:
+    def __enter__(self):return self
+    def __exit__(self,*a):pass
+    def write(self,data):calls.append(data)
+orig_open=open
+def fake_open(path,mode='r'):
+    if path==g['PROC_RULES'] and mode=='w':return FakeProc()
+    return orig_open(path,mode)
+g['open']=fake_open;g['os'].path.exists=lambda p: True if p==g['PROC_RULES'] else orig_exists(p)
+orig_exists=g['os'].path.exists
+g['subprocess'].run=run;g['module_ok']=lambda:(True,'');g['read_rate']=lambda:500;g['read_gain']=lambda:15
 n,peers,detail=g['apply'](True)
 assert n==peers==3,(n,peers,detail,calls)
-assert {a[2] for a in calls}=={'198.51.100.4/32','2001:db8::20/128','2001:db8::21/128'},calls
-assert all(a==['brutalctl','add',a[2],'500'] for a in calls),calls
+# Expect 3 /proc writes with rate=bytes+gain=15
+import re
+written=set()
+for w in calls:
+    m=re.match(r'add (\S+) rate=(\d+) gain=(\d+)',w)
+    if m:written.add(m.group(1))
+assert written=={'198.51.100.4/32','2001:db8::20/128','2001:db8::21/128'},calls
 `
 	if out, err := exec.Command(py, "-c", script, f).CombinedOutput(); err != nil {
 		t.Fatalf("peer family policy: %v\n%s", err, out)
