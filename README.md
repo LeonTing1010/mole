@@ -18,12 +18,12 @@ export VULTR_API_KEY=...
 # 3. One command creates + boots + verifies a full REALITY + hy2 tunnel
 mole server deploy --name mole-tokyo --region nrt --plan vc2-1c-2gb
 
-# 4. Connect your laptop to the tunnel
+# 4. Connect your laptop — auto-tunes Brutal gain on first up
 mole server use mole-tokyo
-mole up
+mole up --tune-on-start
 
-# 5. Let mole auto-tune Brutal cwnd_gain for your specific IP segment
-mole server gain-tune
+# (opt) re-tune anytime after VPS reboot or IP change
+mole server tune
 ```
 
 That's it. ~3 minutes. The VPS runs sing-box v1.14.4 + hysteria2 v2.13.0 +
@@ -92,15 +92,15 @@ bash deploy/mole-brutal-install   # from any mole-deployed VPS
 
 ```bash
 mole server deploy              # create VPS, verify, record
-mole server ls                  # list deployed
+mole server ls                  # list deployed (alias: list)
 mole server verify <name>       # re-check without repairing
 mole server destroy <name>      # delete VPS + local record
-mole server reconcile           # diff local list vs Vultr API
+mole server sync                # diff local list vs Vultr API (alias: reconcile)
 mole server adopt <uri> [<hy2>] # import an existing node into mole
 mole server import <file.json>  # import from a config file
 mole server link [name]         # print vless:// link for other clients
-mole server gain-tune [name]    # auto-scan Brutal cwnd_gain (10/15/20/25)
-                                # using 8-concurrent 8MB bulk — picks best for REAL workload
+mole server tune [name]         # auto-scan Brutal cwnd_gain (alias: gain-tune)
+                                # 8-concurrent 8MB bulk — picks best for REAL workload
 ```
 
 ---
@@ -136,15 +136,17 @@ mole ceiling              # show current rung + auto profile
 mole ceiling 40           # pin to 40 Mbps (no reconnect — Clash API call)
 mole ceiling auto         # back to time-of-day schedule
 
-mole server gain-tune     # scan gain ∈ {10,15,20,25} with 8-concurrent 8MB
+mole server tune [name]    # scan gain ∈ {10,15,20,25} with 8-concurrent 8MB
                           # bulk at each; writes best gain to servers.json
                           # AND applies live to the keeper immediately
+mole up --tune-on-start   # auto-tune on first up (when brutal_gain==0)
 ```
 
 `BrutalGain` is per-IP — the same rung works differently on different transit
-paths. `gain-tune` is the only way to pick the right one. Measured on a good
-Vultr IP, default gain=20 (aggressive) was 2× faster than gain=15; on a
-TransitWireless IP, gain=10 was 3× the concurrent throughput of gain=20.
+paths. `mole server tune` (alias: `gain-tune`) is the only way to pick the right one.
+Measured on a good Vultr IP, default gain=20 (aggressive) was 2× faster than
+gain=15; on a TransitWireless IP, gain=10 was 3× the concurrent throughput of
+gain=20.
 
 ### Self-healing supervisor
 
@@ -201,12 +203,12 @@ mole reload                                                       # reload custo
 mole server deploy    [--name X --region Y --plan Z --no-reality --no-hy2]
 mole server destroy   <name>
 mole server ls
-mole server reconcile [--destroy-remote]
+mole server sync      [--destroy-remote]
 mole server verify    <name> [--timeout 6m]
 mole server adopt     <reality-uri> [<hy2-uri>]
 mole server import    <config.json>
 mole server link      [name] [--hy2]
-mole server gain-tune [name]
+mole server tune [name]
 ```
 
 ---
@@ -282,7 +284,7 @@ real ENOBUFS pressure, real keeper confirmations. No mocks for transport paths.
 
 - **Sing-box** v1.14.4 ✓ qualified
 - **Hysteria2** v2.13.0 ✓ qualified
-- **TCP Brutal** v2.0.1 ✓ qualified (with cwnd_gain tuning, gain=20 default, per-IP override via `gain-tune`)
+- **TCP Brutal** v2.0.1 ✓ qualified (with cwnd_gain tuning, gain=20 default, per-IP override via `server tune`)
 - **cloud-init.yaml** ✓ — Vultr / Hetzner confirmed boot
 - **Dockerfile** ✓ — local build + run tested
 
