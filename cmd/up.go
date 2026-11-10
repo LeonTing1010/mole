@@ -539,16 +539,31 @@ func preflightPacing(ctx context.Context, srv *Server) {
 			warned = true
 		}
 		if err == nil && res.Applied > 0 {
-			// The first add lands the rule and its route, but a session dialled
-			// in the same instant can still be established under the old
-			// classification. Let the route settle, then refresh once before
-			// the production pool is allowed to dial.
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(3 * time.Second):
+			// The first add lands the rule and its route, but keeper's loop
+			// (apply() → sleep 3s) may not have re-routed an existing peer
+			// yet. Poll the keeper every 200ms with a re-push: as soon as it
+			// reports Applied>0 the rule is re-locked in, no need to wait the
+			// full 3s. Worst case falls back to a hard 3s — same ceiling as
+			// before, but a healthy keeper can confirm in 500–800ms.
+			settle := time.Now().Add(3 * time.Second)
+			confirmed := false
+			for time.Now().Before(settle) {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(200 * time.Millisecond):
+				}
+				r2, err2 := core.PushBrutalRateVia(port, rate, 5000)
+				if err2 == nil && r2.Applied > 0 {
+					res.Peers = r2.Peers
+					res.Applied = r2.Applied
+					confirmed = true
+					break
+				}
 			}
-			_, _ = core.PushBrutalRateVia(port, rate, 5000)
+			// If the keeper never confirmed a second apply, we still continue —
+			// the first push did land; this is just "please confirm".
+			_ = confirmed
 			log.Printf("brutal: rule installed before the engine dials (↓%d Mbps, %d peer(s))", rate, res.Peers)
 			return
 		}
