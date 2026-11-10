@@ -1,6 +1,7 @@
 /target
 .DS_Store
 .claude/skills
+.agents/skills/
 .mcp.json
 CLAUDE.md
 /mole
