@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/LeonTing1010/mole/core"
@@ -83,6 +84,78 @@ func TestBrutalRuleBindsTheRealityLegAndOutranksTheLoopbackDirect(t *testing.T) 
 	}
 }
 
+// The rate push is on its own REALITY leg WITHOUT multiplex, so its dial can
+// never become a session in the mux pool. TCP Brutal only classifies sockets
+// created after the rule exists; a pool session dialled before the first
+// successful push would stay on bbr for its whole life.
+func TestBrutalRateChannelAvoidsTheMuxPool(t *testing.T) {
+	// Production asks for the pool explicitly; without the query parameter the
+	// REALITY leg is not multiplexed at all, and there would be nothing to avoid.
+	base, _, _ := strings.Cut(testRealityURI, "#")
+	cfg, err := BuildWithStandby(testHy2URI, base+"&mux=smux#icn-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rateIn *InboundConfig
+	for i := range cfg.Inbounds {
+		if cfg.Inbounds[i].Tag == core.BrutalRateInboundTag {
+			rateIn = &cfg.Inbounds[i]
+		}
+	}
+	if rateIn == nil {
+		t.Fatal("no rate channel; the push would have to travel the mux pool")
+	}
+	if rateIn.Listen != "127.0.0.1" || rateIn.ListenPort != core.BrutalRatePort || rateIn.OverridePort != core.BrutalKeeperPort {
+		t.Errorf("rate channel = %s:%d -> %d, want 127.0.0.1:%d -> %d",
+			rateIn.Listen, rateIn.ListenPort, rateIn.OverridePort, core.BrutalRatePort, core.BrutalKeeperPort)
+	}
+
+	var rateOut, realityOut *OutboundConfig
+	for i := range cfg.Outbounds {
+		switch cfg.Outbounds[i].Tag {
+		case core.RealityRateLegTag:
+			rateOut = &cfg.Outbounds[i]
+		case core.RealityLegTag:
+			realityOut = &cfg.Outbounds[i]
+		}
+	}
+	if rateOut == nil {
+		t.Fatal("rate channel has no REALITY outbound")
+	}
+	if rateOut.Multiplex != nil {
+		t.Error("the rate outbound is multiplexed; its dial could take the pool's first session")
+	}
+	if realityOut == nil || realityOut.Multiplex == nil {
+		t.Fatal("precondition: the traffic REALITY leg should be multiplexed")
+	}
+	if rateOut.Server != realityOut.Server || rateOut.UUID != realityOut.UUID || rateOut.Flow != realityOut.Flow {
+		t.Error("the rate outbound does not describe the same REALITY leg as the traffic outbound")
+	}
+
+	routed, routedAt := false, -1
+	for i, r := range cfg.Route.Rules {
+		if len(r.Inbound) == 1 && r.Inbound[0] == core.BrutalRateInboundTag {
+			routed, routedAt = true, i
+			if r.Outbound != core.RealityRateLegTag {
+				t.Errorf("rate rule targets %q, want %q", r.Outbound, core.RealityRateLegTag)
+			}
+		}
+	}
+	if !routed {
+		t.Fatal("no route rule binds the rate channel to its REALITY outbound")
+	}
+	for i, r := range cfg.Route.Rules {
+		for _, c := range r.IPCIDR {
+			if c == "127.0.0.0/8" && i < routedAt {
+				t.Fatalf("127.0.0.0/8 direct at %d answers the rate dial before the rule at %d", i, routedAt)
+			}
+			if c == "127.0.0.0/8" {
+				return
+			}
+		}
+	}
+}
+
 // sing-box treats a rule naming an unknown outbound as fatal at startup, so a
 // single-leg config that mentioned proxy-reality would not slow the tunnel
 // down, it would stop it existing.
@@ -93,6 +166,11 @@ func TestNoRealityLegMeansNoForwarderAndNoDanglingRule(t *testing.T) {
 	}
 	if in := brutalInbound(cfg); in != nil {
 		t.Error("a single-leg config grew a forwarder for a leg it does not have")
+	}
+	for i := range cfg.Inbounds {
+		if cfg.Inbounds[i].Tag == core.BrutalRateInboundTag {
+			t.Error("a single-leg config grew a rate channel for a leg it does not have")
+		}
 	}
 	tags := map[string]bool{}
 	for _, o := range cfg.Outbounds {

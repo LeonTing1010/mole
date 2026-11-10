@@ -208,7 +208,7 @@ func BuildWithStandby(serverURI, standbyURI string) (*SingboxConfig, error) {
 			Type:        "tun",
 			Tag:         "tun-in",
 			Address:     []string{"172.19.0.1/28"},
-			MTU:         9000,
+			MTU:         1500,
 			AutoRoute:   true,
 			StrictRoute: true,
 			Stack:       "gvisor",
@@ -220,6 +220,7 @@ func BuildWithStandby(serverURI, standbyURI string) (*SingboxConfig, error) {
 			ListenPort: 53,
 		},
 	}
+	hasRateLeg := false
 	if hasReality {
 		// A fixed forwarder onto the node's loopback Brutal keeper. Same port
 		// both ends, so the address reads the same on either side of the leg.
@@ -231,6 +232,25 @@ func BuildWithStandby(serverURI, standbyURI string) (*SingboxConfig, error) {
 			OverrideAddress: "127.0.0.1",
 			OverridePort:    core.BrutalKeeperPort,
 		})
+		// A second channel to the same keeper, carried by the same REALITY leg
+		// but WITHOUT multiplex: the rate push must not be able to become the
+		// mux pool's first session. TCP Brutal only classifies sockets created
+		// after the rule exists, so a pool session dialled before the first
+		// successful push stays on bbr for its whole life. See core.BrutalRatePort.
+		if rateLeg, err := parseServerURL(standbyURI); err == nil && rateLeg.Type == "vless" {
+			rateLeg.Tag = core.RealityRateLegTag
+			rateLeg.Multiplex = nil
+			proxyOutbounds = append(proxyOutbounds, *rateLeg)
+			hasRateLeg = true
+			inbounds = append(inbounds, InboundConfig{
+				Type:            "direct",
+				Tag:             core.BrutalRateInboundTag,
+				Listen:          "127.0.0.1",
+				ListenPort:      core.BrutalRatePort,
+				OverrideAddress: "127.0.0.1",
+				OverridePort:    core.BrutalKeeperPort,
+			})
+		}
 		// The same destination over the other leg. Its whole purpose is to be
 		// identical to the forwarder above in every respect but the leg it is
 		// routed over, so the failover gate can time the two and have the
@@ -271,6 +291,14 @@ func BuildWithStandby(serverURI, standbyURI string) (*SingboxConfig, error) {
 	// 127.0.0.0/8 straight out `direct` — and the whole point of this one is
 	// that a loopback address gets resolved on the far side of the leg.
 	if hasReality {
+		// Before the multiplexed channel, so the non-mux rate dial is the one
+		// that gets a fresh socket rather than a pool session.
+		if hasRateLeg {
+			baseRules = append(baseRules, RouteRule{
+				Inbound:  []string{core.BrutalRateInboundTag},
+				Outbound: core.RealityRateLegTag,
+			})
+		}
 		baseRules = append(baseRules, RouteRule{
 			Inbound:  []string{core.BrutalInboundTag},
 			Outbound: core.RealityLegTag,

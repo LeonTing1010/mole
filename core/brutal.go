@@ -28,6 +28,24 @@ const BrutalKeeperPort = 8098
 // ladder.
 const BrutalInboundTag = "brutal-in"
 
+// BrutalRatePort is a second forwarder to the same keeper, carried by the
+// REALITY leg but deliberately WITHOUT multiplex.
+//
+// The rate push has to happen before the client's mux pool exists, because TCP
+// Brutal classifies new sockets only: a session opened while the node still had
+// no rule stays on the kernel default (bbr) for its whole life. With the push on
+// the multiplexed forwarder, its own dial could become the pool's first session
+// and pin the entire tunnel to bbr. A dedicated non-mux channel keeps that dial
+// out of the pool, so the pool's sockets are all created after the rule exists.
+const BrutalRatePort = 8097
+
+// BrutalRateInboundTag names that forwarder.
+const BrutalRateInboundTag = "brutal-rate-in"
+
+// RealityRateLegTag is the REALITY outbound used only by the rate channel. Same
+// server and credentials as RealityLegTag, no multiplex.
+const RealityRateLegTag = "proxy-reality-rate"
+
 // LegGatePort is the mirror of BrutalKeeperPort for the OTHER leg. It reaches
 // the same keeper on the same node — the only difference is the route rule
 // that carries it, which is pinned to the hy2 ladder instead of REALITY.
@@ -69,9 +87,10 @@ func LegProbe(port, timeoutMs int) (time.Duration, error) {
 
 // BrutalRateURL is the request that sets the rate the node paces its TCP
 // toward this client at. Fetched whenever the resting rung changes, so
-// `mole ceiling` governs both legs.
+// `mole ceiling` governs both legs. It uses BrutalRatePort, not the
+// multiplexed forwarder, for the cold-start ordering described there.
 func BrutalRateURL(mbps int) string {
-	return fmt.Sprintf("http://127.0.0.1:%d/rate?mbps=%d", BrutalKeeperPort, mbps)
+	return fmt.Sprintf("http://127.0.0.1:%d/rate?mbps=%d", BrutalRatePort, mbps)
 }
 
 // BrutalResult is what the keeper says it did. Applied is the number of peer
@@ -103,6 +122,19 @@ type BrutalResult struct {
 // distinguish "it worked" from "nothing happened" is not a success signal.
 func PushBrutalRate(mbps, timeoutMs int) (BrutalResult, error) {
 	return brutalGET(BrutalRateURL(mbps), timeoutMs)
+}
+
+// PushBrutalRateVia is PushBrutalRate through an arbitrary local forwarder.
+// The startup pre-flight uses it because the production forwarder does not
+// exist yet: its whole job is to install the rule before the first engine
+// session is dialled.
+func PushBrutalRateVia(port, mbps, timeoutMs int) (BrutalResult, error) {
+	return brutalGET(BrutalRateURLAt(port, mbps), timeoutMs)
+}
+
+// BrutalRateURLAt names the keeper on a specific local forwarder port.
+func BrutalRateURLAt(port, mbps int) string {
+	return fmt.Sprintf("http://127.0.0.1:%d/rate?mbps=%d", port, mbps)
 }
 
 func brutalGET(url string, timeoutMs int) (BrutalResult, error) {

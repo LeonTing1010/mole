@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -223,7 +225,15 @@ func runParent() error {
 	}
 
 	// Wait for the daemon to write its state (indicates sing-box came up).
-	if err := waitForDaemonReady(pid, 10*time.Second); err != nil {
+	// 100s, not 30s: cold-start init is serial — PF restore of the direct
+	// exemptions plus the CN CIDR list, a pre-flight round-trip to the brutal
+	// keeper (which waits up to 65s for a freshly deployed node to finish
+	// building the optional module) — and on 2026-11-07 it took ~12s on this
+	// machine, so the CLI reported "did not come up" for a daemon that was
+	// healthy seconds later. A slow start is not a failed start; the daemon
+	// keeps running past this timeout either way, so waiting longer only
+	// removes the false alarm.
+	if err := waitForDaemonReady(pid, 100*time.Second); err != nil {
 		return fmt.Errorf("daemon did not come up: %w (see %s)", err, utils.LogPath())
 	}
 
@@ -380,6 +390,13 @@ func runDaemon() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Install the node's pacing rule BEFORE the production engine exists.
+	// TCP Brutal classifies only sockets created after the rule is in place, and
+	// the engine's mux pool is long-lived: a session dialled before the first
+	// successful push keeps the kernel default (bbr) until it is torn down, so
+	// the whole tunnel stays unpaced even though every later push succeeds.
+	preflightPacing(ctx, srv)
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
@@ -405,6 +422,150 @@ func runDaemon() error {
 	case <-time.After(10 * time.Second):
 	}
 	return nil
+}
+
+// preflightPacing installs the REALITY pacing rule through a throwaway,
+// non-multiplexed engine before the production engine dials. Best effort: a
+// node whose optional Brutal module is still building simply keeps its old
+// behaviour, and the supervisor retries the push every minute.
+//
+// The throwaway engine is what makes the ordering possible. The production
+// forwarder is part of the config the engine starts with, so pushing through
+// it would require the engine — and the engine's TUN starts taking traffic
+// immediately, so some mux session could be dialled before the rule exists.
+// A rate push over a non-mux socket installs the rule for this client's /32
+// without ever entering the pool.
+func preflightPacing(ctx context.Context, srv *Server) {
+	uri, rate := srv.StandbyURI(), srv.RealityDownMbps
+	if uri == "" {
+		return
+	}
+	if rate <= 0 {
+		// A freshly deployed node has no recorded REALITY rate yet (ladder
+		// memory only fills it for regions seen before), but the supervisor
+		// will still pace the leg — at the schedule's current ceiling rung
+		// (core/supervisor.go: tcpRate = down when realityRateMbps == 0).
+		// Install the rule at that same rate before the engine dials; the
+		// first runtime push re-rates the existing rule seconds later.
+		// Skipping here is how the nrt-trial deploy on 2026-11-09 went back
+		// to the old race: pool dialled unpaced.
+		_, _, rate = srv.Schedule().Profile(time.Now())
+		if rate <= 0 {
+			return
+		}
+	}
+	bin, err := exec.LookPath("sing-box")
+	if err != nil {
+		return
+	}
+	out, err := config.ParseOutbound(uri)
+	if err != nil {
+		log.Printf("brutal preflight: standby identity unusable: %v", err)
+		return
+	}
+	out.Tag = "rate-leg"
+	out.Multiplex = nil
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		log.Printf("brutal preflight: no local port: %v", err)
+		return
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+
+	dir, err := os.MkdirTemp("", "mole-rate-")
+	if err != nil {
+		log.Printf("brutal preflight: %v", err)
+		return
+	}
+	defer os.RemoveAll(dir)
+	cfg := map[string]any{
+		"log": map[string]any{"level": "error"},
+		"inbounds": []any{map[string]any{
+			"type": "direct", "tag": "rate", "listen": "127.0.0.1", "listen_port": port,
+			"override_address": "127.0.0.1", "override_port": core.BrutalKeeperPort,
+		}},
+		"outbounds": []any{out, map[string]any{"type": "direct", "tag": "direct"}},
+		"route": map[string]any{
+			"rules": []any{map[string]any{"inbound": []string{"rate"}, "action": "route", "outbound": out.Tag}},
+			"final": "direct",
+		},
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return
+	}
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		log.Printf("brutal preflight: %v", err)
+		return
+	}
+	logFile, err := os.OpenFile(filepath.Join(dir, "engine.log"), os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		log.Printf("brutal preflight: %v", err)
+		return
+	}
+	defer logFile.Close()
+	cmd := exec.CommandContext(ctx, bin, "run", "-c", path)
+	cmd.Stdout, cmd.Stderr = logFile, logFile
+	if err := cmd.Start(); err != nil {
+		log.Printf("brutal preflight: engine did not start: %v", err)
+		return
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	// A freshly deployed node installs the optional module asynchronously and
+	// can take a minute to build it; waiting here is what stops that minute
+	// from pinning the entire session to bbr.
+	deadline := time.Now().Add(65 * time.Second)
+	warned := false
+	for {
+		res, err := core.PushBrutalRateVia(port, rate, 5000)
+		if !warned && (err != nil || res.Applied == 0) {
+			detail := "keeper did not confirm the rule"
+			if err != nil {
+				detail = err.Error()
+			}
+			log.Printf("brutal preflight: %s; waiting up to 65s for the optional module", detail)
+			warned = true
+		}
+		if err == nil && res.Applied > 0 {
+			// The first add lands the rule and its route, but a session dialled
+			// in the same instant can still be established under the old
+			// classification. Let the route settle, then refresh once before
+			// the production pool is allowed to dial.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(3 * time.Second):
+			}
+			_, _ = core.PushBrutalRateVia(port, rate, 5000)
+			log.Printf("brutal: rule installed before the engine dials (↓%d Mbps, %d peer(s))", rate, res.Peers)
+			return
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				log.Printf("brutal preflight: no keeper answer (%v); REALITY may start unpaced", err)
+			} else {
+				log.Printf("brutal preflight: rate not applied (%s); REALITY may start unpaced", res.Detail)
+			}
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(3 * time.Second):
+		}
+	}
 }
 
 // lidDestroyPlan decides what the daemon will do when the lid is shut, and says

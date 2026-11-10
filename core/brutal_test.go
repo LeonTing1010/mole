@@ -103,7 +103,7 @@ func TestUnreachableKeeperIsAnError(t *testing.T) {
 // carries it: a destination of 127.0.0.1 is written on the node's side of the
 // leg, which is the only place it means anything.
 func TestBrutalRateURLPointsAtTheForwarder(t *testing.T) {
-	if got := BrutalRateURL(65); got != "http://127.0.0.1:8098/rate?mbps=65" {
+	if got := BrutalRateURL(65); got != "http://127.0.0.1:8097/rate?mbps=65" {
 		t.Errorf("rate url = %q", got)
 	}
 }
