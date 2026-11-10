@@ -1581,44 +1581,10 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 		// daemon without signalling it. Either pin also releases a fallback in
 		// progress — otherwise the pin would select a leg here every tick while
 		// the failover still believed it owned the decision.
-		switch utils.ReadLeg() {
-		case utils.LegBoth:
-			if s.onFallback() {
-				s.releaseFallback("dual routing enabled")
-			}
-			member, name = RealityLegTag, "both/"+name
-			s.stateMu.Lock()
-			preferHy2 := s.state.Balance != nil && s.state.Balance.Enabled && s.state.Balance.Hy2Lanes >= BalanceLanes/2
-			s.stateMu.Unlock()
-			if preferHy2 {
-				if live, e := s.clash.Selection(Hy2ProbeSelectorTag); e == nil {
-					member = live
-				} else {
-					member = BandwidthRungTag(down)
-				}
-			}
-		case utils.LegReality:
-			if s.onFallback() {
-				s.releaseFallback("pinned to reality by `mole leg`")
-			}
-			member, name = RealityLegTag, "leg-reality"
-		case utils.LegHy2:
-			if s.onFallback() {
-				s.releaseFallback("pinned to hy2 by `mole leg`")
-			}
-			name = "leg-hy2/" + name
-		default:
-			if s.hasReality {
-				// The return is attempted first so a recovered primary is
-				// handed back on this same tick rather than one later.
-				s.tryReturnToPrimary()
-				if s.onFallback() {
-					name = "fallback-hy2/" + name
-				} else {
-					member, name = RealityLegTag, "reality/"+name
-				}
-			}
-		}
+		// Above all of it sits `mole leg`. A leg pin is not evidence, it is
+		// instruction, so it is read last and wins. Also re-read every tick
+		// so `mole leg` takes on a running daemon without signalling it.
+		member, name = s.schedulerPickLeg(member, name, down)
 		// `down` is kept whichever leg carries traffic: since 2026-09-06 the
 		// node paces its TCP toward this client at the same rung (TCP Brutal,
 		// see cmd/brutal.go), so the ceiling governs REALITY too. Push it
@@ -1630,46 +1596,7 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 			tcpRate = s.realityRateMbps
 		}
 		if s.hasReality && tcpRate > 0 && (tcpRate != pushedRate || time.Since(pushedAt) > 10*time.Minute) {
-			pacingChanged = true
-			res, err := PushBrutalRateViaWithGain(BrutalKeeperPort, tcpRate, s.brutalGain, s.probeTimeMs)
-			switch {
-			case err != nil:
-				unconfirmed++
-				if tcpRate != pushedRate || unconfirmed == brutalGiveUp {
-					log.Printf("brutal: no answer from the node's keeper for ↓%d Mbps (%v) — REALITY is unpaced", tcpRate, err)
-				}
-			case res.Applied == 0:
-				unconfirmed++
-				log.Printf("brutal: the node heard ↓%d Mbps and did not apply it (%s; %d peer(s)) — REALITY is unpaced",
-					tcpRate, res.Detail, res.Peers)
-			default:
-				if tcpRate != pushedRate || s.brutalUnpaced.Load() {
-					log.Printf("brutal: node paces TCP toward this client at ↓%d Mbps (%d of %d peer(s))",
-						tcpRate, res.Applied, res.Peers)
-				}
-				pushedRate, pushedAt, unconfirmed = tcpRate, time.Now(), 0
-				s.stateMu.Lock()
-				s.state.RealityRateMbps = tcpRate
-				s.stateMu.Unlock()
-				s.brutalUnpaced.Store(false)
-			}
-			if unconfirmed >= brutalGiveUp {
-				s.brutalUnpaced.Store(true)
-				// Pacing capability is optional. Transport health is decided by
-				// authenticated delivery, not the kernel module's availability.
-			}
-			s.stateMu.Lock()
-			s.state.RealityPacingState = "confirmed"
-			s.state.RealityPacingError = ""
-			if unconfirmed > 0 {
-				s.state.RealityPacingState = "unconfirmed"
-				if err != nil {
-					s.state.RealityPacingError = err.Error()
-				} else {
-					s.state.RealityPacingError = res.Detail
-				}
-			}
-			s.stateMu.Unlock()
+			pushedRate, pushedAt, unconfirmed, pacingChanged = s.schedulerPushBrutal(tcpRate, pushedRate, pushedAt, unconfirmed)
 		}
 		// Compare against what the selector is *actually* pointing at, not against
 		// what we last set. `mole ceiling` drives the same selector directly, so
@@ -1757,6 +1684,105 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 			apply()
 		}
 	}
+}
+
+// schedulerPushBrutal pushes the REALITY leg's TCP Brutal pacing rate to the
+// node's keeper via PushBrutalRateViaWithGain. When the keeper confirms it
+// updates pushedRate/pushedAt and clears unconfirmed; on persistent refusal
+// it flips s.brutalUnpaced. Also updates s.state.RealityRateMbps and the
+// RealityPacingState/Error triplet so `mole status` shows what happened.
+//
+// The 10-minute re-push interval (fire regardless of change) is enforced by
+// the caller so this method stays pure: it only decides *whether* to emit a
+// log line based on (tcpRate != pushedRate || brutalUnpaced was true).
+//
+// Returns (newPushedRate, newPushedAt, newUnconfirmed, pacingChanged).
+func (s *Supervisor) schedulerPushBrutal(tcpRate, pushedRate int, pushedAt time.Time, unconfirmed int) (int, time.Time, int, bool) {
+	pacingChanged := true
+	res, err := PushBrutalRateViaWithGain(BrutalKeeperPort, tcpRate, s.brutalGain, s.probeTimeMs)
+	switch {
+	case err != nil:
+		unconfirmed++
+		if tcpRate != pushedRate || unconfirmed == brutalGiveUp {
+			log.Printf("brutal: no answer from the node's keeper for ↓%d Mbps (%v) — REALITY is unpaced", tcpRate, err)
+		}
+	case res.Applied == 0:
+		unconfirmed++
+		log.Printf("brutal: the node heard ↓%d Mbps and did not apply it (%s; %d peer(s)) — REALITY is unpaced",
+			tcpRate, res.Detail, res.Peers)
+	default:
+		if tcpRate != pushedRate || s.brutalUnpaced.Load() {
+			log.Printf("brutal: node paces TCP toward this client at ↓%d Mbps (%d of %d peer(s))",
+				tcpRate, res.Applied, res.Peers)
+		}
+		pushedRate, pushedAt, unconfirmed = tcpRate, time.Now(), 0
+		s.stateMu.Lock()
+		s.state.RealityRateMbps = tcpRate
+		s.stateMu.Unlock()
+		s.brutalUnpaced.Store(false)
+	}
+	if unconfirmed >= brutalGiveUp {
+		s.brutalUnpaced.Store(true)
+	}
+	s.stateMu.Lock()
+	s.state.RealityPacingState = "confirmed"
+	s.state.RealityPacingError = ""
+	if unconfirmed > 0 {
+		s.state.RealityPacingState = "unconfirmed"
+		if err != nil {
+			s.state.RealityPacingError = err.Error()
+		} else {
+			s.state.RealityPacingError = res.Detail
+		}
+	}
+	s.stateMu.Unlock()
+	return pushedRate, pushedAt, unconfirmed, pacingChanged
+}
+
+// schedulerPickLeg reads the leg pin (mole leg) and applies it as the
+// ultimate selector, overriding whatever the clock/backoff chose. A pin
+// also releases any active fallback since both cannot own the decision.
+// When no pin is set and a REALITY leg exists, it either returns to primary
+// or stays on fallback. In LegBoth mode, it additionally consults the
+// balance policy to decide whether to favour the HY2 probe selector.
+func (s *Supervisor) schedulerPickLeg(member, name string, down int) (string, string) {
+	switch utils.ReadLeg() {
+	case utils.LegBoth:
+		if s.onFallback() {
+			s.releaseFallback("dual routing enabled")
+		}
+		member, name = RealityLegTag, "both/"+name
+		s.stateMu.Lock()
+		preferHy2 := s.state.Balance != nil && s.state.Balance.Enabled && s.state.Balance.Hy2Lanes >= BalanceLanes/2
+		s.stateMu.Unlock()
+		if preferHy2 {
+			if live, e := s.clash.Selection(Hy2ProbeSelectorTag); e == nil {
+				member = live
+			} else {
+				member = BandwidthRungTag(down)
+			}
+		}
+	case utils.LegReality:
+		if s.onFallback() {
+			s.releaseFallback("pinned to reality by `mole leg`")
+		}
+		member, name = RealityLegTag, "leg-reality"
+	case utils.LegHy2:
+		if s.onFallback() {
+			s.releaseFallback("pinned to hy2 by `mole leg`")
+		}
+		name = "leg-hy2/" + name
+	default:
+		if s.hasReality {
+			s.tryReturnToPrimary()
+			if s.onFallback() {
+				name = "fallback-hy2/" + name
+			} else {
+				member, name = RealityLegTag, "reality/"+name
+			}
+		}
+	}
+	return member, name
 }
 
 func (s *Supervisor) waitClashReady(ctx context.Context, timeout time.Duration) error {

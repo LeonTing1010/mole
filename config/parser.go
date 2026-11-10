@@ -49,333 +49,24 @@ func BuildWithStandby(serverURI, standbyURI string) (*SingboxConfig, error) {
 	// localization (NOT lowest query latency — see PreferredDirectDNS).
 	bestDNS := utils.PreferredDirectDNS()
 
-	dnsServers := []DNSServer{
-		// Direct DNS - AliDNS, chosen for best CDN-edge localization (not latency)
-		{Type: "udp", Server: bestDNS, Tag: "dns-direct"},
-		// Remote DNS via proxy. Kept as `final` so non-A/AAAA queries
-		// (PTR, TXT, MX, ...) for foreign names don't hit a censored upstream.
-		{Type: "tls", Server: "1.1.1.1", Tag: "dns-remote", Detour: "proxy"},
-		// FakeIP synthesises 198.18.x.x for A queries so foreign-name resolution
-		// never depends on a reachable upstream. The actual IP is recovered from
-		// the sniffed SNI/Host when the client connects.
-		{Type: "fakeip", Tag: "dns-fake", Inet4Range: "198.18.0.0/15"},
-	}
-
-	// Custom rules drive BOTH route and DNS. A domain flagged outbound:direct
-	// must resolve to its REAL IP — not a fake-ip — or clients behind a NAT that
-	// can't take part in fake-ip reverse-mapping (e.g. an emulator) get a dead
-	// 198.18.x.x and hang. So direct domain suffixes are pulled into a dns-direct
-	// rule below as well. Single source of truth: custom-rules.json.
+	// Custom + builtin rules (combined for DNS suffix analysis).
 	customRules := loadCustomRules()
-
-	// Built-in curated direct rules (e.g. Sunlogin/向日葵) ship with mole as
-	// DATA (builtin-rules.json), not as Go literals, so the list of domestic
-	// services that should route direct can change without recompiling. Same
-	// schema as custom-rules.json; custom rules are inserted AFTER builtin so a
-	// user can override any built-in entry.
 	builtinRules := loadBuiltinRules()
-
-	// Combined direct-domain sources for DNS resolution (built-in + user).
 	directSources := append(append([]RouteRule{}, builtinRules...), customRules...)
 
-	dnsRules := []DNSRule{}
-	if outbound.Server != "" && net.ParseIP(outbound.Server) == nil {
-		// VPS hostname uses direct DNS to avoid circular dependency
-		dnsRules = append(dnsRules, DNSRule{
-			Domain: []string{outbound.Server},
-			Server: "dns-direct",
-		})
-	}
-	// Reject HTTPS/SVCB. FakeIP cannot synthesise these record types, and a
-	// HTTPS RR with `alpn=h3` would otherwise push the browser onto QUIC
-	// (rejected by our route) or ECH paths that bypass SNI sniffing.
-	dnsRules = append(dnsRules, DNSRule{
-		QueryType: []string{"HTTPS", "SVCB"},
-		Action:    "reject",
-	})
-	// Reverse lookups for RFC 6303 locally-served zones are answered here and
-	// never leave the machine. Bonjour/DNS-SD browses every interface subnet
-	// (en0's 192.168.1.0/24, and utun4's own 172.19.0.0/28), so these fire a few
-	// times an hour forever. The upstream resolver can only ever say NXDOMAIN
-	// for them — but the query still costs a UDP round trip, and a single lost
-	// packet parks the lookup for the full 10s deadline with no retry, stalling
-	// Finder's "Shared" list and AirPlay/AirDrop discovery. When the link is
-	// sick they arrive in bursts and bury the real errors in the log. Replying
-	// NXDOMAIN locally is behaviourally identical and instant.
-	dnsRules = append(dnsRules, DNSRule{
-		DomainSuffix: localReverseZones(),
-		Action:       "reject",
-	})
-	// Any remaining (public) PTR must never ride the proxy. These don't match
-	// the A/AAAA fakeip rule, so without this they fall to `final: dns-remote`
-	// (DoT over the tunnel) and each blocks ~20s when the link is congested —
-	// the single biggest source of "everything feels frozen".
-	dnsRules = append(dnsRules, DNSRule{
-		DomainSuffix: []string{".in-addr.arpa", ".ip6.arpa"},
-		Server:       "dns-direct",
-	})
-	// Chinese TLDs use direct DNS so we get real IPs that geoip-cn can route.
-	// (Service domains like qq.com are no longer hardcoded here — they live in
-	// builtin-rules.json and flow in via directDomainSuffixes, same as oray.)
-	dnsRules = append(dnsRules, DNSRule{
-		DomainSuffix: []string{".cn", ".com.cn", ".net.cn", ".org.cn", ".gov.cn", ".edu.cn", ".mil.cn", ".中国"},
-		Server:       "dns-direct",
-	})
-	// Proxy-exception domains: a specific host that must ride the tunnel even
-	// though its parent suffix is direct (e.g. appstoreconnect.apple.com under
-	// apple.com — the CN GSLB hands the domestic path a crippled Kingsoft CDN
-	// console, and idmsa/developer.apple.com get their TLS ClientHello reset on
-	// direct). These must resolve to fake-ip so the connection carries the
-	// DOMAIN to the proxy and is re-resolved abroad; inheriting the parent's
-	// dns-direct rule below would instead pin them to the poisoned domestic IP.
-	// Emitted before directDomainSuffixes so the more-specific fake-ip rule wins.
-	if suffixes := proxyDomainSuffixes(directSources); len(suffixes) > 0 {
-		dnsRules = append(dnsRules, DNSRule{
-			DomainSuffix: suffixes,
-			Server:       "dns-fake",
-		})
-	}
-	// Same exception, matched by substring for hosts no suffix can reach:
-	// sing-box's domain_suffix aligns on label boundaries, so the Mac App Store's
-	// per-account store partitions (p46-buy/p47-buy.itunes.apple.com — install
-	// authorisation, TLS-reset on the direct path) fall through a
-	// `buy.itunes.apple.com` suffix. Emitted as its own rule, never merged with
-	// the suffix rule above: sing-box ANDs matcher kinds inside a single rule.
-	if keywords := proxyDomainKeywords(directSources); len(keywords) > 0 {
-		dnsRules = append(dnsRules, DNSRule{
-			DomainKeyword: keywords,
-			Server:        "dns-fake",
-		})
-	}
-	// Custom direct domains resolve to real IPs too (see note above) so they
-	// route via geoip-cn / explicit ip_cidr rules instead of dying on fake-ip.
-	if suffixes := directDomainSuffixes(directSources); len(suffixes) > 0 {
-		dnsRules = append(dnsRules, DNSRule{
-			DomainSuffix: suffixes,
-			Server:       "dns-direct",
-		})
-	}
-	// Known-Chinese domains resolve for real, whatever their TLD. The suffix and
-	// allowlist rules above only catch .cn and hand-curated names, so domestic
-	// sites on .com (baidu, bilibili, xiaohongshu, aliyun, …) used to fall
-	// through to fakeip and get routed abroad — 13× slower and burning the
-	// cross-border tunnel, and for sites that geo-police their traffic (the
-	// jd.com risk_handler incident) outright broken. geoip-cn cannot save them:
-	// by the time routing sees a fake IP the real one was never looked up. This
-	// has to be decided at the DNS layer, which is what geosite-cn is for.
-	//
-	// Skipped entirely when the rule-set isn't on disk, so a failed prefetch
-	// degrades to the previous suffix+allowlist behaviour rather than a config
-	// sing-box rejects at startup.
-	geositeCN := geositeCNPath()
-	if geositeCN != "" {
-		dnsRules = append(dnsRules, DNSRule{
-			RuleSet: []string{"geosite-cn"},
-			Server:  "dns-direct",
-		})
-	}
-	// Everything else: synthesise a fake IP. The connection itself decides the
-	// outbound, not the DNS answer, so a poisoned/blocked upstream can no
-	// longer prevent foreign sites from loading.
-	dnsRules = append(dnsRules, DNSRule{
-		QueryType: []string{"A", "AAAA"},
-		Server:    "dns-fake",
-	})
+	dnsServers := buildDNSServers(bestDNS)
+	dnsRules, geositeCN := buildDNSRules(outbound, directSources)
 
-	// Base rules that must always come first: sniff, hijack-dns, reject.
-	// These are infrastructure; without sniff first, no later domain rule
-	// can see the SNI of an encrypted connection.
-	//
-	// DNS queries to our direct resolvers must bypass hijack-dns so that
-	// mole's own CLI commands (status, etc.) can resolve foreign domains
-	// without getting fake-IP (198.18.x.x) answers from the TUN DNS.
-	// Outbounds are built up here rather than at the struct literal because two
-	// things below need to know whether a REALITY leg actually materialized: a
-	// route rule naming an outbound that does not exist is a config sing-box
-	// refuses to start on, and the Brutal keeper's forwarder is pointless
-	// without the leg it paces.
 	proxyOutbounds, hy2GateTarget := buildProxyOutbounds(serverURI, standbyURI, outbound)
-	hasReality := false
-	for _, o := range proxyOutbounds {
-		if o.Tag == core.RealityLegTag {
-			hasReality = true
-			break
-		}
-	}
+	hasReality := hasRealityLeg(proxyOutbounds)
 
-	inbounds := []InboundConfig{
-		{
-			Type:        "tun",
-			Tag:         "tun-in",
-			Address:     []string{"172.19.0.1/28"},
-			MTU:         1500,
-			AutoRoute:   true,
-			StrictRoute: true,
-			Stack:       "gvisor",
-		},
-		{
-			Type:       "direct",
-			Tag:        "dns-in",
-			Listen:     "172.19.0.1",
-			ListenPort: 53,
-		},
-	}
-	hasRateLeg := false
-	if hasReality {
-		// A fixed forwarder onto the node's loopback Brutal keeper. Same port
-		// both ends, so the address reads the same on either side of the leg.
-		inbounds = append(inbounds, InboundConfig{
-			Type:            "direct",
-			Tag:             core.BrutalInboundTag,
-			Listen:          "127.0.0.1",
-			ListenPort:      core.BrutalKeeperPort,
-			OverrideAddress: "127.0.0.1",
-			OverridePort:    core.BrutalKeeperPort,
-		})
-		// A second channel to the same keeper, carried by the same REALITY leg
-		// but WITHOUT multiplex: the rate push must not be able to become the
-		// mux pool's first session. TCP Brutal only classifies sockets created
-		// after the rule exists, so a pool session dialled before the first
-		// successful push stays on bbr for its whole life. See core.BrutalRatePort.
-		if rateLeg, err := parseServerURL(standbyURI); err == nil && rateLeg.Type == "vless" {
-			rateLeg.Tag = core.RealityRateLegTag
-			rateLeg.Multiplex = nil
-			proxyOutbounds = append(proxyOutbounds, *rateLeg)
-			hasRateLeg = true
-			inbounds = append(inbounds, InboundConfig{
-				Type:            "direct",
-				Tag:             core.BrutalRateInboundTag,
-				Listen:          "127.0.0.1",
-				ListenPort:      core.BrutalRatePort,
-				OverrideAddress: "127.0.0.1",
-				OverridePort:    core.BrutalKeeperPort,
-			})
-		}
-		// The same destination over the other leg. Its whole purpose is to be
-		// identical to the forwarder above in every respect but the leg it is
-		// routed over, so the failover gate can time the two and have the
-		// difference mean the transport. See core.LegGatePort.
-		if hy2GateTarget != "" {
-			inbounds = append(inbounds, InboundConfig{
-				Type:            "direct",
-				Tag:             core.LegGateInboundTag,
-				Listen:          "127.0.0.1",
-				ListenPort:      core.LegGatePort,
-				OverrideAddress: "127.0.0.1",
-				OverridePort:    core.BrutalKeeperPort,
-			})
-			for _, target := range core.LegEgressTargets() {
-				for _, probe := range []struct {
-					tag  string
-					port int
-				}{
-					{target.RealityTag, target.RealityPort}, {target.Hy2Tag, target.Hy2Port},
-				} {
-					inbounds = append(inbounds, InboundConfig{
-						Type: "direct", Tag: probe.tag, Listen: "127.0.0.1", ListenPort: probe.port,
-						OverrideAddress: target.Host, OverridePort: 443,
-					})
-				}
-			}
-		}
-	}
+	inbounds, proxyOutbounds, hasRateLeg := buildInbounds(hasReality, hy2GateTarget, standbyURI, proxyOutbounds)
 
-	baseRules := []RouteRule{
-		{Action: "sniff"},
-		{Protocol: "dns", IPCIDR: []string{"223.5.5.5/32", "1.1.1.1/32"}, Outbound: "direct"},
-		{Protocol: "dns", Action: "hijack-dns"},
-		{Protocol: "quic", Action: "reject"},
-	}
-	// The Brutal keeper's channel, when there is a REALITY leg to pace. It has
-	// to sit here, ahead of the systemRules below, because those send
-	// 127.0.0.0/8 straight out `direct` — and the whole point of this one is
-	// that a loopback address gets resolved on the far side of the leg.
-	if hasReality {
-		// Before the multiplexed channel, so the non-mux rate dial is the one
-		// that gets a fresh socket rather than a pool session.
-		if hasRateLeg {
-			baseRules = append(baseRules, RouteRule{
-				Inbound:  []string{core.BrutalRateInboundTag},
-				Outbound: core.RealityRateLegTag,
-			})
-		}
-		baseRules = append(baseRules, RouteRule{
-			Inbound:  []string{core.BrutalInboundTag},
-			Outbound: core.RealityLegTag,
-		})
-		// Pinned to a ladder member rather than to `proxy`, for the same reason
-		// the one above is pinned to the REALITY member: a gate that measured
-		// whichever leg the selector happens to be on would be timing the leg
-		// it is trying to decide about.
-		if hy2GateTarget != "" {
-			baseRules = append(baseRules, RouteRule{
-				Inbound:  []string{core.LegGateInboundTag},
-				Outbound: hy2GateTarget,
-			})
-			for _, target := range core.LegEgressTargets() {
-				baseRules = append(baseRules,
-					RouteRule{Inbound: []string{target.RealityTag}, Outbound: core.RealityLegTag},
-					RouteRule{Inbound: []string{target.Hy2Tag}, Outbound: hy2GateTarget},
-				)
-			}
-		}
-	}
+	baseRules := buildBaseRules(hasReality, hasRateLeg, hy2GateTarget)
+	systemRules := buildSystemRules(outbound, standbyURI)
 
-	// System rules: private IPs, DNS resolvers, geoip-cn, catch-all.
-	// (Curated domestic-service direct rules like Sunlogin/向日葵 live in
-	// builtin-rules.json, not here — see loadBuiltinRules.)
-	systemRules := []RouteRule{
-		// Keep the public DNS resolvers reachable directly so DNS resolution
-		// itself never depends on the VPS being up.
-		{IPCIDR: []string{"1.1.1.1/32", "223.5.5.5/32"}, Outbound: "direct"},
-		{IPCIDR: []string{"192.168.0.0/16", "127.0.0.0/8"}, Outbound: "direct"},
-		// Cloud-provider internal ranges. Never send these out the physical
-		// NIC — they're not reachable from a home connection and a stale DNS
-		// resolution from Vultr/AWS/GCP internal services would otherwise hang
-		// for 5s per connection and poison mole's fresh-dial counters. Route
-		// through block so sing-box refuses them immediately.
-		{IPCIDR: []string{"10.0.0.0/8", "172.16.0.0/12", "169.254.0.0/16"}, Outbound: "block"},
-		// SSH/scp/rsync to the VPS itself must NOT route through the tunnel —
-		// that would put three layers of TCP (SSH → REALITY → sing-box server
-		// → localhost sshd) on every byte and cut upload throughput in half.
-		// The VPS Server field is already the IP we dial; if it's a hostname
-		// (DNS resolution) we still keep it as a DNS rule above, but the IP
-		// form here is what actually bypasses proxy routing.
-	}
-	if ip := net.ParseIP(outbound.Server); ip != nil {
-		systemRules = append(systemRules, RouteRule{
-			IPCIDR:   []string{ip.String() + "/32"},
-			Outbound: "direct",
-		})
-	}
-	// Also include the standby VPS IP if different (same host in practice, but
-	// harmless when equal and correct when they diverge).
-	if standbyURI != "" {
-		if sb, err := parseServerURL(standbyURI); err == nil && sb.Server != outbound.Server {
-			if ip := net.ParseIP(sb.Server); ip != nil {
-				systemRules = append(systemRules, RouteRule{
-					IPCIDR:   []string{ip.String() + "/32"},
-					Outbound: "direct",
-				})
-			}
-		}
-	}
-	// Remaining system rules...
-	systemRules = append(systemRules,
-		RouteRule{IPCIDR: []string{"198.18.0.0/15"}, Outbound: "proxy"},
-		RouteRule{RuleSet: []string{"geoip-cn"}, Outbound: "direct"},
-		RouteRule{IPCIDR: []string{"0.0.0.0/0"}, Outbound: "proxy"},
-	)
-
-	// Load custom rules from ~/.mole/custom-rules.json if exists.
-	// Custom rules sit between base rules (sniff etc.) and system rules
-	// so they can use the sniffed domain while still respecting FakeIP
-	// and geoip-cn fallbacks.
-	//
-	// 域名规则改走 local rule-set（2026-08-04，见 hotrules.go）：纯「一组域名 → 一个出站」
-	// 的规则落到 ~/.mole/rule-sets/*.json，sing-box 监听这些文件、改完即时生效，
-	// 于是加一个域名不再需要 `mole down && mole up`（那条路会拆 TUN、卸 kill switch、
-	// 断掉所有在途连接）。表达不了的规则（ip_cidr/protocol/action/invert）仍原样内联。
+	// Hot rule-set materialization — domain rules split into local rule-sets
+	// for live-reload; inline rules + hotRefs + systemRules form the route chain.
 	domainRules := append(append([]RouteRule{}, builtinRules...), customRules...)
 	hotByOutbound, hotOrder, inlineRules := SplitHotRules(domainRules)
 	if err := DetectHotRuleConflicts(hotByOutbound); err != nil {
@@ -386,7 +77,7 @@ func BuildWithStandby(serverURI, standbyURI string) (*SingboxConfig, error) {
 	}
 	hotDecls, hotRefs := HotRuleSetRefs(hotOrder)
 
-	var routeRules []RouteRule
+	routeRules := []RouteRule{}
 	routeRules = append(routeRules, baseRules...)
 	routeRules = append(routeRules, inlineRules...)
 	routeRules = append(routeRules, hotRefs...)
@@ -396,29 +87,7 @@ func BuildWithStandby(serverURI, standbyURI string) (*SingboxConfig, error) {
 		routeRules = flowRoutes(routeRules)
 	}
 
-	// Rule-sets are referenced from local files only — never fetched by sing-box
-	// itself, which would put a download on the cold-start critical path.
-	// utils.EnsureRuleSets prefetches them at `mole up`.
-	ruleSets := []RuleSet{
-		{
-			Type:   "local",
-			Tag:    "geoip-cn",
-			Format: "binary",
-			Path:   filepath.Join(utils.MoleDir(), "geoip-cn.srs"),
-		},
-	}
-	// Declared only when the file exists, matching the DNS rule above: sing-box
-	// FATALs on a rule-set whose path is missing, so an absent geosite-cn must
-	// leave no trace in the config at all rather than half of one.
-	if geositeCN != "" {
-		ruleSets = append(ruleSets, RuleSet{
-			Type:   "local",
-			Tag:    "geosite-cn",
-			Format: "binary",
-			Path:   geositeCN,
-		})
-	}
-	ruleSets = append(ruleSets, hotDecls...)
+	ruleSets := buildRuleSets(geositeCN, hotDecls)
 
 	return &SingboxConfig{
 		Log:       LogConfig{Level: "warn"},
@@ -439,6 +108,226 @@ func BuildWithStandby(serverURI, standbyURI string) (*SingboxConfig, error) {
 			CacheFile: &CacheFileConfig{Enabled: true, Path: filepath.Join(utils.MoleDir(), "sing-box-cache.db"), StoreFakeIP: true},
 		},
 	}, nil
+}
+
+// hasRealityLeg reports whether a proxy outbound list carries the REALITY leg.
+func hasRealityLeg(outbounds []OutboundConfig) bool {
+	for _, o := range outbounds {
+		if o.Tag == core.RealityLegTag {
+			return true
+		}
+	}
+	return false
+}
+
+// buildDNSServers returns the three base DNS servers (direct, remote, fake).
+func buildDNSServers(bestDNS string) []DNSServer {
+	return []DNSServer{
+		{Type: "udp", Server: bestDNS, Tag: "dns-direct"},
+		{Type: "tls", Server: "1.1.1.1", Tag: "dns-remote", Detour: "proxy"},
+		{Type: "fakeip", Tag: "dns-fake", Inet4Range: "198.18.0.0/15"},
+	}
+}
+
+// buildDNSRules assembles every DNS rule: VPS hostname pin, HTTPS/SVCB reject,
+// RFC 6303 local-zone reject, public PTR direct, CN TLDs, proxy-exception
+// fake-ip overrides, custom direct-domain real-IP, geosite-cn (when on disk),
+// and the catch-all fake-ip for A/AAAA. Returns the geosite-cn path so the
+// caller can also guard the route rule-set declaration.
+func buildDNSRules(outbound *OutboundConfig, directSources []RouteRule) ([]DNSRule, string) {
+	rules := []DNSRule{}
+	if outbound.Server != "" && net.ParseIP(outbound.Server) == nil {
+		rules = append(rules, DNSRule{
+			Domain: []string{outbound.Server},
+			Server: "dns-direct",
+		})
+	}
+	rules = append(rules, DNSRule{
+		QueryType: []string{"HTTPS", "SVCB"},
+		Action:    "reject",
+	})
+	rules = append(rules, DNSRule{
+		DomainSuffix: localReverseZones(),
+		Action:       "reject",
+	})
+	rules = append(rules, DNSRule{
+		DomainSuffix: []string{".in-addr.arpa", ".ip6.arpa"},
+		Server:       "dns-direct",
+	})
+	rules = append(rules, DNSRule{
+		DomainSuffix: []string{".cn", ".com.cn", ".net.cn", ".org.cn", ".gov.cn", ".edu.cn", ".mil.cn", ".中国"},
+		Server:       "dns-direct",
+	})
+	if suffixes := proxyDomainSuffixes(directSources); len(suffixes) > 0 {
+		rules = append(rules, DNSRule{DomainSuffix: suffixes, Server: "dns-fake"})
+	}
+	if keywords := proxyDomainKeywords(directSources); len(keywords) > 0 {
+		rules = append(rules, DNSRule{DomainKeyword: keywords, Server: "dns-fake"})
+	}
+	if suffixes := directDomainSuffixes(directSources); len(suffixes) > 0 {
+		rules = append(rules, DNSRule{DomainSuffix: suffixes, Server: "dns-direct"})
+	}
+	geositeCN := geositeCNPath()
+	if geositeCN != "" {
+		rules = append(rules, DNSRule{RuleSet: []string{"geosite-cn"}, Server: "dns-direct"})
+	}
+	rules = append(rules, DNSRule{QueryType: []string{"A", "AAAA"}, Server: "dns-fake"})
+	return rules, geositeCN
+}
+
+// buildInbounds constructs TUN + DNS inbound + Brutal keeper forwarders.
+// When a REALITY leg exists it appends the brutal keeper forwarder, and when
+// the standby is a usable vless:// it also appends a non-mux rate-push leg.
+// The rate leg is also appended to proxyOutbounds (returned).
+// Returns the inbounds slice, the possibly-extended proxyOutbounds, and
+// whether the rate leg materialized.
+func buildInbounds(hasReality bool, hy2GateTarget, standbyURI string, proxyOutbounds []OutboundConfig) ([]InboundConfig, []OutboundConfig, bool) {
+	inbounds := []InboundConfig{
+		{
+			Type:        "tun",
+			Tag:         "tun-in",
+			Address:     []string{"172.19.0.1/28"},
+			MTU:         1500,
+			AutoRoute:   true,
+			StrictRoute: true,
+			Stack:       "gvisor",
+		},
+		{
+			Type:       "direct",
+			Tag:        "dns-in",
+			Listen:     "172.19.0.1",
+			ListenPort: 53,
+		},
+	}
+	if !hasReality {
+		return inbounds, proxyOutbounds, false
+	}
+	// Multiplexed brutal keeper forwarder onto node loopback.
+	inbounds = append(inbounds, InboundConfig{
+		Type:            "direct",
+		Tag:             core.BrutalInboundTag,
+		Listen:          "127.0.0.1",
+		ListenPort:      core.BrutalKeeperPort,
+		OverrideAddress: "127.0.0.1",
+		OverridePort:    core.BrutalKeeperPort,
+	})
+	hasRateLeg := false
+	if rateLeg, err := parseServerURL(standbyURI); err == nil && rateLeg.Type == "vless" {
+		rateLeg.Tag = core.RealityRateLegTag
+		rateLeg.Multiplex = nil
+		proxyOutbounds = append(proxyOutbounds, *rateLeg)
+		hasRateLeg = true
+		inbounds = append(inbounds, InboundConfig{
+			Type:            "direct",
+			Tag:             core.BrutalRateInboundTag,
+			Listen:          "127.0.0.1",
+			ListenPort:      core.BrutalRatePort,
+			OverrideAddress: "127.0.0.1",
+			OverridePort:    core.BrutalKeeperPort,
+		})
+	}
+	if hy2GateTarget != "" {
+		inbounds = append(inbounds, InboundConfig{
+			Type:            "direct",
+			Tag:             core.LegGateInboundTag,
+			Listen:          "127.0.0.1",
+			ListenPort:      core.LegGatePort,
+			OverrideAddress: "127.0.0.1",
+			OverridePort:    core.BrutalKeeperPort,
+		})
+		for _, target := range core.LegEgressTargets() {
+			for _, probe := range []struct{ tag string; port int }{
+				{target.RealityTag, target.RealityPort}, {target.Hy2Tag, target.Hy2Port},
+			} {
+				inbounds = append(inbounds, InboundConfig{
+					Type: "direct", Tag: probe.tag, Listen: "127.0.0.1", ListenPort: probe.port,
+					OverrideAddress: target.Host, OverridePort: 443,
+				})
+			}
+		}
+	}
+	return inbounds, proxyOutbounds, hasRateLeg
+}
+
+// buildBaseRules returns the leading infrastructure routes — sniff, DNS hijack,
+// QUIC reject — plus the brutal keeper forwarder routing when a REALITY leg exists.
+// The rate-leg rule sits before the mux channel so the non-mux dial is the one
+// that gets a fresh socket.
+func buildBaseRules(hasReality, hasRateLeg bool, hy2GateTarget string) []RouteRule {
+	rules := []RouteRule{
+		{Action: "sniff"},
+		{Protocol: "dns", IPCIDR: []string{"223.5.5.5/32", "1.1.1.1/32"}, Outbound: "direct"},
+		{Protocol: "dns", Action: "hijack-dns"},
+		{Protocol: "quic", Action: "reject"},
+	}
+	if !hasReality {
+		return rules
+	}
+	if hasRateLeg {
+		rules = append(rules, RouteRule{
+			Inbound:  []string{core.BrutalRateInboundTag},
+			Outbound: core.RealityRateLegTag,
+		})
+	}
+	rules = append(rules, RouteRule{
+		Inbound:  []string{core.BrutalInboundTag},
+		Outbound: core.RealityLegTag,
+	})
+	if hy2GateTarget != "" {
+		rules = append(rules, RouteRule{
+			Inbound:  []string{core.LegGateInboundTag},
+			Outbound: hy2GateTarget,
+		})
+		for _, target := range core.LegEgressTargets() {
+			rules = append(rules,
+				RouteRule{Inbound: []string{target.RealityTag}, Outbound: core.RealityLegTag},
+				RouteRule{Inbound: []string{target.Hy2Tag}, Outbound: hy2GateTarget},
+			)
+		}
+	}
+	return rules
+}
+
+// buildSystemRules appends VPS-IP direct bypass, catch-all private IPs,
+// geoip-cn direct, and the final proxy rule.
+func buildSystemRules(outbound *OutboundConfig, standbyURI string) []RouteRule {
+	rules := []RouteRule{
+		{IPCIDR: []string{"1.1.1.1/32", "223.5.5.5/32"}, Outbound: "direct"},
+		{IPCIDR: []string{"192.168.0.0/16", "127.0.0.0/8"}, Outbound: "direct"},
+		{IPCIDR: []string{"10.0.0.0/8", "172.16.0.0/12", "169.254.0.0/16"}, Outbound: "block"},
+	}
+	if ip := net.ParseIP(outbound.Server); ip != nil {
+		rules = append(rules, RouteRule{IPCIDR: []string{ip.String() + "/32"}, Outbound: "direct"})
+	}
+	if standbyURI != "" {
+		if sb, err := parseServerURL(standbyURI); err == nil && sb.Server != outbound.Server {
+			if ip := net.ParseIP(sb.Server); ip != nil {
+				rules = append(rules, RouteRule{IPCIDR: []string{ip.String() + "/32"}, Outbound: "direct"})
+			}
+		}
+	}
+	rules = append(rules,
+		RouteRule{IPCIDR: []string{"198.18.0.0/15"}, Outbound: "proxy"},
+		RouteRule{RuleSet: []string{"geoip-cn"}, Outbound: "direct"},
+		RouteRule{IPCIDR: []string{"0.0.0.0/0"}, Outbound: "proxy"},
+	)
+	return rules
+}
+
+// buildRuleSets returns the local rule-set declarations: always geoip-cn,
+// conditionally geosite-cn (only when its file exists), and all hotrule declarations.
+func buildRuleSets(geositeCN string, hotDecls []RuleSet) []RuleSet {
+	sets := []RuleSet{{
+		Type:   "local",
+		Tag:    "geoip-cn",
+		Format: "binary",
+		Path:   filepath.Join(utils.MoleDir(), "geoip-cn.srs"),
+	}}
+	if geositeCN != "" {
+		sets = append(sets, RuleSet{Type: "local", Tag: "geosite-cn", Format: "binary", Path: geositeCN})
+	}
+	sets = append(sets, hotDecls...)
+	return sets
 }
 
 // Save writes a sing-box config to disk.
