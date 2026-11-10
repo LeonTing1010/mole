@@ -85,14 +85,6 @@ func LegProbe(port, timeoutMs int) (time.Duration, error) {
 	return time.Since(start), err
 }
 
-// BrutalRateURL is the request that sets the rate the node paces its TCP
-// toward this client at. Fetched whenever the resting rung changes, so
-// `mole ceiling` governs both legs. It uses BrutalRatePort, not the
-// multiplexed forwarder, for the cold-start ordering described there.
-func BrutalRateURL(mbps int) string {
-	return fmt.Sprintf("http://127.0.0.1:%d/rate?mbps=%d", BrutalRatePort, mbps)
-}
-
 // BrutalResult is what the keeper says it did. Applied is the number of peer
 // addresses it actually installed a pacing rule for; zero means the rate was
 // received and NOT applied, which is a different failure from not being heard
@@ -105,36 +97,6 @@ type BrutalResult struct {
 	Detail    string
 }
 
-// PushBrutalRate sets the node's pacing rate and reads back what it did.
-//
-// Reading the reply is the whole point. Until 2026-09-09 this went out as a
-// Clash delay probe against the same URL, on the assumption that the probe
-// fetches what it is handed. It does not: sing-box 1.13's /proxies/{n}/delay
-// ignores the `url` query entirely and times its own default target, so it
-// answers with a plausible delay for a URL it never dialled — proven by
-// pointing it at a listener on the LAN, which recorded no connection at all
-// while the API returned {"delay":180}. So the rate never left this machine,
-// `brutal: node paces TCP toward this client at ↓100 Mbps` was true of
-// nothing, and REALITY ran unpaced: measured the same minute, alternating,
-// 0.15–0.48 Mbps against the hy2 ladder's 38–65.
-//
-// The lesson generalises past this one call: a success signal that cannot
-// distinguish "it worked" from "nothing happened" is not a success signal.
-func PushBrutalRate(mbps, timeoutMs int) (BrutalResult, error) {
-	return pushBrutalRate(mbps, 0, timeoutMs)
-}
-
-// PushBrutalRateWithGain pushes rate AND cwnd_gain together via a single keeper call.
-// gain=0 skips the gain parameter (keeper uses its built-in default).
-func PushBrutalRateWithGain(mbps, gain, timeoutMs int) (BrutalResult, error) {
-	return pushBrutalRate(mbps, gain, timeoutMs)
-}
-
-// pushBrutalRate is the internal implementation. gain=0 → no &gain= query param.
-func pushBrutalRate(mbps, gain, timeoutMs int) (BrutalResult, error) {
-	return brutalGET(brutalRateURL(mbps, gain), timeoutMs)
-}
-
 // PushBrutalRateVia is PushBrutalRate through an arbitrary local forwarder.
 // The startup pre-flight uses it because the production forwarder does not
 // exist yet: its whole job is to install the rule before the first engine
@@ -143,19 +105,11 @@ func PushBrutalRateVia(port, mbps, timeoutMs int) (BrutalResult, error) {
 	return PushBrutalRateViaWithGain(port, mbps, 0, timeoutMs)
 }
 
-// PushBrutalRateViaWithGain is PushBrutalRateVia with an optional cwnd_gain.
+// PushBrutalRateViaWithGain pushes rate AND cwnd_gain together via a single
+// keeper call through an arbitrary local forwarder. gain=0 skips the gain
+// parameter (keeper uses its built-in default).
 func PushBrutalRateViaWithGain(port, mbps, gain, timeoutMs int) (BrutalResult, error) {
 	return brutalGET(brutalRateURLAt(port, mbps, gain), timeoutMs)
-}
-
-// brutalRateURL builds the /rate URL for the default keeper port.
-func brutalRateURL(mbps, gain int) string {
-	return brutalRateURLAt(BrutalKeeperPort, mbps, gain)
-}
-
-// BrutalRateURLAt names the keeper on a specific local forwarder port.
-func BrutalRateURLAt(port, mbps int) string {
-	return brutalRateURLAt(port, mbps, 0)
 }
 
 // brutalRateURLAt builds the /rate URL with optional gain. gain=0 omits the param.

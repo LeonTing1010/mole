@@ -102,9 +102,22 @@ func TestUnreachableKeeperIsAnError(t *testing.T) {
 // The rate URL names the client's own loopback because the forwarder is what
 // carries it: a destination of 127.0.0.1 is written on the node's side of the
 // leg, which is the only place it means anything.
-func TestBrutalRateURLPointsAtTheForwarder(t *testing.T) {
-	if got := BrutalRateURL(65); got != "http://127.0.0.1:8097/rate?mbps=65" {
-		t.Errorf("rate url = %q", got)
+func TestBrutalRateURLAt(t *testing.T) {
+	got := brutalRateURLAt(BrutalRatePort, 65, 0)
+	want := "http://127.0.0.1:8097/rate?mbps=65"
+	if got != want {
+		t.Errorf("rate url = %q, want %q", got, want)
+	}
+	// gain > 0 appends &gain=N
+	got = brutalRateURLAt(BrutalRatePort, 65, 20)
+	want = "http://127.0.0.1:8097/rate?mbps=65&gain=20"
+	if got != want {
+		t.Errorf("rate+gain url = %q, want %q", got, want)
+	}
+	// gain=0 omits the param (keeper uses its built-in default)
+	got = brutalRateURLAt(BrutalRatePort, 65, 0)
+	if strings.Contains(got, "gain=") {
+		t.Errorf("gain=0 should omit param, got %q", got)
 	}
 }
 

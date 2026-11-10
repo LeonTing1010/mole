@@ -1631,7 +1631,7 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 		}
 		if s.hasReality && tcpRate > 0 && (tcpRate != pushedRate || time.Since(pushedAt) > 10*time.Minute) {
 			pacingChanged = true
-			res, err := pushBrutalRate(tcpRate, s.brutalGain, s.probeTimeMs)
+			res, err := PushBrutalRateViaWithGain(BrutalKeeperPort, tcpRate, s.brutalGain, s.probeTimeMs)
 			switch {
 			case err != nil:
 				unconfirmed++
