@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -28,6 +29,7 @@ var noKillSwitch bool
 var noDestroyOnLidClose bool
 var lidCloseDryRun bool
 var lidGrace time.Duration
+var tuneOnStart bool
 
 // maskURI replaces the user:password portion of a URI with "***" for logging.
 func maskURI(s string) string {
@@ -62,6 +64,7 @@ func init() {
 	// process that needs it. Arguments survive the re-exec, and Daemonize
 	// forwards them again to the detached child.
 	upCmd.Flags().BoolVar(&lidCloseDryRun, "lid-close-dry-run", false, "watch for a lid close and log it without destroying anything (needs no Vultr key)")
+	upCmd.Flags().BoolVar(&tuneOnStart, "tune-on-start", false, "auto-scan Brutal cwnd_gain after tunnel up and pin the best value (only runs when brutal_gain is still 0, i.e. a fresh node)")
 }
 
 func runUp(_ *cobra.Command, _ []string) error {
@@ -405,6 +408,43 @@ func runDaemon() error {
 	go func() {
 		runErr <- sup.Run(ctx)
 	}()
+
+	// Optional: auto-tune Brutal cwnd_gain on fresh nodes.
+	// Only runs when --tune-on-start is set AND the node has no recorded gain
+	// (brutal_gain == 0). Best-effort — any failure (keeper still building,
+	// tunnel not ready) is silently ignored so it never blocks startup.
+	if tuneOnStart && srv.BrutalGain == 0 {
+		go func() {
+			kurl := fmt.Sprintf("http://127.0.0.1:%d", core.BrutalKeeperPort)
+			deadline := time.Now().Add(30 * time.Second)
+			for time.Now().Before(deadline) {
+				resp, err := http.Get(kurl + "/health")
+				if err == nil {
+					resp.Body.Close()
+					break
+				}
+				time.Sleep(500 * time.Millisecond)
+			}
+			bestGain, bestMbps, _, err := scanAndPickGain(kurl)
+			if err != nil {
+				log.Printf("auto-tune skipped: %v", err)
+				return
+			}
+			if err := changeServer(srv.InstanceID, srv.Name, func(s *Server) {
+				s.BrutalGain = bestGain
+			}); err != nil {
+				log.Printf("auto-tune: write servers.json failed: %v", err)
+				return
+			}
+			// Apply live — supervisor will re-push within 10 min anyway, but
+			// applying now is what makes the new gain effective immediately.
+			resp, _ := http.Get(fmt.Sprintf("%s/gain?g=%d", kurl, bestGain))
+			if resp != nil {
+				resp.Body.Close()
+			}
+			log.Printf("auto-tune: Brutal gain=%d (%.1f Mbps) written to servers.json and keeper", bestGain, bestMbps)
+		}()
+	}
 
 	select {
 	case sig := <-sigChan:
