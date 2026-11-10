@@ -1,0 +1,33 @@
+{
+  "scope": "isolated auto_route:false full TUN; interface-scoped default only; en0 transport; same node REALITY+smux; 1/8 equal flows, bounded owned-node download; production daemon remains active",
+  "started_at": "2026-11-03T08:57:53.983351+08:00",
+  "phases": [],
+  "checks": {
+    "mixed": {
+      "config_valid": true,
+      "check_error": "",
+      "warm_payload": {
+        "ok": false,
+        "status": 0,
+        "bytes": 0,
+        "wanted": 1024,
+        "seconds": 0.002761,
+        "error": "curl: (52) Empty reply from server\n"
+      },
+      "warm_retry": {
+        "ok": false,
+        "status": 0,
+        "bytes": 0,
+        "wanted": 1024,
+        "seconds": 0.002951,
+        "error": "curl: (52) Empty reply from server\n"
+      },
+      "log_tail": "\u001b[36mINFO\u001b[0m[0000] inbound/tun[bench-tun]: started at utun30\n\u001b[36mINFO\u001b[0m[0000] inbound/direct[bench-dns]: tcp server started at 127.0.0.1:65306\n\u001b[36mINFO\u001b[0m[0000] inbound/direct[bench-dns]: udp server started at 127.0.0.1:65306\n\u001b[36mINFO\u001b[0m[0000] network: updated default interface en0, index 14\n\u001b[36mINFO\u001b[0m[0000] network: updated network environment: gateway [192.168.1.1 fe80::1], gateway_mac [<local-mac> <local-mac>]\n\u001b[36mINFO\u001b[0m[0000] sing-box started (0.01s)\n\u001b[36mINFO\u001b[0m[0001] [\u001b[38;5;201m3162300089\u001b[0m 0ms] inbound/direct[bench-dns]: inbound packet connection from 127.0.0.1:60475\n\u001b[36mINFO\u001b[0m[0001] [\u001b[38;5;201m3162300089\u001b[0m 0ms] inbound/direct[bench-dns]: inbound packet connection to 127.0.0.1:65306\n\u001b[37mDEBUG\u001b[0m[0001] [\u001b[38;5;201m3162300089\u001b[0m 0ms] router: match[0] => sniff\n\u001b[37mDEBUG\u001b[0m[0001] [\u001b[38;5;201m3162300089\u001b[0m 0ms] router: sniffed packet protocol: dns\n\u001b[37mDEBUG\u001b[0m[0001] [\u001b[38;5;201m3162300089\u001b[0m 0ms] router: match[1] inbound=bench-dns => hijack-dns\n\u001b[37mDEBUG\u001b[0m[0001] [\u001b[38;5;201m3162300089\u001b[0m 0ms] dns: exchange localhost. IN A\n\u001b[37mDEBUG\u001b[0m[0001] [\u001b[38;5;201m3162300089\u001b[0m 0ms] dns: match[0] query_type=A => route(fake)\n\u001b[37mDEBUG\u001b[0m[0001] [\u001b[38;5;201m3162300089\u001b[0m 0ms] dns: exchanged localhost NOERROR 600\n\u001b[36mINFO\u001b[0m[0001] [\u001b[38;5;201m3162300089\u001b[0m 0ms] dns: exchanged A localhost. 600 IN A 198.18.0.2\n\u001b[37mDEBUG\u001b[0m[0001] [\u001b[38;5;224m437422558\u001b[0m 0ms] router: found fakeip domain: localhost\n\u001b[37mDEBUG\u001b[0m[0001] [\u001b[38;5;224m437422558\u001b[0m 0ms] router: pre-match[0] => sniff\n\u001b[36mINFO\u001b[0m[0001] [\u001b[38;5;35m174525971\u001b[0m 0ms] inbound/tun[bench-tun]: inbound connection from 172.31.250.1:65308\n\u001b[36mINFO\u001b[0m[0001] [\u001b[38;5;35m174525971\u001b[0m 0ms] inbound/tun[bench-tun]: inbound connection to 198.18.0.2:8098\n\u001b[37mDEBUG\u001b[0m[0001] [\u001b[38;5;35m174525971\u001b[0m 0ms] router: found fakeip domain: localhost\n\u001b[37mDEBUG\u001b[0m[0001] [\u001b[38;5;35m174525971\u001b[0m 0ms] router: match[0] => sniff\n\u001b[36mINFO\u001b[0m[0001] [\u001b[38;5;35m174525971\u001b[0m 0ms] outbound/vless[tested]: outbound multiplex connection to localhost:8098\n\u001b[36mINFO\u001b[0m[0001] [\u001b[38;5;35m174525971\u001b[0m 227ms] outbound/vless[tested]: outbound connection to sp.mux.sing-box.arpa:444\n\u001b[37mDEBUG\u001b[0m[0002] [\u001b[38;5;222m2608553166\u001b[0m 0ms] router: found fakeip domain: localhost\n\u001b[37mDEBUG\u001b[0m[0002] [\u001b[38;5;222m2608553166\u001b[0m 0ms] router: pre-match[0] => sniff\n\u001b[36mINFO\u001b[0m[0002] [\u001b[38;5;189m3822273578\u001b[0m 0ms] inbound/tun[bench-tun]: inbound connection from 172.31.250.1:65313\n\u001b[36mINFO\u001b[0m[0002] [\u001b[38;5;189m3822273578\u001b[0m 0ms] inbound/tun[bench-tun]: inbound connection to 198.18.0.2:8098\n\u001b[37mDEBUG\u001b[0m[0002] [\u001b[38;5;189m3822273578\u001b[0m 0ms] router: found fakeip domain: localhost\n\u001b[37mDEBUG\u001b[0m[0002] [\u001b[38;5;189m3822273578\u001b[0m 0ms] router: match[0] => sniff\n\u001b[36mINFO\u001b[0m[0002] [\u001b[38;5;189m3822273578\u001b[0m 0ms] outbound/vless[tested]: outbound multiplex connection to localhost:8098\n"
+    }
+  },
+  "production_config_before": "6787c731e13e19eb58f5e70ef93b68aa1081be06c870b689875d4d336a1d1bf2",
+  "error": "full-TUN pilot failed twice after listener settle",
+  "production_config_after": "6787c731e13e19eb58f5e70ef93b68aa1081be06c870b689875d4d336a1d1bf2",
+  "test_interface_removed": true,
+  "finished_at": "2026-11-03T08:57:56.204219+08:00"
+}

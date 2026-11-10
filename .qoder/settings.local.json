@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la /Users/leo/Projects/mole && echo \"---\" && cat /Users/leo/Projects/mole/README.md 2>/dev/null | head -80)",
+      "Bash(git log --oneline -20 && echo \"--- files ---\" && find . -type f -not -path \"./.git/*\" -not -path \"./node_modules/*\" -not -path \"./target/*\" | head -100)",
+      "Bash(cat /Users/leo/Projects/mole/README.md 2>/dev/null | head -100)"
+    ]
+  }
+}

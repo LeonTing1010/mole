@@ -1,0 +1,483 @@
+{
+  "scope": "current production TUN, unbound app sockets to cached FakeIP, REALITY600 IPv4 smux8/1, exact 1GiB budget, TLS during load; production config/routes/DNS unchanged",
+  "started_at": "2026-11-03T10:31:23.744530+08:00",
+  "tls_under_load": [
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.281458
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.143194
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.249166
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.144721
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.234291
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.175626
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.289497
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.262323
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.319988
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.299571
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.432626
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.161579
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.327281
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.189722
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.323107
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.369526
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.35518
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.232888
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.411177
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.173105
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.383379
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.170559
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.260916
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.179007
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.344742
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.165071
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.248544
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.142728
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.261434
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.232004
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.251746
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.190758
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.278513
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.172485
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.236255
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.179747
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.623252
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.152356
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.254184
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.157247
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.230721
+    },
+    {
+      "host": "www.gstatic.com",
+      "ok": true,
+      "seconds": 0.153495
+    },
+    {
+      "host": "cloudflare.com",
+      "ok": true,
+      "seconds": 0.250855
+    }
+  ],
+  "observed_routes": [
+    {
+      "inbound": null,
+      "chains": [
+        "proxy-reality",
+        "proxy",
+        "flow-0"
+      ],
+      "rule": "route(flow-0)"
+    },
+    {
+      "inbound": null,
+      "chains": [
+        "proxy-reality",
+        "proxy",
+        "flow-1"
+      ],
+      "rule": "route(flow-1)"
+    },
+    {
+      "inbound": null,
+      "chains": [
+        "proxy-reality",
+        "proxy",
+        "flow-2"
+      ],
+      "rule": "route(flow-2)"
+    },
+    {
+      "inbound": null,
+      "chains": [
+        "proxy-reality",
+        "proxy",
+        "flow-3"
+      ],
+      "rule": "route(flow-3)"
+    },
+    {
+      "inbound": null,
+      "chains": [
+        "proxy-reality",
+        "proxy",
+        "flow-4"
+      ],
+      "rule": "route(flow-4)"
+    }
+  ],
+  "requests": [
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    },
+    {
+      "ok": true,
+      "bytes": 33554432,
+      "wanted": 33554432,
+      "error": ""
+    }
+  ],
+  "elapsed_s": 20.84525129199028,
+  "delivered_bytes": 1073741824,
+  "aggregate_mbps": 412.08112445737964,
+  "all_payloads_complete": true,
+  "all_tls_ok": true,
+  "config_unchanged": true,
+  "new_errors": {
+    "enobufs": 0,
+    "timeout": 0,
+    "missing_fakeip": 0
+  },
+  "state": {
+    "pid": 48600,
+    "singbox_pid": 48632,
+    "lid_destroy": "armed",
+    "reality_rate_mbps": 600,
+    "reality_pacing_state": "confirmed",
+    "keepalive_fails": null,
+    "last_keepalive_error": null
+  },
+  "finished_at": "2026-11-03T10:31:44.598022+08:00"
+}

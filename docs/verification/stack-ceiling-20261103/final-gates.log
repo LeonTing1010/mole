@@ -1,0 +1,12 @@
+go version go1.26.10 darwin/arm64
+?   	github.com/LeonTing1010/mole	[no test files]
+ok  	github.com/LeonTing1010/mole/cmd	13.475s
+ok  	github.com/LeonTing1010/mole/config	2.171s
+ok  	github.com/LeonTing1010/mole/core	59.404s
+ok  	github.com/LeonTing1010/mole/utils	2.724s
+......
+----------------------------------------------------------------------
+Ran 6 tests in 0.426s
+
+OK
+Verified binary: /tmp/mole-upgrade-ceiling-baseline-20261103/mole-final-verified

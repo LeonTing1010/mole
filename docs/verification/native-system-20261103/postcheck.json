@@ -1,0 +1,317 @@
+{
+  "started_at": "2026-11-03T09:29:35.166840+08:00",
+  "checks": [
+    {
+      "host": "cloudflare.com",
+      "trial": 1,
+      "status": 200,
+      "seconds": 0.229809,
+      "body_bytes": 232,
+      "ok": true,
+      "error": "",
+      "matches_authenticated_node_exit": true
+    },
+    {
+      "host": "www.gstatic.com",
+      "trial": 1,
+      "status": 204,
+      "seconds": 0.133908,
+      "body_bytes": 0,
+      "ok": true,
+      "error": ""
+    },
+    {
+      "host": "cloudflare.com",
+      "trial": 2,
+      "status": 200,
+      "seconds": 0.230888,
+      "body_bytes": 228,
+      "ok": true,
+      "error": "",
+      "matches_authenticated_node_exit": true
+    },
+    {
+      "host": "www.gstatic.com",
+      "trial": 2,
+      "status": 204,
+      "seconds": 0.133851,
+      "body_bytes": 0,
+      "ok": true,
+      "error": ""
+    },
+    {
+      "host": "cloudflare.com",
+      "trial": 3,
+      "status": 200,
+      "seconds": 0.227697,
+      "body_bytes": 228,
+      "ok": true,
+      "error": "",
+      "matches_authenticated_node_exit": true
+    },
+    {
+      "host": "www.gstatic.com",
+      "trial": 3,
+      "status": 204,
+      "seconds": 0.133746,
+      "body_bytes": 0,
+      "ok": true,
+      "error": ""
+    },
+    {
+      "host": "cloudflare.com",
+      "trial": 4,
+      "status": 200,
+      "seconds": 0.230746,
+      "body_bytes": 228,
+      "ok": true,
+      "error": "",
+      "matches_authenticated_node_exit": true
+    },
+    {
+      "host": "www.gstatic.com",
+      "trial": 4,
+      "status": 204,
+      "seconds": 0.134329,
+      "body_bytes": 0,
+      "ok": true,
+      "error": ""
+    },
+    {
+      "host": "cloudflare.com",
+      "trial": 5,
+      "status": 200,
+      "seconds": 0.229482,
+      "body_bytes": 228,
+      "ok": true,
+      "error": "",
+      "matches_authenticated_node_exit": true
+    },
+    {
+      "host": "www.gstatic.com",
+      "trial": 5,
+      "status": 204,
+      "seconds": 0.137799,
+      "body_bytes": 0,
+      "ok": true,
+      "error": ""
+    },
+    {
+      "host": "cloudflare.com",
+      "trial": 6,
+      "status": 200,
+      "seconds": 0.232972,
+      "body_bytes": 228,
+      "ok": true,
+      "error": "",
+      "matches_authenticated_node_exit": true
+    },
+    {
+      "host": "www.gstatic.com",
+      "trial": 6,
+      "status": 204,
+      "seconds": 0.133529,
+      "body_bytes": 0,
+      "ok": true,
+      "error": ""
+    },
+    {
+      "host": "cloudflare.com",
+      "trial": 7,
+      "status": 200,
+      "seconds": 0.227686,
+      "body_bytes": 233,
+      "ok": true,
+      "error": "",
+      "matches_authenticated_node_exit": true
+    },
+    {
+      "host": "www.gstatic.com",
+      "trial": 7,
+      "status": 204,
+      "seconds": 0.137226,
+      "body_bytes": 0,
+      "ok": true,
+      "error": ""
+    },
+    {
+      "host": "cloudflare.com",
+      "trial": 8,
+      "status": 200,
+      "seconds": 0.240311,
+      "body_bytes": 228,
+      "ok": true,
+      "error": "",
+      "matches_authenticated_node_exit": true
+    },
+    {
+      "host": "www.gstatic.com",
+      "trial": 8,
+      "status": 204,
+      "seconds": 0.133284,
+      "body_bytes": 0,
+      "ok": true,
+      "error": ""
+    },
+    {
+      "host": "cloudflare.com",
+      "trial": 9,
+      "status": 200,
+      "seconds": 0.243847,
+      "body_bytes": 232,
+      "ok": true,
+      "error": "",
+      "matches_authenticated_node_exit": true
+    },
+    {
+      "host": "www.gstatic.com",
+      "trial": 9,
+      "status": 204,
+      "seconds": 0.149236,
+      "body_bytes": 0,
+      "ok": true,
+      "error": ""
+    },
+    {
+      "host": "cloudflare.com",
+      "trial": 10,
+      "status": 200,
+      "seconds": 0.243994,
+      "body_bytes": 228,
+      "ok": true,
+      "error": "",
+      "matches_authenticated_node_exit": true
+    },
+    {
+      "host": "www.gstatic.com",
+      "trial": 10,
+      "status": 204,
+      "seconds": 0.1365,
+      "body_bytes": 0,
+      "ok": true,
+      "error": ""
+    }
+  ],
+  "authenticated_named_reality_exit": "2401:c080:1c00:2678:5400:6ff:feff:9d20",
+  "state": {
+    "pid": 21648,
+    "singbox_pid": 21687,
+    "mode": "proxy",
+    "lid_destroy": "armed",
+    "reality_pacing_state": "confirmed",
+    "reality_rate_mbps": 400,
+    "last_keepalive_ms": 61,
+    "last_keepalive_error": null,
+    "last_dial_error": null,
+    "dial_samples": [
+      {
+        "ms": 138,
+        "ok": true
+      },
+      {
+        "ms": 142,
+        "ok": true
+      },
+      {
+        "ms": 143,
+        "ok": true
+      },
+      {
+        "ms": 143,
+        "ok": true
+      },
+      {
+        "ms": 152,
+        "ok": true
+      },
+      {
+        "ms": 144,
+        "ok": true
+      },
+      {
+        "ms": 144,
+        "ok": true
+      },
+      {
+        "ms": 142,
+        "ok": true
+      },
+      {
+        "ms": 146,
+        "ok": true
+      },
+      {
+        "ms": 247,
+        "ok": true
+      },
+      {
+        "ms": 144,
+        "ok": true
+      },
+      {
+        "ms": 142,
+        "ok": true
+      },
+      {
+        "ms": 141,
+        "ok": true
+      },
+      {
+        "ms": 190,
+        "ok": true
+      },
+      {
+        "ms": 147,
+        "ok": true
+      },
+      {
+        "ms": 140,
+        "ok": true
+      },
+      {
+        "ms": 144,
+        "ok": true
+      },
+      {
+        "ms": 151,
+        "ok": true
+      },
+      {
+        "ms": 119,
+        "ok": true
+      },
+      {
+        "ms": 138,
+        "ok": true
+      }
+    ],
+    "keepalive_fails": 0
+  },
+  "cache_config": {
+    "enabled": true,
+    "path": "/Users/leo/.mole/sing-box-cache.db",
+    "store_fakeip": true
+  },
+  "cache_file_exists": true,
+  "cache_file_mode": "0o600",
+  "cache_file_bytes": 131072,
+  "smux": [
+    {
+      "enabled": true,
+      "protocol": "smux",
+      "max_connections": 8,
+      "min_streams": 1
+    }
+  ],
+  "tun_stack": [
+    "gvisor"
+  ],
+  "selector": "proxy-reality",
+  "installed_sha256": "8c95e98397c5f06a08c91b0b5f5bb002746387281625690ed07bb2f2592f48c9",
+  "new_error_counts": {
+    "enobufs": 0,
+    "dial_timeout": 0,
+    "missing_fakeip": 0
+  },
+  "finished_at": "2026-11-03T09:29:39.446214+08:00"
+}

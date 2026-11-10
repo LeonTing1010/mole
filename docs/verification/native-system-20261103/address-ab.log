@@ -1,0 +1,13 @@
+{"mode": "ipv4", "round": 1, "workers": 1, "complete": true, "mbps": 107.93, "stop_reason": "budget_delivered"}
+{"mode": "ipv6", "round": 1, "workers": 1, "complete": true, "mbps": 18.46, "stop_reason": "budget_delivered"}
+{"mode": "ipv4", "round": 1, "workers": 8, "complete": true, "mbps": 208.77, "stop_reason": "budget_delivered"}
+{"mode": "ipv6", "round": 1, "workers": 8, "complete": true, "mbps": 78.72, "stop_reason": "budget_delivered"}
+{"mode": "ipv6", "round": 2, "workers": 1, "complete": true, "mbps": 54.22, "stop_reason": "budget_delivered"}
+{"mode": "ipv4", "round": 2, "workers": 1, "complete": true, "mbps": 186.59, "stop_reason": "budget_delivered"}
+{"mode": "ipv6", "round": 2, "workers": 8, "complete": true, "mbps": 147.95, "stop_reason": "budget_delivered"}
+{"mode": "ipv4", "round": 2, "workers": 8, "complete": true, "mbps": 351.0, "stop_reason": "budget_delivered"}
+{"mode": "ipv4", "round": 3, "workers": 1, "complete": true, "mbps": 184.96, "stop_reason": "budget_delivered"}
+{"mode": "ipv6", "round": 3, "workers": 1, "complete": true, "mbps": 48.02, "stop_reason": "budget_delivered"}
+{"mode": "ipv4", "round": 3, "workers": 8, "complete": true, "mbps": 351.04, "stop_reason": "budget_delivered"}
+{"mode": "ipv6", "round": 3, "workers": 8, "complete": true, "mbps": 192.13, "stop_reason": "budget_delivered"}
+{"output": "/tmp/mole-native-system-20261103/address-ab.json", "all_test_processes_exited": true, "https_success": 22, "https_total": 22, "error": null}

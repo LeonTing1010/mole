@@ -1,0 +1,515 @@
+{
+  "suite": "power",
+  "scope": "same-node REALITY+smux; complete owned-node payload over full isolated TUN; unbound application sockets; only two owned host routes; production remains active",
+  "started_at": "2026-11-03T09:20:37.788910+08:00",
+  "phases": [
+    {
+      "model": "base",
+      "round": 1,
+      "workers": 1,
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "complete": true,
+      "elapsed_seconds": 1.1737297499999997,
+      "aggregate_mbps": 114.35147486037569,
+      "engine_cpu_seconds": 0.21999999999999997,
+      "engine_cpu_percent": 18.743667356135433,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        }
+      ],
+      "new_production_enobufs": 0
+    },
+    {
+      "model": "base",
+      "round": 1,
+      "workers": 8,
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "complete": true,
+      "elapsed_seconds": 2.4809486250000004,
+      "aggregate_mbps": 216.39743225235063,
+      "engine_cpu_seconds": 0.73,
+      "engine_cpu_percent": 29.424228806833913,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        }
+      ],
+      "new_production_enobufs": 0
+    },
+    {
+      "model": "power",
+      "round": 1,
+      "workers": 1,
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "complete": true,
+      "elapsed_seconds": 1.2291505420000002,
+      "aggregate_mbps": 109.19551626410947,
+      "engine_cpu_seconds": 0.16999999999999998,
+      "engine_cpu_percent": 13.830689910723725,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        }
+      ],
+      "new_production_enobufs": 0
+    },
+    {
+      "model": "power",
+      "round": 1,
+      "workers": 8,
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "complete": true,
+      "elapsed_seconds": 2.569059375,
+      "aggregate_mbps": 208.97567305154243,
+      "engine_cpu_seconds": 0.67,
+      "engine_cpu_percent": 26.07958408902091,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        }
+      ],
+      "new_production_enobufs": 0
+    },
+    {
+      "model": "power",
+      "round": 2,
+      "workers": 1,
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "complete": true,
+      "elapsed_seconds": 1.2445633330000003,
+      "aggregate_mbps": 107.84322857758494,
+      "engine_cpu_seconds": 0.20999999999999996,
+      "engine_cpu_percent": 16.873387993345286,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        }
+      ],
+      "new_production_enobufs": 0
+    },
+    {
+      "model": "power",
+      "round": 2,
+      "workers": 8,
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "complete": true,
+      "elapsed_seconds": 2.4968780829999986,
+      "aggregate_mbps": 215.01687072960715,
+      "engine_cpu_seconds": 0.75,
+      "engine_cpu_percent": 30.037509845049186,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        }
+      ],
+      "new_production_enobufs": 0
+    },
+    {
+      "model": "base",
+      "round": 2,
+      "workers": 1,
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "complete": true,
+      "elapsed_seconds": 1.3279835840000018,
+      "aggregate_mbps": 101.06881562174478,
+      "engine_cpu_seconds": 0.15000000000000002,
+      "engine_cpu_percent": 11.295320349381655,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        }
+      ],
+      "new_production_enobufs": 0
+    },
+    {
+      "model": "base",
+      "round": 2,
+      "workers": 8,
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "complete": true,
+      "elapsed_seconds": 2.550552042000003,
+      "aggregate_mbps": 210.4920437455631,
+      "engine_cpu_seconds": 0.73,
+      "engine_cpu_percent": 28.62125484911,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        }
+      ],
+      "new_production_enobufs": 0
+    }
+  ],
+  "checks": [
+    {
+      "model": "base",
+      "round": 1,
+      "controls": {
+        "sysctls": {
+          "kern.ipc.maxsockbuf": "8388608",
+          "net.inet.tcp.autorcvbufmax": "4194304",
+          "net.inet.tcp.autosndbufmax": "4194304"
+        },
+        "battery_low_power": "1"
+      },
+      "warm": {
+        "ok": true,
+        "status": 200,
+        "bytes": 1024,
+        "wanted": 1024,
+        "error": ""
+      },
+      "tls_authenticated": true,
+      "engine_log_tail": ""
+    },
+    {
+      "model": "power",
+      "round": 1,
+      "controls": {
+        "sysctls": {
+          "kern.ipc.maxsockbuf": "8388608",
+          "net.inet.tcp.autorcvbufmax": "4194304",
+          "net.inet.tcp.autosndbufmax": "4194304"
+        },
+        "battery_low_power": "0"
+      },
+      "warm": {
+        "ok": true,
+        "status": 200,
+        "bytes": 1024,
+        "wanted": 1024,
+        "error": ""
+      },
+      "tls_authenticated": true,
+      "engine_log_tail": ""
+    },
+    {
+      "model": "power",
+      "round": 2,
+      "controls": {
+        "sysctls": {
+          "kern.ipc.maxsockbuf": "8388608",
+          "net.inet.tcp.autorcvbufmax": "4194304",
+          "net.inet.tcp.autosndbufmax": "4194304"
+        },
+        "battery_low_power": "0"
+      },
+      "warm": {
+        "ok": true,
+        "status": 200,
+        "bytes": 1024,
+        "wanted": 1024,
+        "error": ""
+      },
+      "tls_authenticated": true,
+      "engine_log_tail": ""
+    },
+    {
+      "model": "base",
+      "round": 2,
+      "controls": {
+        "sysctls": {
+          "kern.ipc.maxsockbuf": "8388608",
+          "net.inet.tcp.autorcvbufmax": "4194304",
+          "net.inet.tcp.autosndbufmax": "4194304"
+        },
+        "battery_low_power": "1"
+      },
+      "warm": {
+        "ok": true,
+        "status": 200,
+        "bytes": 1024,
+        "wanted": 1024,
+        "error": ""
+      },
+      "tls_authenticated": true,
+      "engine_log_tail": ""
+    }
+  ],
+  "production_config_before": "647bf5dcf45eee62d6c9417bd2e6bcee600a9d01c90736e9613aaab5222af2e5",
+  "controls_before": {
+    "sysctls": {
+      "kern.ipc.maxsockbuf": "8388608",
+      "net.inet.tcp.autorcvbufmax": "4194304",
+      "net.inet.tcp.autosndbufmax": "4194304"
+    },
+    "battery_low_power": "1"
+  },
+  "restore_errors": [],
+  "controls_after": {
+    "sysctls": {
+      "kern.ipc.maxsockbuf": "8388608",
+      "net.inet.tcp.autorcvbufmax": "4194304",
+      "net.inet.tcp.autosndbufmax": "4194304"
+    },
+    "battery_low_power": "1"
+  },
+  "production_config_after": "647bf5dcf45eee62d6c9417bd2e6bcee600a9d01c90736e9613aaab5222af2e5",
+  "owned_interface_removed": true,
+  "new_production_enobufs": 0,
+  "finished_at": "2026-11-03T09:21:01.822062+08:00"
+}

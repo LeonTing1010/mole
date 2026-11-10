@@ -1,0 +1,33 @@
+{
+  "scope": "isolated sing-box 1.14.3; production-style sniff enabled; plain non-SNI TCP; graceful engine restart; production unchanged",
+  "cases": [
+    {
+      "persistent": false,
+      "config_valid": true,
+      "cached_fakeip": "198.18.0.2",
+      "before_restart": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "after_restart_without_dns_refresh": {
+        "ok": false,
+        "socks_status": 1
+      },
+      "log_tail": "\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;223m4180974344\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n"
+    },
+    {
+      "persistent": true,
+      "config_valid": true,
+      "cached_fakeip": "198.18.0.2",
+      "before_restart": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "after_restart_without_dns_refresh": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "log_tail": ""
+    }
+  ]
+}

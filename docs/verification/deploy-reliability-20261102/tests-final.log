@@ -1,0 +1,5 @@
+?   	github.com/LeonTing1010/mole	[no test files]
+ok  	github.com/LeonTing1010/mole/cmd	9.468s
+ok  	github.com/LeonTing1010/mole/config	0.721s
+ok  	github.com/LeonTing1010/mole/core	17.753s
+ok  	github.com/LeonTing1010/mole/utils	0.352s

@@ -1,0 +1,350 @@
+{
+  "started_at": "2026-10-29T20:36:02.126659+08:00",
+  "scope": "Current Wi-Fi; isolated same-node clients; production unchanged; no upload, server/network-fault recovery, long-term or wired validation",
+  "phases": [
+    {
+      "phase": "plain",
+      "elapsed_seconds": 4.578772207998554,
+      "legs": {
+        "tested": {
+          "bytes": 16777216,
+          "started": 2,
+          "completed": 2,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 29.313038933349443
+        }
+      },
+      "total_connections": 1,
+      "connections_per_leg": 1,
+      "aggregate_mbps": 29.313038933349443,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "budget_reserved_bytes": 16777216,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 1,
+      "workers": 1
+    },
+    {
+      "phase": "smux",
+      "elapsed_seconds": 4.5964539169999625,
+      "legs": {
+        "tested": {
+          "bytes": 16777216,
+          "started": 2,
+          "completed": 2,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 29.200277088299824
+        }
+      },
+      "total_connections": 1,
+      "connections_per_leg": 1,
+      "aggregate_mbps": 29.200277088299824,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "budget_reserved_bytes": 16777216,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 1,
+      "workers": 1
+    },
+    {
+      "phase": "plain",
+      "elapsed_seconds": 4.37884295799995,
+      "legs": {
+        "tested": {
+          "bytes": 67108864,
+          "started": 8,
+          "completed": 8,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 122.60565568334914
+        }
+      },
+      "total_connections": 8,
+      "connections_per_leg": 8,
+      "aggregate_mbps": 122.60565568334914,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "budget_reserved_bytes": 67108864,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 1,
+      "workers": 8
+    },
+    {
+      "phase": "smux",
+      "elapsed_seconds": 6.7800323750016105,
+      "legs": {
+        "tested": {
+          "bytes": 67108864,
+          "started": 8,
+          "completed": 8,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 79.18412218494346
+        }
+      },
+      "total_connections": 8,
+      "connections_per_leg": 8,
+      "aggregate_mbps": 79.18412218494346,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "budget_reserved_bytes": 67108864,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 1,
+      "workers": 8
+    },
+    {
+      "phase": "smux",
+      "elapsed_seconds": 4.061860207999416,
+      "legs": {
+        "tested": {
+          "bytes": 16777216,
+          "started": 2,
+          "completed": 2,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 33.04341388600031
+        }
+      },
+      "total_connections": 1,
+      "connections_per_leg": 1,
+      "aggregate_mbps": 33.04341388600031,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "budget_reserved_bytes": 16777216,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 2,
+      "workers": 1
+    },
+    {
+      "phase": "plain",
+      "elapsed_seconds": 5.307163250001395,
+      "legs": {
+        "tested": {
+          "bytes": 16777216,
+          "started": 2,
+          "completed": 2,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 25.289918865782905
+        }
+      },
+      "total_connections": 1,
+      "connections_per_leg": 1,
+      "aggregate_mbps": 25.289918865782905,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "budget_reserved_bytes": 16777216,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 2,
+      "workers": 1
+    },
+    {
+      "phase": "smux",
+      "elapsed_seconds": 4.356369791999896,
+      "legs": {
+        "tested": {
+          "bytes": 67108864,
+          "started": 8,
+          "completed": 8,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 123.23814038604299
+        }
+      },
+      "total_connections": 8,
+      "connections_per_leg": 8,
+      "aggregate_mbps": 123.23814038604299,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "budget_reserved_bytes": 67108864,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 2,
+      "workers": 8
+    },
+    {
+      "phase": "plain",
+      "elapsed_seconds": 4.370382915998562,
+      "legs": {
+        "tested": {
+          "bytes": 67108864,
+          "started": 8,
+          "completed": 8,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 122.84299163688583
+        }
+      },
+      "total_connections": 8,
+      "connections_per_leg": 8,
+      "aggregate_mbps": 122.84299163688583,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "budget_reserved_bytes": 67108864,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 2,
+      "workers": 8
+    }
+  ],
+  "https": [
+    {
+      "mode": "plain",
+      "stage": "cold",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.798153,
+      "error": ""
+    },
+    {
+      "mode": "smux",
+      "stage": "cold",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.914949,
+      "error": ""
+    },
+    {
+      "mode": "plain",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.798969,
+      "error": ""
+    },
+    {
+      "mode": "smux",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.637871,
+      "error": ""
+    },
+    {
+      "mode": "plain",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.793232,
+      "error": ""
+    },
+    {
+      "mode": "smux",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.634394,
+      "error": ""
+    },
+    {
+      "mode": "smux",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.639639,
+      "error": ""
+    },
+    {
+      "mode": "plain",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.7686,
+      "error": ""
+    },
+    {
+      "mode": "smux",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.851873,
+      "error": ""
+    },
+    {
+      "mode": "plain",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.679195,
+      "error": ""
+    },
+    {
+      "mode": "plain",
+      "stage": "client-restart-only",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.651057,
+      "error": ""
+    },
+    {
+      "mode": "smux",
+      "stage": "client-restart-only",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.772291,
+      "error": ""
+    }
+  ],
+  "checks": {
+    "plain": {
+      "valid": true,
+      "error": "",
+      "log_tail": ""
+    },
+    "smux": {
+      "valid": true,
+      "error": "",
+      "log_tail": ""
+    }
+  },
+  "all_test_processes_exited": true,
+  "finished_at": "2026-10-29T20:37:06.049988+08:00"
+}

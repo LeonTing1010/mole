@@ -1,0 +1,27 @@
+{
+  "published_at": "2026-11-03T10:47:00.877264+08:00",
+  "remote": "git@github.com:LeonTing1010/mole.git",
+  "branch": "master",
+  "commit": "e8e33fdc74173f1bf40a63f2eb0fe74a70ca9b8f",
+  "url": "https://github.com/LeonTing1010/mole/commit/e8e33fdc74173f1bf40a63f2eb0fe74a70ca9b8f",
+  "remote_parent": "3cf9dc4b65a944ff103378c24d45e4527d07f724",
+  "verification": [
+    "git push fast-forward accepted",
+    "git ls-remote master matched",
+    "GitHub commits/master API matched",
+    "local HEAD and origin/master equal",
+    "Go race tests, 6 Python tests, vet, build, staged diff check passed"
+  ],
+  "private_history_backup_branch": "backup/mole-before-github-20261103-104148",
+  "publication": "one reviewed snapshot on remote baseline; 17 unpublished intermediate commits not pushed; existing remote history unchanged",
+  "source_files_match_installed_build": true,
+  "verified_binary_sha256": "cd425fd257df61ee5a06259a9937723eb6ec0a1a8ce38b0a1dca09fffee6f5ed",
+  "excluded": [
+    "local agent settings",
+    "machine-specific logs and receipts",
+    "local config and credentials",
+    "original unpublished-history backup branch"
+  ],
+  "local_tracked_workspace_clean": true,
+  "raw_local_evidence_preserved": true
+}

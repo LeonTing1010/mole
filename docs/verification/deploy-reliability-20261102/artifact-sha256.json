@@ -1,0 +1,18 @@
+{
+  "accepted-receipt-final.json": "547df7d3ca65890c43fcaa6ad35ac4bbf7943f7aed24d29bdef21fefdae53b56",
+  "cloud-cleanup.json": "4a17b9aed138ba0a87e79f6b0a201be42cf20d8b4d0cda77a8cb109596affb6d",
+  "current-node-after-restart-verify.log": "f325d2df12963c77ec906aabad3c71cd7be1aa223539fe16a9fb5392df575671",
+  "final-source-sha256.json": "5fdab0e70dbc374ffbd07a28c00454bbe08d0a6f2df96c3f1d44419cf483f242",
+  "live-cleanup-final.log": "4cb68cb9992052aea6c281e93f125f0c98fc7c734f4c7b74d74db24fa72e4f8b",
+  "live-cleanup.log": "6c46e2cf3e22d2ae816088cf4aec4588e076edf4a6921b81919ee6b06f37bd24",
+  "live-deploy-final.log": "51057700525c5753cb550a5a70610f75ee625d49a9dd8824d325cad83c75c2f5",
+  "live-deploy.log": "28ba842ad14b12f2af90d55b6be4529bbe654894e3692f765556b6e890f6c037",
+  "live-reverify-final.log": "0d99592808159c97040c3ae152f714a2b4ccffe1fe248c7a6e18981d6c412bab",
+  "production-verification.json": "48b5d41e032b2e5f80422831ea1cfdbdf1361c69d6ac3bddc7d288e10aac236c",
+  "race.log": "0468b6656916d986147ee6ab173303955385d790b87daf262b4fa11666897803",
+  "receipt.json": "9fa21367af8d552ab22da2714753ad8a0a0ba4da9a14a95389840dcf94139831",
+  "status-final.log": "2e7525f8ed290c20f00cad209933c08474be2c9e7d2921168dd1a49bb6614794",
+  "tests-final.log": "63e0ecd383b6da31203f1a9601b32f941694683e0dd04d96c6760651dec32284",
+  "verify-cancel.log": "e635076544871e8f7882a4b56b3fd31af865ed5a244b725c79442d47da84a867",
+  "vet.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

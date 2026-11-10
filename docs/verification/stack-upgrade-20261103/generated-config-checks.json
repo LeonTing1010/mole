@@ -1,0 +1,33 @@
+[
+  {
+    "candidate": "current",
+    "exit": 0,
+    "error": "\u001b[33mWARN\u001b[0m[0000] `independent_cache` DNS option is deprecated in sing-box 1.14.0 and will be removed in sing-box 1.16.0, checkout documentation for migration: https://sing-box.sagernet.org/migration/#migrate-independent-dns-cache\n",
+    "stack_omitted": false,
+    "isolated_cache": true
+  },
+  {
+    "candidate": "stable",
+    "exit": 0,
+    "error": "\u001b[33mWARN\u001b[0m[0000] `independent_cache` DNS option is deprecated in sing-box 1.14.0 and will be removed in sing-box 1.16.0, checkout documentation for migration: https://sing-box.sagernet.org/migration/#migrate-independent-dns-cache\n",
+    "stack_omitted": false,
+    "isolated_cache": true
+  },
+  {
+    "candidate": "alpha-native",
+    "exit": 1,
+    "error": "\u001b[31mERROR\u001b[0m[0000] `independent_cache` DNS option is deprecated in sing-box 1.14.0 and will be removed in sing-box 1.16.0, checkout documentation for migration: https://sing-box.sagernet.org/migration/#migrate-independent-dns-cache\n\u001b[31mFATAL\u001b[0m[0000] to continuing using this feature, set environment variable ENABLE_DEPRECATED_INDEPENDENT_DNS_CACHE=true\n",
+    "stack_omitted": true,
+    "isolated_cache": true
+  },
+  {
+    "candidate": "alpha-migrated",
+    "exit": 0,
+    "error": "",
+    "removed_fields": [
+      "tun.stack",
+      "dns.independent_cache"
+    ],
+    "isolated_cache": true
+  }
+]

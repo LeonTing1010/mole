@@ -1,0 +1,8 @@
+[2026-11-02T03:07:48Z] deployment 49e372b149fa9c3a65eef31b6a792ff6: prepared
+[2026-11-02T03:07:48Z] deployment 49e372b149fa9c3a65eef31b6a792ff6: verifying
+Verifying authenticated protocol requests from outside the tunnel...
+   reality: answers (469ms)
+   hy2: answers (496ms)
+All requested protocols authenticated and delivered HTTPS payloads.
+[2026-11-02T03:07:52Z] deployment 49e372b149fa9c3a65eef31b6a792ff6: ready
+Verification receipt: /Users/leo/.mole/deployments/49e372b149fa9c3a65eef31b6a792ff6/receipt.json

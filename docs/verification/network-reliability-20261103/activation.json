@@ -1,0 +1,13 @@
+{
+  "started_at": "2026-11-03T09:05:30.608185+08:00",
+  "rollback": false,
+  "old_pid": 15978,
+  "down_exit": 0,
+  "up_exit": 0,
+  "new_pid": 21648,
+  "lid_destroy": "armed",
+  "kill_switch": null,
+  "config_sha256": "647bf5dcf45eee62d6c9417bd2e6bcee600a9d01c90736e9613aaab5222af2e5",
+  "installed_sha256": "8c95e98397c5f06a08c91b0b5f5bb002746387281625690ed07bb2f2592f48c9",
+  "finished_at": "2026-11-03T09:05:34.534266+08:00"
+}

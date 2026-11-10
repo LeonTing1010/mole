@@ -1,0 +1,515 @@
+{
+  "suite": "buffer",
+  "scope": "same-node REALITY+smux; complete owned-node payload over full isolated TUN; unbound application sockets; only two owned host routes; production remains active",
+  "started_at": "2026-11-03T09:21:01.896473+08:00",
+  "phases": [
+    {
+      "model": "base",
+      "round": 1,
+      "workers": 1,
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "complete": true,
+      "elapsed_seconds": 1.19269675,
+      "aggregate_mbps": 112.53298711512376,
+      "engine_cpu_seconds": 0.19,
+      "engine_cpu_percent": 15.930285715962585,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        }
+      ],
+      "new_production_enobufs": 0
+    },
+    {
+      "model": "base",
+      "round": 1,
+      "workers": 8,
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "complete": true,
+      "elapsed_seconds": 2.453006792,
+      "aggregate_mbps": 218.86238299498356,
+      "engine_cpu_seconds": 0.74,
+      "engine_cpu_percent": 30.16705874657032,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        }
+      ],
+      "new_production_enobufs": 0
+    },
+    {
+      "model": "buffer",
+      "round": 1,
+      "workers": 1,
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "complete": true,
+      "elapsed_seconds": 1.2148316249999995,
+      "aggregate_mbps": 110.48257654635889,
+      "engine_cpu_seconds": 0.15,
+      "engine_cpu_percent": 12.347390116716797,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        }
+      ],
+      "new_production_enobufs": 0
+    },
+    {
+      "model": "buffer",
+      "round": 1,
+      "workers": 8,
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "complete": true,
+      "elapsed_seconds": 2.4598739169999995,
+      "aggregate_mbps": 218.25139422379596,
+      "engine_cpu_seconds": 0.66,
+      "engine_cpu_percent": 26.83064345041389,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        }
+      ],
+      "new_production_enobufs": 0
+    },
+    {
+      "model": "buffer",
+      "round": 2,
+      "workers": 1,
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "complete": true,
+      "elapsed_seconds": 1.1372282500000015,
+      "aggregate_mbps": 118.02180257129545,
+      "engine_cpu_seconds": 0.16999999999999998,
+      "engine_cpu_percent": 14.948626188278366,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        }
+      ],
+      "new_production_enobufs": 0
+    },
+    {
+      "model": "buffer",
+      "round": 2,
+      "workers": 8,
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "complete": true,
+      "elapsed_seconds": 2.5333249159999998,
+      "aggregate_mbps": 211.923432564542,
+      "engine_cpu_seconds": 0.78,
+      "engine_cpu_percent": 30.789575986628005,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        }
+      ],
+      "new_production_enobufs": 0
+    },
+    {
+      "model": "base",
+      "round": 2,
+      "workers": 1,
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "complete": true,
+      "elapsed_seconds": 1.1565739580000027,
+      "aggregate_mbps": 116.04768296192233,
+      "engine_cpu_seconds": 0.17,
+      "engine_cpu_percent": 14.69858445489913,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        }
+      ],
+      "new_production_enobufs": 0
+    },
+    {
+      "model": "base",
+      "round": 2,
+      "workers": 8,
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "complete": true,
+      "elapsed_seconds": 2.5311518750000026,
+      "aggregate_mbps": 212.10537277617902,
+      "engine_cpu_seconds": 0.67,
+      "engine_cpu_percent": 26.47016192973404,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        }
+      ],
+      "new_production_enobufs": 0
+    }
+  ],
+  "checks": [
+    {
+      "model": "base",
+      "round": 1,
+      "controls": {
+        "sysctls": {
+          "kern.ipc.maxsockbuf": "8388608",
+          "net.inet.tcp.autorcvbufmax": "4194304",
+          "net.inet.tcp.autosndbufmax": "4194304"
+        },
+        "battery_low_power": "1"
+      },
+      "warm": {
+        "ok": true,
+        "status": 200,
+        "bytes": 1024,
+        "wanted": 1024,
+        "error": ""
+      },
+      "tls_authenticated": true,
+      "engine_log_tail": ""
+    },
+    {
+      "model": "buffer",
+      "round": 1,
+      "controls": {
+        "sysctls": {
+          "kern.ipc.maxsockbuf": "16777216",
+          "net.inet.tcp.autorcvbufmax": "8388608",
+          "net.inet.tcp.autosndbufmax": "8388608"
+        },
+        "battery_low_power": "1"
+      },
+      "warm": {
+        "ok": true,
+        "status": 200,
+        "bytes": 1024,
+        "wanted": 1024,
+        "error": ""
+      },
+      "tls_authenticated": true,
+      "engine_log_tail": ""
+    },
+    {
+      "model": "buffer",
+      "round": 2,
+      "controls": {
+        "sysctls": {
+          "kern.ipc.maxsockbuf": "16777216",
+          "net.inet.tcp.autorcvbufmax": "8388608",
+          "net.inet.tcp.autosndbufmax": "8388608"
+        },
+        "battery_low_power": "1"
+      },
+      "warm": {
+        "ok": true,
+        "status": 200,
+        "bytes": 1024,
+        "wanted": 1024,
+        "error": ""
+      },
+      "tls_authenticated": true,
+      "engine_log_tail": ""
+    },
+    {
+      "model": "base",
+      "round": 2,
+      "controls": {
+        "sysctls": {
+          "kern.ipc.maxsockbuf": "8388608",
+          "net.inet.tcp.autorcvbufmax": "4194304",
+          "net.inet.tcp.autosndbufmax": "4194304"
+        },
+        "battery_low_power": "1"
+      },
+      "warm": {
+        "ok": true,
+        "status": 200,
+        "bytes": 1024,
+        "wanted": 1024,
+        "error": ""
+      },
+      "tls_authenticated": true,
+      "engine_log_tail": ""
+    }
+  ],
+  "production_config_before": "647bf5dcf45eee62d6c9417bd2e6bcee600a9d01c90736e9613aaab5222af2e5",
+  "controls_before": {
+    "sysctls": {
+      "kern.ipc.maxsockbuf": "8388608",
+      "net.inet.tcp.autorcvbufmax": "4194304",
+      "net.inet.tcp.autosndbufmax": "4194304"
+    },
+    "battery_low_power": "1"
+  },
+  "restore_errors": [],
+  "controls_after": {
+    "sysctls": {
+      "kern.ipc.maxsockbuf": "8388608",
+      "net.inet.tcp.autorcvbufmax": "4194304",
+      "net.inet.tcp.autosndbufmax": "4194304"
+    },
+    "battery_low_power": "1"
+  },
+  "production_config_after": "647bf5dcf45eee62d6c9417bd2e6bcee600a9d01c90736e9613aaab5222af2e5",
+  "owned_interface_removed": true,
+  "new_production_enobufs": 0,
+  "finished_at": "2026-11-03T09:21:25.401350+08:00"
+}

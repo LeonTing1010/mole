@@ -1,0 +1,27 @@
+{
+  "pid": 48600,
+  "singbox_pid": 48632,
+  "installed_sha256": "cd425fd257df61ee5a06259a9937723eb6ec0a1a8ce38b0a1dca09fffee6f5ed",
+  "installed_inode": 1274832255,
+  "mapped_inodes": [
+    1274832255
+  ],
+  "daemon_maps_installed_binary": true,
+  "pf_enabled": true,
+  "pf_anchor_read_ok": true,
+  "pf_anchor_rules_count": 80,
+  "pf_anchor_has_block_out": true,
+  "pf_vps_exemption_present": true,
+  "cache_mode": "0o600",
+  "lid_destroy": "armed",
+  "engine_sha256": "6546126c1759683fe85798da92409215d53c50e0f2b346b4f74a61babc8dbec2",
+  "engine_path": "/Users/leo/.mole/bin/sing-box",
+  "engine_inode": 1274832254,
+  "engine_mapped_inodes": [
+    1274832254
+  ],
+  "engine_maps_installed_binary": true,
+  "engine_version": "sing-box version 1.14.4",
+  "reality_rate_mbps": 600,
+  "reality_pacing_state": "confirmed"
+}

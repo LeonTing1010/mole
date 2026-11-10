@@ -1,0 +1,116 @@
+{
+  "recorded_at": "2026-11-03T08:36:36.110302+08:00",
+  "scope": "source and isolated fault-injection audit; production code, CLI and VPN configuration unchanged",
+  "baseline_cli_sha256": "506bd23d10d991111b69d0e29fc74bedba307821d1bf9d4d2f60820da6de8e41",
+  "vpn_pid": 31849,
+  "runtime_config_sha256": "6787c731e13e19eb58f5e70ef93b68aa1081be06c870b689875d4d336a1d1bf2",
+  "runtime_smux": {
+    "enabled": true,
+    "protocol": "smux",
+    "max_connections": 8,
+    "min_streams": 1
+  },
+  "fault_constraints": {
+    "command": "go test ./core ./utils -run ^TestAudit -count=1 -v",
+    "expected_exit": 1,
+    "failed": [
+      "TestAuditAbandonFallbackCommitsActualRoute",
+      "TestAuditSingleOriginFailureDoesNotMoveHealthyTransport",
+      "TestAuditConcurrentStateWritersPreserveAtomicity"
+    ],
+    "observation_passed": [
+      "TestAuditOptionalPacingBlocksRecoveryMeasurement"
+    ],
+    "state_write_stress_failed": 200,
+    "state_write_stress_total": 288,
+    "online_failure_rate": "unobserved"
+  },
+  "fakeip_restart": {
+    "scope": "isolated sing-box 1.14.3; production-style sniff enabled; plain non-SNI TCP; graceful engine restart; production unchanged",
+    "cases": [
+      {
+        "persistent": false,
+        "config_valid": true,
+        "cached_fakeip": "198.18.0.2",
+        "before_restart": {
+          "ok": true,
+          "body": "PONG"
+        },
+        "after_restart_without_dns_refresh": {
+          "ok": false,
+          "socks_status": 1
+        },
+        "log_tail": "\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;223m4180974344\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n"
+      },
+      {
+        "persistent": true,
+        "config_valid": true,
+        "cached_fakeip": "198.18.0.2",
+        "before_restart": {
+          "ok": true,
+          "body": "PONG"
+        },
+        "after_restart_without_dns_refresh": {
+          "ok": true,
+          "body": "PONG"
+        },
+        "log_tail": ""
+      }
+    ]
+  },
+  "findings": [
+    {
+      "priority": "P1",
+      "source": "core/supervisor.go:970",
+      "finding": "keepalive fallback abandonment resets policy and failure evidence before any selector write; actual selector remained HY2 in reproduction"
+    },
+    {
+      "priority": "P1",
+      "source": "core/supervisor.go:896",
+      "finding": "single Cloudflare keepalive origin can trigger transport fallback while an independent origin still delivers payload"
+    },
+    {
+      "priority": "P1",
+      "source": "config/types.go:15",
+      "finding": "no persistent FakeIP mapping; cached non-SNI TCP application fails after isolated engine restart, succeeds with store_fakeip"
+    },
+    {
+      "priority": "P2",
+      "source": "utils/state.go:428",
+      "finding": "shared temporary path collides across concurrent state snapshots; failures often ignored by callers"
+    },
+    {
+      "priority": "P2",
+      "source": "core/supervisor.go:1396",
+      "finding": "optional unconfirmed TCP pacing suppresses REALITY recovery measurement despite expired dwell; policy coupling confirmed"
+    },
+    {
+      "priority": "P2",
+      "source": "cmd/deploy_vultr.go:457",
+      "finding": "generated top-level mtu key absent from pinned Hysteria serverConfig; client PMTUD policy comments rely on unsupported server premise"
+    }
+  ],
+  "speed_candidates": [
+    {
+      "source": "config/parser.go:214",
+      "candidate": "production TUN gvisor versus mixed, equal-load CPU and throughput comparison",
+      "gain": "unobserved"
+    },
+    {
+      "source": "config/parser.go:714",
+      "candidate": "QUIC packet size and PMTUD after correcting unsupported MTU premise",
+      "gain": "unobserved"
+    }
+  ],
+  "upstream_sources": [
+    "https://raw.githubusercontent.com/HyNetworks/hysteria/app/v2.13.0/app/cmd/server.go",
+    "https://raw.githubusercontent.com/SagerNet/sing-box/v1.14.3/docs/configuration/experimental/cache-file.md",
+    "https://raw.githubusercontent.com/SagerNet/sing-box/v1.14.3/docs/configuration/inbound/tun.md"
+  ],
+  "limits": [
+    "Fault reproductions do not establish that the live node is currently failing.",
+    "No production TUN-stack or packet-size experiment was performed.",
+    "No sustained throughput improvement or percentage gain is claimed."
+  ],
+  "related_existing_regressions": "passed: fallback recovery, failed selector commit, three spaced recovery probes and keepalive connection reuse"
+}

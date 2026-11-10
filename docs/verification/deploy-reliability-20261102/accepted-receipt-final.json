@@ -1,0 +1,23 @@
+{
+  "deploy_id": "49e372b149fa9c3a65eef31b6a792ff6",
+  "name": "mole-accept-final-20261102-icn",
+  "instance_id": "6d892e25-c6b5-4d89-b34f-f9daa40c3319",
+  "script_id": "112d37b4-63de-4d4f-9e75-2a68a41b900f",
+  "script_sha256": "dd4d8d76255720a06f603dda2c698d726f647891bb84783c913705895c356d81",
+  "stage": "ready",
+  "updated_at": "2026-11-02T03:07:52Z",
+  "verification": {
+    "status": "ready",
+    "checked_at": "2026-11-02T03:07:52Z",
+    "hy2": {
+      "verdict": "alive",
+      "rtt_ns": 496857208,
+      "detail": "authenticated HTTPS payload received"
+    },
+    "reality": {
+      "verdict": "alive",
+      "rtt_ns": 469329833,
+      "detail": "authenticated HTTPS payload received"
+    }
+  }
+}

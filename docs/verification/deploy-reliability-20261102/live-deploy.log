@@ -1,0 +1,26 @@
+🚀 Deploying mole-accept-20261102-icn in icn (vc2-1c-1gb, hysteria2 on port 443)
+[2026-11-02T02:57:23Z] deployment 9068d3cfdc28994fed8e82e0e036eec4: prepared
+Deployment receipt: /Users/leo/.mole/deployments/9068d3cfdc28994fed8e82e0e036eec4/receipt.json
+[2026-11-02T02:57:23Z] deployment 9068d3cfdc28994fed8e82e0e036eec4: creating_startup_script
+[2026-11-02T02:57:28Z] deployment 9068d3cfdc28994fed8e82e0e036eec4: preparing_firewall
+[2026-11-02T02:57:30Z] deployment 9068d3cfdc28994fed8e82e0e036eec4: creating_instance
+[2026-11-02T02:57:32Z] deployment 9068d3cfdc28994fed8e82e0e036eec4: created
+[2026-11-02T02:57:32Z] deployment 9068d3cfdc28994fed8e82e0e036eec4: waiting_for_address
+Address assigned: 141.164.49.109; waiting for server installation.
+[2026-11-02T02:57:37Z] deployment 9068d3cfdc28994fed8e82e0e036eec4: verifying
+Verifying authenticated protocol requests from outside the tunnel...
+   hy2: silent — no answer yet
+   reality: silent — no answer yet
+elapsed=15s remaining=5m40s HY2=silent REALITY=silent (remote installation stage unobserved)
+elapsed=30s remaining=5m25s HY2=silent REALITY=silent (remote installation stage unobserved)
+elapsed=45s remaining=5m10s HY2=silent REALITY=silent (remote installation stage unobserved)
+elapsed=1m0s remaining=4m55s HY2=silent REALITY=silent (remote installation stage unobserved)
+elapsed=1m15s remaining=4m40s HY2=silent REALITY=silent (remote installation stage unobserved)
+   reality: refused — the box is up, nothing is listening yet
+   hy2: refused — the box is up, nothing is listening yet
+elapsed=1m30s remaining=4m25s HY2=refused REALITY=refused (remote installation stage unobserved)
+   hy2: answers (469ms)
+   reality: answers (464ms)
+All requested protocols authenticated and delivered HTTPS payloads.
+[2026-11-02T02:59:21Z] deployment 9068d3cfdc28994fed8e82e0e036eec4: ready
+Requested tunnels ready. Optional Brutal capability is checked separately by the client.

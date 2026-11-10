@@ -1,0 +1,11 @@
+=== RUN   TestRecoveryCacheIsPrivateWithoutLosingExistingMappings
+=== RUN   TestRecoveryCacheIsPrivateWithoutLosingExistingMappings/new
+    recovery_cache_test.go:60: stat /var/folders/p5/plpbyjhs08g4cpn5fvzphqh80000gp/T/TestRecoveryCacheIsPrivateWithoutLosingExistingMappingsnew1960437915/001/cache.db: no such file or directory
+=== RUN   TestRecoveryCacheIsPrivateWithoutLosingExistingMappings/existing
+    recovery_cache_test.go:63: DNS metadata permissions: 644; want 600
+--- FAIL: TestRecoveryCacheIsPrivateWithoutLosingExistingMappings (0.00s)
+    --- FAIL: TestRecoveryCacheIsPrivateWithoutLosingExistingMappings/new (0.00s)
+    --- FAIL: TestRecoveryCacheIsPrivateWithoutLosingExistingMappings/existing (0.00s)
+FAIL
+FAIL	github.com/LeonTing1010/mole/config	0.483s
+FAIL

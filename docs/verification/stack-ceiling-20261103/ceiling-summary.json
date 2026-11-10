@@ -1,0 +1,80 @@
+{
+  "400": {
+    "single": {
+      "trials_mbps": [
+        181.13,
+        183.35,
+        133.13
+      ],
+      "median_mbps": 181.1287547903973,
+      "tls_median_s": 0.2333785,
+      "tls_p95_s": 0.260186,
+      "tls_max_s": 0.569667,
+      "tls_failures": 0
+    },
+    "eight": {
+      "trials_mbps": [
+        378.16,
+        371.59,
+        378.95
+      ],
+      "median_mbps": 378.1642147676433,
+      "tls_median_s": 0.263399,
+      "tls_p95_s": 0.893143,
+      "tls_max_s": 1.256717,
+      "tls_failures": 0
+    }
+  },
+  "500": {
+    "single": {
+      "trials_mbps": [
+        175.08,
+        193.03,
+        174.86
+      ],
+      "median_mbps": 175.07791519788952,
+      "tls_median_s": 0.233287,
+      "tls_p95_s": 0.251449,
+      "tls_max_s": 0.254757,
+      "tls_failures": 0
+    },
+    "eight": {
+      "trials_mbps": [
+        361.17,
+        407.35,
+        350.83
+      ],
+      "median_mbps": 361.1748232742158,
+      "tls_median_s": 0.444938,
+      "tls_p95_s": 0.702321,
+      "tls_max_s": 0.929252,
+      "tls_failures": 0
+    }
+  },
+  "600": {
+    "single": {
+      "trials_mbps": [
+        159.73,
+        189.17,
+        178.07
+      ],
+      "median_mbps": 178.06666204833496,
+      "tls_median_s": 0.254574,
+      "tls_p95_s": 0.292056,
+      "tls_max_s": 0.329604,
+      "tls_failures": 0
+    },
+    "eight": {
+      "trials_mbps": [
+        474.82,
+        552.5,
+        430.11
+      ],
+      "median_mbps": 474.8233158485733,
+      "tls_median_s": 0.318341,
+      "tls_p95_s": 0.766294,
+      "tls_max_s": 0.783919,
+      "tls_failures": 0
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "mode": "inspect",
+  "transport": "SSH over existing authenticated REALITY tunnel with exact original public key/UUID/SNI, loopback SSH target; no cloud firewall opening",
+  "exit_code": 255,
+  "stdout": "",
+  "stderr": "Warning: Permanently added 'mole-authenticated-node' (ED25519) to the list of known hosts.\nroot@mole-authenticated-node: Permission denied (publickey,password).\n"
+}

@@ -1,0 +1,11 @@
+?   	github.com/LeonTing1010/mole	[no test files]
+ok  	github.com/LeonTing1010/mole/cmd	14.485s
+ok  	github.com/LeonTing1010/mole/config	2.000s
+ok  	github.com/LeonTing1010/mole/core	59.113s
+ok  	github.com/LeonTing1010/mole/utils	2.766s
+......
+----------------------------------------------------------------------
+Ran 6 tests in 0.427s
+
+OK
+Verified binary: /tmp/mole-upgrade-ceiling-baseline-20261103/mole-verified

@@ -1,0 +1,36 @@
+=== RUN   TestNetworkFixAbandonFallbackCommitsActualRoute
+2026/11/03 08:59:54 tunnel keepalive failed (×6): www.gstatic.com: Get "https://www.gstatic.com/generate_204": HY2 transport unavailable
+cloudflare.com: Get "https://cloudflare.com/cdn-cgi/trace": HY2 transport unavailable
+2026/11/03 08:59:54 health:  → path-blackhole (probe alive fails=0 err=""; keepalive fails=6 err="www.gstatic.com: Get \"https://www.gstatic.com/generate_204\": HY2 transport unavailable\ncloudflare.com: Get \"https://cloudflare.com/cdn-cgi/trace\": HY2 transport unavailable"; fresh dials 0/0 bad)
+2026/11/03 09:00:02 fallback: released — unhealthy HY2 fallback; REALITY passed three spaced authenticated delivery checks
+2026/11/03 09:00:02 health: path-blackhole → healthy (probe alive fails=0 err=""; keepalive fails=0 err=""; fresh dials 0/0 bad)
+    network_reliability_test.go:56: fallback=false actual_selector=proxy-reality failure_count=0
+--- PASS: TestNetworkFixAbandonFallbackCommitsActualRoute (8.02s)
+=== RUN   TestNetworkFixSingleOriginFailureDoesNotMoveHealthyTransport
+2026/11/03 09:00:02 health:  → healthy (probe alive fails=0 err=""; keepalive fails=0 err=""; fresh dials 0/0 bad)
+    network_reliability_test.go:88: independent origin delivered payload; actual_selector=proxy-reality fallback=false
+--- PASS: TestNetworkFixSingleOriginFailureDoesNotMoveHealthyTransport (0.00s)
+=== RUN   TestNetworkFixRescueKeepsEvidenceWhenCandidateDoesNotDeliver
+2026/11/03 09:00:02 fallback: REALITY delivery not recovered (authenticated payload not delivered); retaining HY2 and its failure evidence
+--- PASS: TestNetworkFixRescueKeepsEvidenceWhenCandidateDoesNotDeliver (0.00s)
+=== RUN   TestNetworkFixBothOriginsFailStillRecordsFailure
+2026/11/03 09:00:02 tunnel keepalive failed (×1): www.gstatic.com: Get "https://www.gstatic.com/generate_204": both origins unreachable
+cloudflare.com: Get "https://cloudflare.com/cdn-cgi/trace": both origins unreachable
+2026/11/03 09:00:02 health:  → healthy (probe  fails=0 err=""; keepalive fails=1 err="www.gstatic.com: Get \"https://www.gstatic.com/generate_204\": both origins unreachable\ncloudflare.com: Get \"https://cloudflare.com/cdn-cgi/trace\": both origins unreachable"; fresh dials 0/0 bad)
+--- PASS: TestNetworkFixBothOriginsFailStillRecordsFailure (0.00s)
+=== RUN   TestNetworkFixOptionalPacingDoesNotBlockRecoveryMeasurement
+2026/11/03 09:00:10 fallback: released — proxy-reality passed 3 spaced fresh dials; probation 3m0s
+2026/11/03 09:00:10 health:  → healthy (probe  fails=0 err=""; keepalive fails=0 err=""; fresh dials 0/0 bad)
+    network_reliability_test.go:140: expired dwell tested and recovered REALITY without requiring optional TCP pacing
+--- PASS: TestNetworkFixOptionalPacingDoesNotBlockRecoveryMeasurement (8.00s)
+PASS
+ok  	github.com/LeonTing1010/mole/core	16.385s
+=== RUN   TestConcurrentStateWritersPreserveAtomicity
+    state_atomic_test.go:35: failed writes=0/288
+--- PASS: TestConcurrentStateWritersPreserveAtomicity (0.19s)
+PASS
+ok  	github.com/LeonTing1010/mole/utils	0.538s
+=== RUN   TestRecoveryPersistsFakeIPMapping
+--- PASS: TestRecoveryPersistsFakeIPMapping (0.00s)
+PASS
+ok  	github.com/LeonTing1010/mole/config	0.358s

@@ -1,0 +1,14 @@
+COMMAND ['bash', 'scripts/verify-performance.sh', '/tmp/mole-network-fix-20261103-verified']
+?   	github.com/LeonTing1010/mole	[no test files]
+ok  	github.com/LeonTing1010/mole/cmd	14.656s
+ok  	github.com/LeonTing1010/mole/config	1.912s
+ok  	github.com/LeonTing1010/mole/core	34.924s
+ok  	github.com/LeonTing1010/mole/utils	2.632s
+......
+----------------------------------------------------------------------
+Ran 6 tests in 0.429s
+
+OK
+Verified binary: /tmp/mole-network-fix-20261103-verified
+COMMAND ['go', 'vet', './...']
+COMMAND ['git', 'diff', '--check']

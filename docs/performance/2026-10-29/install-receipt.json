@@ -1,0 +1,13 @@
+{
+  "installed_at": "2026-10-29T20:38:50.980463+08:00",
+  "source_commit": "d0f3f4f36ad902d5c4ff47437eca1b43eb67eac2",
+  "source_repo": "/Users/leo/Projects/mole-network-reliability-20261029",
+  "binary": "/usr/local/bin/mole",
+  "sha256": "6896de0ba3e33f512ffec2fcf630f598b5f3b5891694648159493ac869875883",
+  "previous_sha256": "539b36826e6de38c79f7f5ddb4d6ec04058de51f2929964a829661b470175bcd",
+  "backup": "/Users/leo/.mole/backups/network-reliability-20261029/mole.before",
+  "gate": "go test -buildvcs=false -race ./...; Python unittest discovery (6 passed); darwin external-link build",
+  "daemon_activation": "pending: sudo -n true required a password; existing root daemon not stopped",
+  "production_mux": "unchanged, disabled",
+  "production_leg": "unchanged, auto"
+}

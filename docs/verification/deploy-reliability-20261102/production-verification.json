@@ -1,0 +1,22 @@
+{
+  "deploy_id": "2ce1b0a58ce4e9e6ec3b8a2cc503cff2",
+  "name": "nrt-1793578077",
+  "instance_id": "0c972fb1-8de0-47bb-9284-374fd4618d4b",
+  "script_sha256": "",
+  "stage": "ready",
+  "updated_at": "2026-11-02T03:12:02Z",
+  "verification": {
+    "status": "ready",
+    "checked_at": "2026-11-02T03:12:02Z",
+    "hy2": {
+      "verdict": "alive",
+      "rtt_ns": 700185583,
+      "detail": "authenticated HTTPS payload received"
+    },
+    "reality": {
+      "verdict": "alive",
+      "rtt_ns": 707450375,
+      "detail": "authenticated HTTPS payload received"
+    }
+  }
+}

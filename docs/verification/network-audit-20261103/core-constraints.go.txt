@@ -1,0 +1,103 @@
+package core
+
+import (
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/LeonTing1010/mole/utils"
+)
+
+func auditSelector(t *testing.T, initial string) (*ClashClient, *atomic.Value) {
+	t.Helper()
+	selected := &atomic.Value{}
+	selected.Store(initial)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			var body struct{ Name string }
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			selected.Store(body.Name)
+			w.WriteHeader(204)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/delay") {
+			io.WriteString(w, `{"delay":50}`)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"now": selected.Load().(string)})
+	}))
+	t.Cleanup(api.Close)
+	return NewClashClient(api.Listener.Addr().String()), selected
+}
+
+// Audit constraint: abandoning a broken fallback must commit the real route
+// before clearing its evidence. This exercises keepaliveOnce, not the helper.
+func TestAuditAbandonFallbackCommitsActualRoute(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	clash, selected := auditSelector(t, "proxy-bw-400")
+	s := &Supervisor{hasReality: true, clash: clash, probeTimeMs: 100, schedule: BandwidthSchedule{OffDown: 400, OffUp: 400},
+		state:  &utils.State{KeepaliveFails: fallbackEnterFails - 1, LastProbeVerdict: utils.ProbeAlive},
+		stopCh: make(chan struct{})}
+	s.fallback.enter(time.Now())
+	s.tunnelClientOnce.Do(func() {
+		s.tunnelHTTP = &http.Client{Transport: probeRoundTrip(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("HY2 transport unavailable")
+		})}
+	})
+	s.keepaliveOnce()
+	t.Logf("fallback=%v actual_selector=%s failure_count=%d", s.onFallback(), selected.Load(), s.state.KeepaliveFails)
+	if !s.onFallback() && selected.Load() != RealityLegTag {
+		t.Fatal("fallback cleared and evidence erased while actual traffic still uses the broken HY2 leg")
+	}
+}
+
+// Audit constraint: a single origin's HTTP failure is not transport failure.
+func TestAuditSingleOriginFailureDoesNotMoveHealthyTransport(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	clash, selected := auditSelector(t, RealityLegTag)
+	s := &Supervisor{hasReality: true, clash: clash, probeTimeMs: 100, schedule: BandwidthSchedule{OffDown: 400, OffUp: 400},
+		state:  &utils.State{KeepaliveFails: fallbackEnterFails - 1, LastProbeVerdict: utils.ProbeAlive},
+		stopCh: make(chan struct{})}
+	client := &http.Client{Transport: probeRoundTrip(func(r *http.Request) (*http.Response, error) {
+		status := 200
+		if r.URL.Host == "cloudflare.com" {
+			status = 503
+		}
+		return &http.Response{StatusCode: status, Status: http.StatusText(status), Body: io.NopCloser(strings.NewReader("payload")), Header: make(http.Header)}, nil
+	})}
+	s.tunnelClientOnce.Do(func() { s.tunnelHTTP = client })
+	if _, err := s.fetchThroughTunnel(client, "https://independent.example/health"); err != nil {
+		t.Fatal(err)
+	}
+	s.keepaliveOnce()
+	t.Logf("independent origin delivered payload; actual_selector=%s fallback=%v", selected.Load(), s.onFallback())
+	if selected.Load() != RealityLegTag {
+		t.Fatal("one origin's 503 moved a transport that demonstrably still delivered another origin's payload")
+	}
+}
+
+// Audit observation: optional pacing absence short-circuits even measurement
+// of a candidate that could otherwise carry authenticated external requests.
+func TestAuditOptionalPacingBlocksRecoveryMeasurement(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	clash, selected := auditSelector(t, "proxy-bw-400")
+	var calls atomic.Int32
+	s := &Supervisor{hasReality: true, clash: clash, probeTimeMs: 100, schedule: BandwidthSchedule{OffDown: 400, OffUp: 400},
+		state: &utils.State{}, stopCh: make(chan struct{}),
+		legProbeFn: func(int, int) (time.Duration, error) { calls.Add(1); return 50 * time.Millisecond, nil }}
+	s.fallback.enter(time.Now().Add(-2 * fallbackMinDwell))
+	s.brutalUnpaced.Store(true)
+	s.tryReturnToPrimary()
+	if calls.Load() != 0 || !s.onFallback() || selected.Load() != "proxy-bw-400" {
+		t.Fatal("observed policy changed; revise audit conclusion")
+	}
+	t.Log("expired dwell did not test REALITY at all because optional TCP pacing was unconfirmed")
+}

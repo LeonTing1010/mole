@@ -1,0 +1,143 @@
+{
+  "scope": "isolated auto_route:false full TUN; interface-scoped default only; en0 transport; same node REALITY+smux; 1/8 equal flows, bounded owned-node download; production daemon remains active",
+  "started_at": "2026-11-03T08:57:00.578876+08:00",
+  "phases": [
+    {
+      "stack": "gvisor",
+      "round": 1,
+      "workers": 1,
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "elapsed_seconds": 1.301678334,
+      "complete": true,
+      "aggregate_mbps": 103.11128678584889,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "seconds": 0.888643,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "seconds": 0.362772,
+          "error": ""
+        }
+      ],
+      "engine_cpu_snapshot": "20.7"
+    },
+    {
+      "stack": "gvisor",
+      "round": 1,
+      "workers": 8,
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "elapsed_seconds": 2.5271978330000002,
+      "complete": true,
+      "aggregate_mbps": 212.43723185797774,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "seconds": 1.34739,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "seconds": 0.37539,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "seconds": 1.136867,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "seconds": 1.577502,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "seconds": 1.761503,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "seconds": 2.301691,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "seconds": 2.109626,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "seconds": 2.484612,
+          "error": ""
+        }
+      ],
+      "engine_cpu_snapshot": "28.8"
+    }
+  ],
+  "checks": {
+    "gvisor": {
+      "config_valid": true,
+      "check_error": "",
+      "warm_payload": {
+        "ok": true,
+        "status": 200,
+        "bytes": 1024,
+        "wanted": 1024,
+        "seconds": 0.361709,
+        "error": ""
+      }
+    },
+    "mixed": {
+      "config_valid": true,
+      "check_error": "",
+      "warm_payload": {
+        "ok": false,
+        "status": 0,
+        "bytes": 0,
+        "wanted": 1024,
+        "seconds": 0.011669,
+        "error": "curl: (52) Empty reply from server\n"
+      }
+    }
+  },
+  "production_config_before": "6787c731e13e19eb58f5e70ef93b68aa1081be06c870b689875d4d336a1d1bf2",
+  "error": "full-TUN pilot failed",
+  "production_config_after": "6787c731e13e19eb58f5e70ef93b68aa1081be06c870b689875d4d336a1d1bf2",
+  "test_interface_removed": true,
+  "finished_at": "2026-11-03T08:57:07.166476+08:00"
+}

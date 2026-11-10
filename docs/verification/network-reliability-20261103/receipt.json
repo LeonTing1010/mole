@@ -1,0 +1,229 @@
+{
+  "created_at": "2026-11-03T09:09:09.175721+08:00",
+  "result": "six audited fixes integrated, verified, installed and activated; no speculative speed setting promoted",
+  "source_manifest": [
+    {
+      "path": "cmd/deploy_vultr.go",
+      "before": "6d5dacccf15717190125e4aa6dcb110b978eea20a273d37f304b7c36b376d2a9",
+      "after": "6b469f4c7ef4e77e231703dd870043786fd1f2604888234adcee1e4783272ee2"
+    },
+    {
+      "path": "cmd/status.go",
+      "before": "8d6cec7f0aac3bbbd4adfc5c4c2620f32811fcb8c09d6379da531dec666e42a6",
+      "after": "f1943a0ecf371a8e4fb98e8eb53635eed8e305d586af3b6ec36b3edc489d828d"
+    },
+    {
+      "path": "core/balance_controller.go",
+      "before": "6175151277cdf335d39e859836ed61a9aa4886e7d25955baea13da7760a5128f",
+      "after": "41e7d0136da9d79ee8066a378dccb20447abeeff6ad4737477a2a3625ebb6a6d"
+    },
+    {
+      "path": "core/brutal_test.go",
+      "before": "021ba13663c04d87c0cf080fed3fdb6fa62d2aec21a8057e5279b243533041d9",
+      "after": "9e48dcce1c5b8cda53c7805d511a37f85f12413d4a6b45b4282a5256f04d31c7"
+    },
+    {
+      "path": "core/monitor.go",
+      "before": null,
+      "after": "98477a126054c629a9794f431255376c381bb0a7d3d8e6da7a13e7f0ced850e2"
+    },
+    {
+      "path": "core/network_reliability_test.go",
+      "before": null,
+      "after": "e53ddfae25e9675e01bdd13f0122ee6e4998c44290dcaee7157ddc722d058b5d"
+    },
+    {
+      "path": "core/probe_generation_test.go",
+      "before": "c07aa4122aabb3e3732dcebd10a43da71b93e2fb6b6c5e9d4e55da23ae7451b3",
+      "after": "16a9c32bfca2ab7bf67f2a609cd84a0bec087948e291628935a2b511f92c60f6"
+    },
+    {
+      "path": "core/supervisor.go",
+      "before": "f23230004841d7a21aa9a2c85287d9ff6c9bdf634fb574268d61ce9ec29969d6",
+      "after": "d532c981e2c0f1febe7b8dfe91ad34996e262ba34f3809f943f28e9b31e5af04"
+    },
+    {
+      "path": "config/parser.go",
+      "before": "058f99591a32e5360b1ef1df29ecd4b83128f46530ea3a75a7adc48be6440eeb",
+      "after": "2496072b1f9d996db102cb9791d6180146eee8ce689b76df92d7571cc77b851d"
+    },
+    {
+      "path": "config/recovery_cache_test.go",
+      "before": null,
+      "after": "2bab9d8e8eb777022e811178bf6a3e8ce17149c2f119b5a9d18b76532f8d7dc9"
+    },
+    {
+      "path": "config/types.go",
+      "before": "ec5a11b4aff0b1b9cbedaf281592fb6d37377cb2c31af15e2c6b2e9de6a8264f",
+      "after": "8fa88a371e0178685f0dc6e7453d6c0ecf6e5521aa82ec7293ae511e057651a0"
+    },
+    {
+      "path": "utils/state.go",
+      "before": "e6f091b9bd4d1639a66e8f29566db1c2f51923d5cc36f2ce59c01b39c46233fa",
+      "after": "2de27091a72f5228834276fa8b20d39432af91960d4ac207dcd09cb5b1d2745b"
+    },
+    {
+      "path": "utils/state_atomic_test.go",
+      "before": null,
+      "after": "21c57aa6c5bc1b7392e8a7861f1335828d0b3c014e4b08de64315f0760080d6a"
+    },
+    {
+      "path": "README.md",
+      "before": "01e69b17ec9736507e6b1568bd07438c20d1ef0c35f97a597db78703c7bd4f98",
+      "after": "bee4521fc342a9f6772a26786c43930e55f2a6d70fe71a58dc775e523acddf3a"
+    },
+    {
+      "path": "docs/plans/2026-11-03-network-reliability.md",
+      "before": null,
+      "after": "96a6c77dddebe147a09644c431fc9d5d40813180d7e47272a5a864668ac05cd2"
+    }
+  ],
+  "rollback_binary": "/Users/leo/.mole/changes/network-reliability-20261103-085952/mole.before",
+  "baseline_binary_sha256": "506bd23d10d991111b69d0e29fc74bedba307821d1bf9d4d2f60820da6de8e41",
+  "candidate_binary_sha256": "8c95e98397c5f06a08c91b0b5f5bb002746387281625690ed07bb2f2592f48c9",
+  "integrated_build_matches_installed": true,
+  "gates": {
+    "go_race_all": "pass",
+    "python_unittests": 6,
+    "go_vet": "pass",
+    "diff_check": "pass",
+    "real_engine_generated_config_check": "pass",
+    "initial_isolated_gate_fixture_failure": "geoip-cn.srs absent from temporary HOME; corrected by copying real binary rule-set fixtures, with production HOME protected"
+  },
+  "controlled_recovery_comparison": {
+    "fallback_old": "state cleared but actual selector remained proxy-bw-400",
+    "fallback_new": "three spaced candidate checks; actual selector proxy-reality before evidence reset",
+    "single_origin_503_old": "healthy transport moved to HY2",
+    "single_origin_503_new": "other independently validated HTTPS origin succeeds; REALITY retained",
+    "optional_pacing_old": "authenticated recovery suppressed",
+    "optional_pacing_new": "three spaced checks permitted; pacing state reported separately",
+    "state_write_stress_old_failures": 203,
+    "state_write_stress_new_failures": 0,
+    "state_write_stress_attempts": 288,
+    "stress_is_online_failure_rate": false,
+    "fakeip_old_after_restart": "missing record, SOCKS status 1",
+    "fakeip_new_after_restart": "PONG without DNS refresh",
+    "cache_permissions_new": "0600, existing contents retained"
+  },
+  "performance": {
+    "pmtud": {
+      "rounds": 3,
+      "phases": 12,
+      "complete_phases": 12,
+      "delivered_bytes": 503316480,
+      "median_mbps_by_total_workers": {
+        "1": {
+          "fixed1200": 118.65732751283392,
+          "pmtud": 117.95322202717708
+        },
+        "8": {
+          "fixed1200": 187.51873494480358,
+          "pmtud": 202.4776903244638
+        }
+      },
+      "https_checks_passed": 22,
+      "https_checks_total": 22,
+      "new_enobufs": 0,
+      "decision": "retain disabled PMTUD / initial 1200: single-flow unchanged and multi-flow gains inconsistent across short alternating rounds; bypasses TUN"
+    },
+    "tun": {
+      "gvisor_pilot_single_mbps": 103.11128678584889,
+      "gvisor_pilot_eight_mbps": 212.43723185797774,
+      "mixed_valid_capacity_comparison": false,
+      "mixed_result": "isolated interface-scoped route harness returned empty response on pilot and settled retry; configuration valid; do not generalize to ordinary auto_route mode",
+      "decision": "retain gvisor; no measured justification to switch"
+    },
+    "deployment": "earlier installer parallelism is retained; this turn did not create a billable node or establish a real deployment speed percentage",
+    "limits": [
+      "short Wi-Fi download samples; no upload, wired, long-term or server-fault availability claim",
+      "monitor request duration changed with target set; do not treat lower indicator as transport acceleration",
+      "controlled missing-pacing recovery test does not establish bulk capacity without pacing"
+    ]
+  },
+  "activation": {
+    "started_at": "2026-11-03T09:05:30.608185+08:00",
+    "rollback": false,
+    "old_pid": 15978,
+    "down_exit": 0,
+    "up_exit": 0,
+    "new_pid": 21648,
+    "lid_destroy": "armed",
+    "kill_switch": null,
+    "config_sha256": "647bf5dcf45eee62d6c9417bd2e6bcee600a9d01c90736e9613aaab5222af2e5",
+    "installed_sha256": "8c95e98397c5f06a08c91b0b5f5bb002746387281625690ed07bb2f2592f48c9",
+    "finished_at": "2026-11-03T09:05:34.534266+08:00"
+  },
+  "runtime": {
+    "tun_https_passed": 20,
+    "tun_https_total": 20,
+    "expected_exit_method": "Cloudflare trace matches independently authenticated named REALITY forwarder; node uses IPv6 egress",
+    "selector": "proxy-reality",
+    "pacing_state": "confirmed",
+    "reality_rate_mbps": 400,
+    "smux": [
+      {
+        "enabled": true,
+        "protocol": "smux",
+        "max_connections": 8,
+        "min_streams": 1
+      }
+    ],
+    "stack": [
+      "gvisor"
+    ],
+    "cache_file_mode": "0o600",
+    "new_error_counts_in_postcheck": {
+      "enobufs": 0,
+      "dial_timeout": 0,
+      "missing_fakeip": 0
+    },
+    "final_binary_server_verification": "HY2 and REALITY authenticated external HTTPS, ready"
+  },
+  "preserved_defaults": {
+    "ceiling_mbps": 400,
+    "leg": "auto",
+    "stack": "gvisor",
+    "hy2_disable_path_mtu_discovery": true,
+    "hy2_initial_packet_size": 1200,
+    "smux_max_connections": 8,
+    "smux_min_streams": 1
+  },
+  "root_runtime_readback": {
+    "pid": 21648,
+    "singbox_pid": 21687,
+    "installed_sha256": "8c95e98397c5f06a08c91b0b5f5bb002746387281625690ed07bb2f2592f48c9",
+    "installed_inode": 1273578529,
+    "mapped_inodes": [
+      1273578529
+    ],
+    "daemon_maps_installed_binary": true,
+    "pf_enabled": true,
+    "pf_anchor_read_ok": true,
+    "pf_anchor_rules_count": 80,
+    "pf_anchor_has_block_out": true,
+    "pf_vps_exemption_present": true,
+    "cache_mode": "0o600",
+    "lid_destroy": "armed"
+  },
+  "artifacts_sha256": {
+    "README.md": "2c0703a3e230759517064f0161ee0d6389718b1355470420ad726dd3518ae489",
+    "activation.json": "75bf139b55bafaf2951483f9533823d55944b832e47c6c571b126b349d9f5ff5",
+    "cache-privacy-green.log": "2602d72030b402fce54e4867dc4c2203e4dd7e626d5b866075bb3e4412498457",
+    "cache-privacy-red.log": "2f9243806e5e630e6de898000d6e42045dea9efe1241394464e9b436cce45a4b",
+    "fakeip-restart.json": "3b0b53911bfbdce8fde8e275ea12c65c3805009c4122b26530fe921fd37afece",
+    "fakeip-restart.py": "19983ded38f04d66d7257a8ad511b90e3751f7edbccf4b8e8593359bad82be25",
+    "gates.log": "1ea75624e9049c99087db9e970df18e461cfb37e1b6d240ac31b17107eaf5077",
+    "generated-cache-config.json": "5a82fedce29f8ee58a997237cc32e35248caa5f967c0d11b1e2a2796e1d43461",
+    "green.log": "ca24f86b2170c2e388fe00898e85af8901ed6f153b775682edf67c4c098764b3",
+    "pmtud-ab.json": "885bd524fb24d2aa1ea6d103a1305dfcc4bb49ef94940cb765659385d9072341",
+    "pmtud-ab.py": "f3b5ffee7d131ba450c90c2f6932005b5b46133f360cff505a74e01829ef2387",
+    "postactivation.json": "ca4c7d508bf5358984cb76ae227e42201f51c867c1f0883bd21f75772c4d679c",
+    "postactivation.py": "628ca94630d283acb06ead1d8ff0eda8c4b94a12c91ef2347d487119d8e17e4d",
+    "red.log": "f8ade494b8e4e54a47115df66c0420ab955de65adb2b8ee5ad7261681e128bd7",
+    "root-readback.json": "6e7b4be35684e884d59dd34d40405c7f44bafcf50c2503580f5577cbd0775410",
+    "server-verify.log": "5df72ac29177b76fb26e5608b480df45eb5b627db58dadb0aed60a189477ed76",
+    "tun-ab-pilot.json": "5d60de1725812ff021fe048c57180a239b86c240b398f753442198230f31391e",
+    "tun-ab.json": "ce1de0fba91538502c0ebe18f431f0425cd463c6cf2f5d6786afda16551ef185",
+    "tun-ab.py": "07e6df0b4df2746c86a6d09dcf62ad7923175bec32ca6cb7c0c79efb12a0627e"
+  }
+}

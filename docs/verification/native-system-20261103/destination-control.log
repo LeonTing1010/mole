@@ -1,0 +1,9 @@
+{"mode": "literal", "round": 1, "workers": 1, "complete": true, "mbps": 99.07, "stop_reason": "budget_delivered"}
+{"mode": "hostname", "round": 1, "workers": 1, "complete": true, "mbps": 107.68, "stop_reason": "budget_delivered"}
+{"mode": "literal", "round": 1, "workers": 8, "complete": true, "mbps": 193.38, "stop_reason": "budget_delivered"}
+{"mode": "hostname", "round": 1, "workers": 8, "complete": true, "mbps": 193.07, "stop_reason": "budget_delivered"}
+{"mode": "hostname", "round": 2, "workers": 1, "complete": true, "mbps": 163.42, "stop_reason": "budget_delivered"}
+{"mode": "literal", "round": 2, "workers": 1, "complete": true, "mbps": 185.59, "stop_reason": "budget_delivered"}
+{"mode": "hostname", "round": 2, "workers": 8, "complete": true, "mbps": 349.3, "stop_reason": "budget_delivered"}
+{"mode": "literal", "round": 2, "workers": 8, "complete": true, "mbps": 349.32, "stop_reason": "budget_delivered"}
+{"output": "/tmp/mole-native-system-20261103/destination-control.json", "all_test_processes_exited": true, "https_success": 18, "https_total": 18, "error": null}

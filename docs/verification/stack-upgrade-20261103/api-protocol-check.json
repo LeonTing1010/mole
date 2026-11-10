@@ -1,0 +1,71 @@
+[
+  {
+    "candidate": "current",
+    "protocols": [
+      {
+        "leg": "tested-reality",
+        "selection_matches": true,
+        "tls_ok": true,
+        "bulk_8MiB_ok": true
+      },
+      {
+        "leg": "tested-hy2",
+        "selection_matches": true,
+        "tls_ok": true,
+        "bulk_8MiB_ok": true
+      }
+    ],
+    "api_version": {
+      "meta": true,
+      "premium": true,
+      "version": "sing-box 1.14.3"
+    },
+    "process_exited": true
+  },
+  {
+    "candidate": "stable",
+    "protocols": [
+      {
+        "leg": "tested-reality",
+        "selection_matches": true,
+        "tls_ok": true,
+        "bulk_8MiB_ok": true
+      },
+      {
+        "leg": "tested-hy2",
+        "selection_matches": true,
+        "tls_ok": true,
+        "bulk_8MiB_ok": true
+      }
+    ],
+    "api_version": {
+      "meta": true,
+      "premium": true,
+      "version": "sing-box 1.14.4"
+    },
+    "process_exited": true
+  },
+  {
+    "candidate": "next",
+    "protocols": [
+      {
+        "leg": "tested-reality",
+        "selection_matches": true,
+        "tls_ok": true,
+        "bulk_8MiB_ok": true
+      },
+      {
+        "leg": "tested-hy2",
+        "selection_matches": true,
+        "tls_ok": true,
+        "bulk_8MiB_ok": true
+      }
+    ],
+    "api_version": {
+      "meta": true,
+      "premium": true,
+      "version": "sing-box 1.15.0-alpha.13"
+    },
+    "process_exited": true
+  }
+]

@@ -1,0 +1,88 @@
+{
+  "state": {
+    "pid": 48600,
+    "singbox_pid": 48632,
+    "lid_destroy": "armed",
+    "reality_rate_mbps": 600,
+    "reality_pacing_state": "confirmed",
+    "keepalive_fails": null,
+    "last_keepalive_error": null,
+    "last_dial_error": null,
+    "dial_samples": [
+      {
+        "ms": 141,
+        "ok": true
+      },
+      {
+        "ms": 110,
+        "ok": true
+      },
+      {
+        "ms": 142,
+        "ok": true
+      },
+      {
+        "ms": 140,
+        "ok": true
+      },
+      {
+        "ms": 150,
+        "ok": true
+      },
+      {
+        "ms": 174,
+        "ok": true
+      },
+      {
+        "ms": 143,
+        "ok": true
+      },
+      {
+        "ms": 142,
+        "ok": true
+      },
+      {
+        "ms": 145,
+        "ok": true
+      },
+      {
+        "ms": 139,
+        "ok": true
+      },
+      {
+        "ms": 149,
+        "ok": true
+      },
+      {
+        "ms": 142,
+        "ok": true
+      },
+      {
+        "ms": 142,
+        "ok": true
+      },
+      {
+        "ms": 142,
+        "ok": true
+      },
+      {
+        "ms": 142,
+        "ok": true
+      },
+      {
+        "ms": 139,
+        "ok": true
+      },
+      {
+        "ms": 143,
+        "ok": true
+      }
+    ],
+    "dial_bad": null
+  },
+  "errors_since_activation": {
+    "enobufs": 0,
+    "timeout": 0,
+    "missing_fakeip": 0
+  }
+}

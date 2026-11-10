@@ -1,0 +1,34 @@
+=== RUN   TestNetworkFixAbandonFallbackCommitsActualRoute
+2026/11/03 08:45:21 tunnel keepalive failed (×6): Get "https://cloudflare.com/cdn-cgi/trace": HY2 transport unavailable
+2026/11/03 08:45:21 health:  → path-blackhole (probe alive fails=0 err=""; keepalive fails=6 err="Get \"https://cloudflare.com/cdn-cgi/trace\": HY2 transport unavailable"; fresh dials 0/0 bad)
+2026/11/03 08:45:21 fallback: released — keepalive dark ×6 on the hy2 fallback as well — back to proxy-reality
+2026/11/03 08:45:21 health: path-blackhole → healthy (probe alive fails=0 err=""; keepalive fails=0 err=""; fresh dials 0/0 bad)
+    network_reliability_test.go:56: fallback=false actual_selector=proxy-bw-400 failure_count=0
+    network_reliability_test.go:58: fallback cleared and evidence erased while actual traffic still uses the broken HY2 leg
+--- FAIL: TestNetworkFixAbandonFallbackCommitsActualRoute (0.00s)
+=== RUN   TestNetworkFixSingleOriginFailureDoesNotMoveHealthyTransport
+2026/11/03 08:45:21 tunnel keepalive failed (×6): http Service Unavailable
+2026/11/03 08:45:21 health:  → path-blackhole (probe alive fails=0 err=""; keepalive fails=6 err="http Service Unavailable"; fresh dials 0/0 bad)
+2026/11/03 08:45:21 fallback: keepalive dark ×6 on proxy-reality while the UDP probe still answers — moving to the hy2 ladder (proxy-bw-400, UDP/443) for 10m0s; TCP/443 is what stopped carrying, and Brutal on UDP is the other bet
+2026/11/03 08:45:21 health: path-blackhole → healthy (probe alive fails=0 err=""; keepalive fails=0 err=""; fresh dials 0/0 bad)
+    network_reliability_test.go:88: independent origin delivered payload; actual_selector=proxy-bw-400 fallback=true
+    network_reliability_test.go:90: one origin's 503 moved a transport that demonstrably still delivered another origin's payload
+--- FAIL: TestNetworkFixSingleOriginFailureDoesNotMoveHealthyTransport (0.00s)
+=== RUN   TestNetworkFixOptionalPacingDoesNotBlockRecoveryMeasurement
+    network_reliability_test.go:107: optional pacing blocked authenticated candidate recovery
+--- FAIL: TestNetworkFixOptionalPacingDoesNotBlockRecoveryMeasurement (0.00s)
+FAIL
+FAIL	github.com/LeonTing1010/mole/core	0.520s
+=== RUN   TestConcurrentStateWritersPreserveAtomicity
+    state_atomic_test.go:28: first persistence error: rename /var/folders/p5/plpbyjhs08g4cpn5fvzphqh80000gp/T/TestConcurrentStateWritersPreserveAtomicity836810490/001/.mole/state.json.tmp /var/folders/p5/plpbyjhs08g4cpn5fvzphqh80000gp/T/TestConcurrentStateWritersPreserveAtomicity836810490/001/.mole/state.json: no such file or directory
+    state_atomic_test.go:35: failed writes=203/288
+    state_atomic_test.go:37: concurrent monitor state snapshots collided on their shared temporary file
+--- FAIL: TestConcurrentStateWritersPreserveAtomicity (0.04s)
+FAIL
+FAIL	github.com/LeonTing1010/mole/utils	0.498s
+=== RUN   TestRecoveryPersistsFakeIPMapping
+    recovery_cache_test.go:37: FakeIP recovery cache missing or unstable: {Enabled:false Path: StoreFakeIP:false}
+--- FAIL: TestRecoveryPersistsFakeIPMapping (0.01s)
+FAIL
+FAIL	github.com/LeonTing1010/mole/config	0.470s
+FAIL

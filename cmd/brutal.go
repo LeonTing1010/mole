@@ -130,7 +130,11 @@ PORT = int(os.environ.get("MOLE_BRUTAL_PORT", ` + fmt.Sprint(core.BrutalKeeperPo
 LISTEN = "127.0.0.1"
 LEG_PORT = 443
 BLOCK = os.urandom(1 << 20)  # 1 MiB of incompressible bytes, repeated for /bulk
-DEFAULT_GAIN = 15   # 1.5x window — Brutal README sweet spot, vs kernel default 20 (2.0x)
+DEFAULT_GAIN = 20   # 2.0x window (Brutal INIT_CWND_GAIN). 2026-11-10 A/B on good IPs showed
+                    # gain=20 + rate=600 (473 Mbps non-peak) beats gain=15 + rate=600 (213 Mbps).
+                    # The /gain HTTP endpoint lets operators tune this per-IP without re-deploying;
+                    # gain=15 may still be optimal on lossy IPs where too many in-flight packets
+                    # cause loss/retransmit collapse.
 PROC_HANDLE = open(PROC_RULES, "w") if os.path.exists(PROC_RULES) else None
 
 def read_rate():

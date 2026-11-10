@@ -1,0 +1,10 @@
+{"model": "stable", "round": 3, "kind": "warmup", "workers": 8, "complete": true, "aggregate_mbps": 209.1495770276731, "engine_cpu_percent": 29.217858383572626}
+{"model": "stable", "round": 3, "kind": "single", "workers": 1, "complete": true, "aggregate_mbps": 186.44197911816565, "engine_cpu_percent": 22.225615873118116}
+{"model": "stable", "round": 3, "kind": "eight", "workers": 8, "complete": true, "aggregate_mbps": 379.44220055077596, "engine_cpu_percent": 51.59393072166786}
+{"model": "baseline", "round": 3, "kind": "warmup", "workers": 8, "complete": true, "aggregate_mbps": 204.35075652042565, "engine_cpu_percent": 29.68936973920688}
+{"model": "baseline", "round": 3, "kind": "single", "workers": 1, "complete": true, "aggregate_mbps": 178.99508659638684, "engine_cpu_percent": 22.004685765805707}
+{"model": "baseline", "round": 3, "kind": "eight", "workers": 8, "complete": true, "aggregate_mbps": 378.47490039435866, "engine_cpu_percent": 49.34751061276552}
+{"model": "next", "round": 3, "kind": "warmup", "workers": 8, "complete": true, "aggregate_mbps": 202.61462897500823, "engine_cpu_percent": 22.266550193588223}
+{"model": "next", "round": 3, "kind": "single", "workers": 1, "complete": true, "aggregate_mbps": 159.2985554978582, "engine_cpu_percent": 16.616134173944697}
+{"model": "next", "round": 3, "kind": "eight", "workers": 8, "complete": true, "aggregate_mbps": 379.0045272923496, "engine_cpu_percent": 36.709449103478676}
+{"report": "/tmp/mole-stack-audit-20261103/upgradeconfirm.json", "phases": 9, "error": null, "restore_errors": [], "owned_interface_removed": true}

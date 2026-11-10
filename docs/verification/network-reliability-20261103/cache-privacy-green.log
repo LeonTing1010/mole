@@ -1,0 +1,12 @@
+=== RUN   TestTwoLegConfigWithForwarderPassesSingboxCheck
+--- PASS: TestTwoLegConfigWithForwarderPassesSingboxCheck (0.11s)
+=== RUN   TestRecoveryPersistsFakeIPMapping
+--- PASS: TestRecoveryPersistsFakeIPMapping (0.00s)
+=== RUN   TestRecoveryCacheIsPrivateWithoutLosingExistingMappings
+=== RUN   TestRecoveryCacheIsPrivateWithoutLosingExistingMappings/new
+=== RUN   TestRecoveryCacheIsPrivateWithoutLosingExistingMappings/existing
+--- PASS: TestRecoveryCacheIsPrivateWithoutLosingExistingMappings (0.00s)
+    --- PASS: TestRecoveryCacheIsPrivateWithoutLosingExistingMappings/new (0.00s)
+    --- PASS: TestRecoveryCacheIsPrivateWithoutLosingExistingMappings/existing (0.00s)
+PASS
+ok  	github.com/LeonTing1010/mole/config	0.461s

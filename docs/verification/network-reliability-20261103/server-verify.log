@@ -1,0 +1,8 @@
+[2026-11-03T01:10:06Z] deployment d6df41b47c2ab2287fa4484ad8d9687b: prepared
+[2026-11-03T01:10:06Z] deployment d6df41b47c2ab2287fa4484ad8d9687b: verifying
+Verifying authenticated protocol requests from outside the tunnel...
+   reality: answers (464ms)
+   hy2: answers (463ms)
+All requested protocols authenticated and delivered HTTPS payloads.
+[2026-11-03T01:10:10Z] deployment d6df41b47c2ab2287fa4484ad8d9687b: ready
+Verification receipt: /Users/leo/.mole/deployments/d6df41b47c2ab2287fa4484ad8d9687b/receipt.json

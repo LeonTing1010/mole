@@ -1,0 +1,15 @@
+{
+  "started_at": "2026-11-03T10:29:27.127894+08:00",
+  "rollback": false,
+  "old_pid": 21648,
+  "node_found": true,
+  "old_reality_override": 400,
+  "down_exit": 0,
+  "up_exit": 0,
+  "new_pid": 48600,
+  "singbox_pid": 48632,
+  "lid_destroy": "armed",
+  "reality_rate_mbps": null,
+  "config_sha256": "873aae6b94ad4b580992d3f32d3aa2e80967c0f6ffccee5d13125927034ee26f",
+  "finished_at": "2026-11-03T10:29:31.294165+08:00"
+}

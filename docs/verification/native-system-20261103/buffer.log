@@ -1,0 +1,9 @@
+{"model": "base", "round": 1, "workers": 1, "complete": true, "aggregate_mbps": 112.53298711512376, "engine_cpu_percent": 15.930285715962585}
+{"model": "base", "round": 1, "workers": 8, "complete": true, "aggregate_mbps": 218.86238299498356, "engine_cpu_percent": 30.16705874657032}
+{"model": "buffer", "round": 1, "workers": 1, "complete": true, "aggregate_mbps": 110.48257654635889, "engine_cpu_percent": 12.347390116716797}
+{"model": "buffer", "round": 1, "workers": 8, "complete": true, "aggregate_mbps": 218.25139422379596, "engine_cpu_percent": 26.83064345041389}
+{"model": "buffer", "round": 2, "workers": 1, "complete": true, "aggregate_mbps": 118.02180257129545, "engine_cpu_percent": 14.948626188278366}
+{"model": "buffer", "round": 2, "workers": 8, "complete": true, "aggregate_mbps": 211.923432564542, "engine_cpu_percent": 30.789575986628005}
+{"model": "base", "round": 2, "workers": 1, "complete": true, "aggregate_mbps": 116.04768296192233, "engine_cpu_percent": 14.69858445489913}
+{"model": "base", "round": 2, "workers": 8, "complete": true, "aggregate_mbps": 212.10537277617902, "engine_cpu_percent": 26.47016192973404}
+{"report": "/tmp/mole-native-system-20261103/buffer.json", "phases": 8, "error": null, "restore_errors": [], "owned_interface_removed": true}

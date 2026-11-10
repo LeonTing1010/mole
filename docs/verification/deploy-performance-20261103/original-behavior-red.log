@@ -1,0 +1,17 @@
+--- FAIL: TestDualBootInstallersProgressIndependently (3.50s)
+    deploy_performance_test.go:19: missing boot outcome installer-passed-hy2: stat /var/folders/p5/plpbyjhs08g4cpn5fvzphqh80000gp/T/TestDualBootInstallersProgressIndependently3556995549/001/installer-passed-hy2: no such file or directory
+        date: invalid argument 's' for -I
+        mole required installation started 
+        HY2 LEG NOT RUNNING: hysteria-server is not active. SSH access and the REALITY segment are unaffected; run 'mole server repair' to reinstall it.
+--- FAIL: TestDualBootFailurePreservesOtherLeg (6.75s)
+    --- FAIL: TestDualBootFailurePreservesOtherLeg/reality (3.29s)
+        deploy_performance_test.go:38: missing boot outcome running-hysteria-server: stat /var/folders/p5/plpbyjhs08g4cpn5fvzphqh80000gp/T/TestDualBootFailurePreservesOtherLegreality67619936/001/running-hysteria-server: no such file or directory
+            date: invalid argument 's' for -I
+            mole required installation started 
+            HY2 LEG NOT RUNNING: hysteria-server is not active. SSH access and the REALITY segment are unaffected; run 'mole server repair' to reinstall it.
+            REALITY LEG NOT RUNNING: sing-box is not active. The hysteria2 leg and SSH access are unaffected; run 'mole server repair' to reinstall it.
+--- FAIL: TestBootStartsHY2BeforeServiceCleanup (0.58s)
+    deploy_performance_test.go:53: optional cleanup ran before the HY2 service was available
+FAIL
+FAIL	github.com/LeonTing1010/mole/cmd	11.203s
+FAIL

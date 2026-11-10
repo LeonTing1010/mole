@@ -1,0 +1,14 @@
+[2026-11-02T03:06:56Z] deployment 49e372b149fa9c3a65eef31b6a792ff6: prepared
+[2026-11-02T03:06:56Z] deployment 49e372b149fa9c3a65eef31b6a792ff6: verifying
+Verifying authenticated protocol requests from outside the tunnel...
+[2026-11-02T03:07:00Z] deployment 49e372b149fa9c3a65eef31b6a792ff6: unverified
+Verification receipt: /Users/leo/.mole/deployments/49e372b149fa9c3a65eef31b6a792ff6/receipt.json
+Error: node mole-accept-final-20261102-icn: unverified: context canceled
+Usage:
+  mole server verify [name] [flags]
+
+Flags:
+  -h, --help               help for verify
+      --timeout duration   maximum address wait and protocol verification time (default 6m0s)
+
+Error: node mole-accept-final-20261102-icn: unverified: context canceled

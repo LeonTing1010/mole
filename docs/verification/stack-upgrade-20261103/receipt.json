@@ -1,0 +1,227 @@
+{
+  "checked_at": "2026-11-03T10:00:46.772454+08:00",
+  "scope": "full technical-stack source/release analysis and isolated upgrade qualification; no production upgrade",
+  "versions": {
+    "mole_build_go": "1.26.2",
+    "installed_engine": "1.14.3",
+    "installed_engine_build_go": "1.26.9",
+    "latest_stable_engine": "1.14.4",
+    "latest_prerelease_engine": "1.15.0-alpha.13",
+    "candidate_engines_build_go": "1.26.10",
+    "server_script_singbox_pin": "1.14.4",
+    "server_script_hysteria_pin": "2.13.0",
+    "server_script_brutal_pin": "2.0.1",
+    "remote_running_engine_versions": "unobserved",
+    "remote_kernel_version": "unobserved",
+    "go_latest_supported_branches": [
+      "1.27.3",
+      "1.26.10"
+    ],
+    "macos_observed": "27.2",
+    "softwareupdate_observation": "only Command Line Tools for Xcode 27.2 offered; no OS upgrade offered"
+  },
+  "candidate_binaries": [
+    {
+      "tag": "v1.14.4",
+      "archive_sha256": "0d8c7f5ed5d587b0f1a5e9772a708ec3bfa4ac4c9329604b01d8d9c2ba406838",
+      "binary_sha256": "6546126c1759683fe85798da92409215d53c50e0f2b346b4f74a61babc8dbec2",
+      "path": "/tmp/mole-stack-audit-20261103/v1.14.4/sing-box",
+      "version": "sing-box version 1.14.4\n\nEnvironment: go1.26.10 darwin/arm64\nTags: with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_tailscale,with_ccm,with_ocm,with_cloudflared,with_naive_outbound,with_usbip,with_openvpn,with_openconnect,badlinkname,tfogo_checklinkname0\nRevision: c005f35300ce76427dc285481ec5695f5b179cd2\nCGO: enabled\n"
+    },
+    {
+      "tag": "v1.15.0-alpha.13",
+      "archive_sha256": "fb8d4353e45c985d793b04ccaf2960860128de2c82aa5a00012ce012ab01fc4e",
+      "binary_sha256": "f2fab44348d9e14b406e1a2577bcdc72905ab1f256486b1927b5962224711b19",
+      "path": "/tmp/mole-stack-audit-20261103/v1.15.0-alpha.13/sing-box",
+      "version": "sing-box version 1.15.0-alpha.13\n\nEnvironment: go1.26.10 darwin/arm64\nTags: with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_tailscale,with_ccm,with_ocm,with_cloudflared,with_naive_outbound,with_usbip,with_openvpn,with_openconnect,badlinkname,tfogo_checklinkname0\nRevision: 824dbcfb4dd0a95921840b1737b950cde590241e\nCGO: enabled\n"
+    }
+  ],
+  "dependencies": {
+    "stable": {
+      "go": "1.25.5",
+      "github.com/metacubex/utls": "v1.8.7",
+      "github.com/sagernet/gvisor": "v0.0.0-20260727.0-sing-box-mod.1",
+      "github.com/sagernet/quic-go": "v0.61.0-sing-box-mod.12",
+      "github.com/sagernet/sing-mux": "v0.3.10-0.20260929204512-caf09fe32475",
+      "github.com/sagernet/sing-quic": "v0.7.2-0.20261020082049-7e0a5869a5f4",
+      "github.com/sagernet/sing-tun": "v0.9.7-0.20261023115432-040db71fcd33",
+      "github.com/sagernet/smux": "v1.5.50-sing-box-mod.1",
+      "golang.org/x/crypto": "v0.54.0",
+      "golang.org/x/sys": "v0.47.0"
+    },
+    "alpha": {
+      "go": "1.25.5",
+      "github.com/metacubex/utls": "v1.8.7",
+      "github.com/sagernet/quic-go": "v0.61.0-sing-box-mod.12",
+      "github.com/sagernet/sing-mux": "v0.3.10-0.20260929204512-caf09fe32475",
+      "github.com/sagernet/sing-quic": "v0.7.2-0.20261020082049-7e0a5869a5f4",
+      "github.com/sagernet/sing-tun": "v0.9.7-0.20261023115453-611d83b7a57b",
+      "github.com/sagernet/smux": "v1.5.50-sing-box-mod.1",
+      "golang.org/x/crypto": "v0.54.0",
+      "golang.org/x/sys": "v0.47.0",
+      "github.com/sagernet/gvisor": "v0.0.0-20260727.0-sing-box-mod.1"
+    },
+    "hysteria_core": {
+      "module": "github.com/apernet/quic-go",
+      "version": "v0.63.1-0.20261004180939-a10df75c260c"
+    }
+  },
+  "performance": {
+    "warmup_bytes_per_case": 67108864,
+    "single_budget_bytes": 33554432,
+    "eight_budget_bytes": 134217728,
+    "complete_phases_including_warmup": 27,
+    "total_delivered_bytes": 2113929216,
+    "summary": {
+      "baseline": {
+        "single": {
+          "median_mbps": 181.60520839943845,
+          "median_cpu_seconds": 0.29999999999999993,
+          "median_cpu_percent_of_one_core": 21.259521572486285,
+          "rounds": 3
+        },
+        "eight": {
+          "median_mbps": 378.47490039435866,
+          "median_cpu_seconds": 1.4000000000000001,
+          "median_cpu_percent_of_one_core": 49.34751061276552,
+          "rounds": 3
+        }
+      },
+      "stable": {
+        "single": {
+          "median_mbps": 186.44197911816565,
+          "median_cpu_seconds": 0.31999999999999995,
+          "median_cpu_percent_of_one_core": 22.225615873118116,
+          "rounds": 3
+        },
+        "eight": {
+          "median_mbps": 378.3413140321123,
+          "median_cpu_seconds": 1.4500000000000002,
+          "median_cpu_percent_of_one_core": 51.091881966829575,
+          "rounds": 3
+        }
+      },
+      "next": {
+        "single": {
+          "median_mbps": 177.31390613165647,
+          "median_cpu_seconds": 0.25,
+          "median_cpu_percent_of_one_core": 16.616134173944697,
+          "rounds": 3
+        },
+        "eight": {
+          "median_mbps": 378.7028667628525,
+          "median_cpu_seconds": 0.9700000000000001,
+          "median_cpu_percent_of_one_core": 34.211369302120715,
+          "rounds": 3
+        }
+      }
+    },
+    "new_production_enobufs": 0,
+    "baseline_vs_next_eight_cpu_time_reduction_fraction": 0.30714285714285716,
+    "stable_vs_next_eight_cpu_time_reduction_fraction": 0.3310344827586207,
+    "decision": "no material aggregate throughput gain at unchanged 400 Mbps declaration; alpha reduces process CPU time, not a measured battery-life gain",
+    "limits": [
+      "three short alternating-order Wi-Fi trials per model, not sustained Internet capacity or upload qualification",
+      "all candidates had identical counted warmup; earlier cold results are not an upgrade comparator",
+      "official current/candidate artifacts differ in Go patch version and bundled dependencies; results qualify the artifacts, not a single isolated source change"
+    ]
+  },
+  "compatibility": {
+    "full_generated_stable_config": "pass",
+    "unmigrated_alpha_config": "fails deprecated independent_cache check",
+    "migrated_alpha_config": "passes after removing dns.independent_cache and tun.stack, with private cache path",
+    "api_selector_and_authenticated_both_protocols": "pass for all three versions; 8 MiB delivered per leg per version",
+    "existing_project_gate_with_stable_engine": "Go race all, 6 Python tests, vet, build and diff check pass",
+    "graceful_cache_upgrade_and_downgrade": "pass for current/stable and stable/alpha in both directions",
+    "forced_kill_fresh_cache": "all three versions lost immediate cached-FakeIP delivery in this reproduction, both immediate and after 2 seconds; graceful restart passed",
+    "forced_kill_limit": "new isolated databases; no conclusion that every mapping in a mature production DB is lost"
+  },
+  "source_findings": [
+    {
+      "location": "cmd/brutal.go:155",
+      "finding": "IPv4-only peer regex plus /32 rule creation excludes native IPv6 peers despite upstream v2.0.1 supporting IPv6 rules; current IPv6 versus IPv4 performance is not a fair pacing-equivalent routing comparison"
+    },
+    {
+      "location": "core/singbox.go:295",
+      "finding": "engine selection prefers private Mole binary then PATH; no version-based configuration migration gate"
+    },
+    {
+      "location": "config/parser.go:397",
+      "finding": "always emits independent_cache; alpha cannot be a binary-only upgrade"
+    },
+    {
+      "location": "core/singbox.go:122",
+      "finding": "graceful stop with bounded forced-kill fallback exists; forced-crash DNS recovery is a separate unqualified boundary"
+    },
+    {
+      "location": "cmd/brutal.go:146",
+      "finding": "keeper discovers established peers; upstream v2 rules apply when a connection is established. On an initially absent rule, installed-policy confirmation does not prove an already-open socket changed congestion control; no claim of a current measured pacing fault"
+    }
+  ],
+  "recommendations": [
+    "upgrade local sing-box to verified stable 1.14.4 as maintenance, without promising throughput acceleration",
+    "qualify IPv6 peer pacing support in Mole before repeating route-family benchmarks",
+    "add explicit engine capability/config migration checks and qualify forced-crash FakeIP recovery",
+    "keep 1.15 alpha isolated; revisit after a stable release and full routing/lifecycle qualification",
+    "update Go and parent CLI dependencies through maintenance gates; these do not replace the external data engine",
+    "do not perform an unobserved server kernel/BBRv3 upgrade for speculative speed"
+  ],
+  "production": {
+    "product_source_changed": false,
+    "engine_replaced": false,
+    "daemon_restarted": false,
+    "pid": 21648,
+    "mole_binary_sha256": "8c95e98397c5f06a08c91b0b5f5bb002746387281625690ed07bb2f2592f48c9",
+    "engine_sha256": "763a083ba8ab4cf7e8e0fd4eb90d4e23f90ccfb0dd27c3cb6943026e0681f0d3",
+    "config_sha256": "647bf5dcf45eee62d6c9417bd2e6bcee600a9d01c90736e9613aaab5222af2e5",
+    "tun_https_success": 20,
+    "cache_mode": "0o600",
+    "postcheck_new_errors": {
+      "enobufs": 0,
+      "dial_timeout": 0,
+      "missing_fakeip": 0
+    },
+    "monitor_keepalive_fails": 0,
+    "monitor_dial_samples": 20,
+    "pacing_state": "confirmed",
+    "lid_destroy": "armed"
+  },
+  "sources": [
+    "https://github.com/SagerNet/sing-box/releases/tag/v1.14.4",
+    "https://github.com/SagerNet/sing-box/releases/tag/v1.15.0-alpha.13",
+    "https://raw.githubusercontent.com/SagerNet/sing-box/v1.15.0-alpha.13/docs/configuration/inbound/tun.md",
+    "https://github.com/SagerNet/sing-box/compare/v1.14.3...v1.14.4",
+    "https://github.com/HyNetworks/hysteria/releases/tag/app/v2.13.0",
+    "https://github.com/HyNetworks/tcp-brutal/releases/tag/v2.0.1",
+    "https://raw.githubusercontent.com/HyNetworks/tcp-brutal/v2.0.1/tools/brutalctl.c",
+    "https://raw.githubusercontent.com/HyNetworks/tcp-brutal/v2.0.1/brutal_rules.c",
+    "https://go.dev/dl/"
+  ],
+  "artifacts_sha256": {
+    "README.md": "5c17ada8bfe7c19921b7f420226744acffab0bd129c404cac01466c7ca7c77a5",
+    "api-protocol-check.json": "3d04767a5a031469f3d168528027c3f3d6fafa3ae9e0d13a2719821ef89d3228",
+    "api-protocol-check.log": "f08b805b1994dab455df91e89177d6a448b74918ebc6b8efdc4d82a6c5250a3c",
+    "api-protocol-check.py": "a42d3a2f85f553032e79d43976051af522458991de508bbacc4e01991f71c068",
+    "candidate-binaries.json": "80064826d38688a195833e16828418250072409a82fb8ccc1f6a3ed39dd796a5",
+    "current-engine-build.txt": "66c59d42cc14de3161dc851fa44dca647b6d2aead4a75e1f2ee369ef91c8a8e0",
+    "fakeip-cross-version.json": "82c027142d672627ba35d04b17f64250acdd550b96d93b08184d96954108e0a5",
+    "fakeip-cross-version.log": "82c027142d672627ba35d04b17f64250acdd550b96d93b08184d96954108e0a5",
+    "fakeip-cross-version.py": "a90f002302a19770967aaf537697e6672e1b22fa5f1bcaf18d1888e949e72a84",
+    "fakeip-version-restarts.json": "3184e811ddb6142cc9e0f879a4c8c9ebfbdda1994da7fc3dd87b3e118168853e",
+    "fakeip-version-restarts.log": "3184e811ddb6142cc9e0f879a4c8c9ebfbdda1994da7fc3dd87b3e118168853e",
+    "fakeip-version-restarts.py": "b8a48ba0a07a75177e8c70e53f482cda59c28c333246fda3d4b04e05442bc7c3",
+    "generated-cache-config.json": "5a82fedce29f8ee58a997237cc32e35248caa5f967c0d11b1e2a2796e1d43461",
+    "generated-config-checks.json": "8e2f5ad46a7f7bcf2768c01cda63347e038752a086b414f4119dcb4d812712de",
+    "mole-dependency-versions.json": "20a34407c5bc24938e40a51bcc276fda31d1e7c177619248bec6dbe9c21aaadb",
+    "postcheck.json": "597d9edf3ce736698c0233b59dedc7ccf22b593e7de38e2b4a05497e60433b4b",
+    "postcheck.py": "69dfbf04f91e85ffa32a0fb7b757ef4cf95a9ec9809cb3f660b60491b6cb4a2e",
+    "stable-gates.log": "95bc51704be3788dbf9080afbd68c5fe206944720aee165a92804133a1f674c4",
+    "status-after.txt": "3aa6c16ebc7617776d1cc76568cb9c34850a5194f2c24b5493a26ae0dd8f5b41",
+    "upgrade-measure.py": "4cf8e45877b91efaf87fc22fc6da924d741942c71572fa4b67fd94eb3e793bd0",
+    "upgrade.json": "2593c86965e06091486e7ac3394db8e7dd9fd420c99529f9525f5ff1bf937c81",
+    "upgrade.log": "01f65ba88fe0aa680726e6265485a4bba64111fad827c084115ad95165cca12e",
+    "upgradeconfirm.json": "72f44dd1a353d2783ff43dbc3677e854971eb362893ee142a5635029173ecff0",
+    "upgradeconfirm.log": "ff37c9dc8d5078be61185ba457fabece6d216df53bc442241c24511906d8ec02"
+  },
+  "final_runtime_readback_at": "2026-11-03T10:04:42.238412+08:00"
+}

@@ -1,0 +1,9 @@
+{
+  "experimental": {
+    "cache_file": {
+      "enabled": true,
+      "path": "/var/folders/p5/plpbyjhs08g4cpn5fvzphqh80000gp/T/mole-generated-home-dsuxbsoz/.mole/sing-box-cache.db",
+      "store_fakeip": true
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{"model": "gvisor9000", "round": 1, "workers": 1, "complete": true, "aggregate_mbps": 103.1174428023957, "engine_cpu_percent": 13.060841915314844}
+{"model": "gvisor9000", "round": 1, "workers": 8, "complete": true, "aggregate_mbps": 215.43517930406935, "engine_cpu_percent": 29.69466758612754}
+{"model": "gvisor65535", "round": 1, "workers": 1, "complete": true, "aggregate_mbps": 107.24285280245813, "engine_cpu_percent": 11.18630125548254}
+{"model": "gvisor65535", "round": 1, "workers": 8, "complete": true, "aggregate_mbps": 206.879981294601, "engine_cpu_percent": 26.20339156693382}
+{"model": "mixed9000", "round": 1, "error": "owned-node pilot payload failed"}
+{"model": "gvisor65535", "round": 2, "workers": 1, "complete": true, "aggregate_mbps": 109.66969331490962, "engine_cpu_percent": 13.07364622532244}
+{"model": "gvisor65535", "round": 2, "workers": 8, "complete": true, "aggregate_mbps": 203.1822299336028, "engine_cpu_percent": 24.22120927972827}
+{"model": "gvisor9000", "round": 2, "workers": 1, "complete": true, "aggregate_mbps": 112.8285001128687, "engine_cpu_percent": 13.45020533953532}
+{"model": "gvisor9000", "round": 2, "workers": 8, "complete": true, "aggregate_mbps": 207.27999406581088, "engine_cpu_percent": 27.798413434509904}
+{"report": "/tmp/mole-native-system-20261103/tun.json", "phases": 8, "error": null, "restore_errors": [], "owned_interface_removed": true}

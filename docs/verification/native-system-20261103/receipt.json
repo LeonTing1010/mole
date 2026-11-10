@@ -1,0 +1,202 @@
+{
+  "finished_at": "2026-11-03T09:28:52.218452+08:00",
+  "decision": "keep existing settings; no candidate established a speed gain",
+  "product_source_changed": false,
+  "binary_reinstalled": false,
+  "restart_required": false,
+  "installed_sha256": "8c95e98397c5f06a08c91b0b5f5bb002746387281625690ed07bb2f2592f48c9",
+  "same_daemon_pid": true,
+  "pid": 21648,
+  "production_config_sha256": "647bf5dcf45eee62d6c9417bd2e6bcee600a9d01c90736e9613aaab5222af2e5",
+  "cache_mode": "0o600",
+  "lid_destroy": "armed",
+  "reality_pacing_state": "confirmed",
+  "summary": {
+    "tun": {
+      "gvisor65535": {
+        "1": {
+          "median_mbps": 108.45627305868388,
+          "median_engine_cpu_percent": 12.129973740402491
+        },
+        "8": {
+          "median_mbps": 205.0311056141019,
+          "median_engine_cpu_percent": 25.212300423331044
+        }
+      },
+      "gvisor9000": {
+        "1": {
+          "median_mbps": 107.9729714576322,
+          "median_engine_cpu_percent": 13.255523627425081
+        },
+        "8": {
+          "median_mbps": 211.35758668494012,
+          "median_engine_cpu_percent": 28.746540510318724
+        }
+      }
+    },
+    "power": {
+      "base": {
+        "1": {
+          "median_mbps": 107.71014524106023,
+          "median_engine_cpu_percent": 15.019493852758544
+        },
+        "8": {
+          "median_mbps": 213.44473799895687,
+          "median_engine_cpu_percent": 29.022741827971956
+        }
+      },
+      "power": {
+        "1": {
+          "median_mbps": 108.5193724208472,
+          "median_engine_cpu_percent": 15.352038952034505
+        },
+        "8": {
+          "median_mbps": 211.9962718905748,
+          "median_engine_cpu_percent": 28.05854696703505
+        }
+      }
+    },
+    "buffer": {
+      "base": {
+        "1": {
+          "median_mbps": 114.29033503852304,
+          "median_engine_cpu_percent": 15.314435085430858
+        },
+        "8": {
+          "median_mbps": 215.4838778855813,
+          "median_engine_cpu_percent": 28.31861033815218
+        }
+      },
+      "buffer": {
+        "1": {
+          "median_mbps": 114.25218955882717,
+          "median_engine_cpu_percent": 13.648008152497582
+        },
+        "8": {
+          "median_mbps": 215.08741339416898,
+          "median_engine_cpu_percent": 28.81010971852095
+        }
+      }
+    },
+    "peerpilot": {
+      "gvisor9000": {
+        "1": {
+          "median_mbps": 105.65078216136115,
+          "median_engine_cpu_percent": 13.381714349561477
+        },
+        "8": {
+          "median_mbps": 203.88292713665655,
+          "median_engine_cpu_percent": 28.861877438399752
+        }
+      }
+    },
+    "address-ab": {
+      "ipv4": {
+        "1": {
+          "median_mbps": 184.96443040286468
+        },
+        "8": {
+          "median_mbps": 351.0032719171418
+        }
+      },
+      "ipv6": {
+        "1": {
+          "median_mbps": 48.01692104005547
+        },
+        "8": {
+          "median_mbps": 147.95357790097353
+        }
+      }
+    },
+    "destination-control": {
+      "hostname": {
+        "1": {
+          "median_mbps": 135.54889502429728
+        },
+        "8": {
+          "median_mbps": 271.1858461861674
+        }
+      },
+      "literal": {
+        "1": {
+          "median_mbps": 142.32901133570618
+        },
+        "8": {
+          "median_mbps": 271.3510069220987
+        }
+      }
+    }
+  },
+  "bytes_delivered": 1929379840,
+  "completed_full_tun_phases": 26,
+  "completed_native_transport_phases": 20,
+  "native_https_success": 40,
+  "restored": true,
+  "new_production_enobufs_during_full_tun_tests": 0,
+  "evidence_boundaries": [
+    "Full-TUN variants used identical fresh engines and equal payload budgets; primarily short/cold-session qualification, not sustained capacity",
+    "Native transport suites reused engines between phases; later warmed results cannot be compared to fresh full-TUN results to claim a TUN overhead percentage",
+    "Literal 127.0.0.1 and localhost native destinations closely agree within matching phases; no measured name overhead explanation",
+    "IPv6 transport authenticated but was slower in every paired bulk round; current keeper peers() matches only IPv4 and uses /32 pacing rules, so this is not a pure IP-family routing comparison",
+    "mixed failed the isolated pilot with both interface-scoped and host-only routing and again with an explicit NAT-peer route; ordinary production auto_route mode remains unqualified",
+    "No physical Ethernet, router reconfiguration, server fault, long-term throughput or upload qualification was performed"
+  ],
+  "sources": [
+    "https://raw.githubusercontent.com/SagerNet/sing-box/v1.14.3/protocol/tun/inbound.go",
+    "https://raw.githubusercontent.com/SagerNet/sing-tun/bca4bf029237/stack_system.go",
+    "https://raw.githubusercontent.com/SagerNet/sing-tun/bca4bf029237/tun_darwin.go",
+    "https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/netinet/tcp_input.c",
+    "https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/netinet/tcp_subr.c"
+  ],
+  "primary_source_download_sha256": {
+    "go.mod": "bcddd492e73c480f878206d36816ae0dbd1cae1a777da57b0fd034e9da721d19",
+    "tun_darwin.go": "0676cdec64934d98461e87b625675f5b0d3d2281f3f4126005df5473f19bde61",
+    "tcp_subr.c": "9ae9f5c10ce282761a2660277fd607acee5dd4188fa4ef70d2c213d53305f6c2",
+    "tcp_input.c": "1dc24a2d3d059ee502cd9a6b14f79854734274c3956dfb6757e44723874a8f07",
+    "inbound.go": "9529df5a4f1a2ad1009ae4ec39aa643aaf63f3c5a521257cea22125a982bd116",
+    "stack_system.go": "ce348f189f349d5a6da427272f03a6d69a90ea8e3823d2f37b920c42fb90c6d0"
+  },
+  "final_tun_https_success": 20,
+  "final_tun_https_total": 20,
+  "postcheck_new_errors": {
+    "enobufs": 0,
+    "dial_timeout": 0,
+    "missing_fakeip": 0
+  },
+  "hardware_observed": {
+    "cpu": "Apple M5",
+    "cpu_cores": 10,
+    "ram_gib": 16,
+    "os": "macOS 27.2",
+    "active_interface": "en0",
+    "active_ethernet": false,
+    "wifi": "802.11ax 5GHz 80MHz",
+    "wifi_rssi_dbm": -59,
+    "wifi_noise_dbm": -95,
+    "observed_phy_rate_mbps": 544,
+    "phy_is_delivery_capacity": false,
+    "power_source": "battery"
+  },
+  "artifacts_sha256": {
+    "README.md": "02f607a352ce8d2730f25dd962a0d0c3d3e540ba56ca13906b8ced540949f3de",
+    "address-ab.json": "e5b1157ef03231f2c9ecda1ec6299b9ba28c4532c647e7ac3f3c64fdaf6d01b5",
+    "address-ab.log": "4db06da8d17e978434a9e3d4a41d176a693801ee4b0f874fe052c0493a6f7453",
+    "address-ab.py": "e62e6ad54200a6916eda6319e2034bb00892dca1f55bf4b25096e3e389decf2d",
+    "buffer.json": "eb283daf9a13c5bc3b8264c470a5534b05953135545f29c0d4456f18af7ace1a",
+    "buffer.log": "d81569672d8de0b3ddae2a4779ff3ca76ec6fa47167203bc2254b5457fb30016",
+    "destination-control.json": "56486867ef5bbf47c6490302a4d2ecb7d106692499ebea3767024c38ee41a441",
+    "destination-control.log": "ef8bbdd7bef3668421a3c00ac0b437bc6fe94e274d1b55ea3e9b4f9ea38a18e6",
+    "destination-control.py": "d8d0a3aa67e31946e6278d5e99af504d840ad7c2dfaebf3e4e5affea02724531",
+    "measure.py": "08ad858615f73906888b802b08853059c167acadb5e8d88b743fb1a1858da4a1",
+    "peerpilot.json": "57a50429e99b1b050d9134e0f9a31df8bca0fdcfeea046b0584392d8754950a3",
+    "peerpilot.log": "0832c319cb1a86b8f9641f947888ed0ea5cfe3132edecdf8ad18e400fb916c0c",
+    "plan.md": "6c13d1a7ed8675cb4238c2be29af272bf542c3f0a0f4972d0fc64f3b5a36a8ee",
+    "postcheck.json": "701ce311c8596dc443772841bc9e6f7c56e2efc0cf454bccb5b345ee5ec4ff4c",
+    "postcheck.py": "80ccf2a2f9c95a76d58f585c3884452d77cf1ed02c59e0bafdcc485d78c442c4",
+    "power.json": "6c2a5194ced42995189fb51d3b738bd5483e956d61277140892a61835eba33ed",
+    "power.log": "215160025d144342d57bb9eb391bdf17cc740251936cc9ff5902902bb3d84103",
+    "status-after.txt": "773926fa23380dd80ede7d518b4e27b2f7b1eefe1224e095e5a36b42a49fdc99",
+    "tun.json": "d2ebcc5f9abab745fa4ededda5d88605f7352a827da5b5c0c75a68a8dd4d1b76",
+    "tun.log": "84f27c7ecf6a6baca63ad15fd90cdffad6952e141d233e704bd837965d639c2a"
+  }
+}

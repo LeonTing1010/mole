@@ -1,0 +1,15 @@
+sing-box from PATH: /tmp/mole-stack-audit-20261103/v1.14.4/sing-box
+COMMAND ['bash', 'scripts/verify-performance.sh', '/tmp/mole-stack-audit-20261103/mole-verified-with-stable']
+?   	github.com/LeonTing1010/mole	[no test files]
+ok  	github.com/LeonTing1010/mole/cmd	14.391s
+ok  	github.com/LeonTing1010/mole/config	2.028s
+ok  	github.com/LeonTing1010/mole/core	35.051s
+ok  	github.com/LeonTing1010/mole/utils	2.813s
+......
+----------------------------------------------------------------------
+Ran 6 tests in 0.422s
+
+OK
+Verified binary: /tmp/mole-stack-audit-20261103/mole-verified-with-stable
+COMMAND ['go', 'vet', './...']
+COMMAND ['git', 'diff', '--check']

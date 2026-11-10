@@ -1,0 +1,113 @@
+{"kind": "baseline_log_summary", "cutoff": "2026-10-20T15:38:00+08:00", "started_at": "2026-10-20T10:36:01+08:00", "counts": {"i/o timeout": 125, "no buffer space available": 0, "fallback:": 0, "LOCAL LINK BAD": 0, "fresh dial failed": 2, "fresh dial slow": 20}}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.339869 0.450192 0.450263", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.123297 0.241409 0.241485", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.454147 0.621688 0.621707", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.239884 0.416344 0.416362", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.237679 0.412123 0.412141", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.640600 0.815715 0.815777", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.122670 0.241634 0.241691", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.375276 0.493718 0.493815", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.335558 0.445788 0.445858", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.120722 0.239890 0.239957", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.453808 0.620597 0.620633", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.238710 0.412073 0.412097", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.238382 0.414935 0.414961", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.489001 0.664154 0.664195", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.123691 0.243347 0.243480", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.341987 0.468487 0.468584", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.346813 0.459288 0.459369", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.132099 0.256807 0.256918", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.455163 0.621200 0.621224", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.238622 0.411907 0.411938", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.239468 0.454587 0.454619", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.623511 0.789393 0.789431", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.124586 0.245075 0.245195", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.346280 0.459327 0.459389", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.726559 0.873291 0.873382", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.124731 0.359945 0.360096", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.713366 1.041243 1.041288", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.362137 0.537432 0.537446", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.238384 0.418830 0.418859", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.501472 0.677546 0.677565", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.124606 0.245318 0.245395", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.518315 0.639026 0.639092", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.775944 0.886862 0.886924", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.122879 0.242285 0.242355", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.452921 0.754428 0.754449", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.239135 0.413672 0.413698", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.238259 0.412985 0.413001", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.459242 0.625688 0.625707", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.118975 0.242422 0.242473", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.517634 0.638148 0.638206", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.337917 0.448528 0.448590", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.270728 0.389202 0.389281", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.551097 0.750228 0.750255", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.271982 0.444768 0.444792", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.238544 0.411498 0.411522", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.488986 0.664996 0.665018", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.122092 0.243013 0.243089", "error": ""}
+{"experiment": "pool4-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.365340 0.484283 0.484357", "error": ""}
+{"experiment": "pool4-first", "kind": "bulk", "phase": "Vision-1", "elapsed_seconds": 10.193308792077005, "legs": {"18398": {"bytes": 58720256, "completed": 7, "errors": [], "mbps": 46.08533476049837}}, "aggregate_mbps": 46.08533476049837, "budget_reserved_bytes": 67108864, "budget_exhausted": false, "new_enobufs_lines": 0}
+{"experiment": "pool4-first", "kind": "bulk", "phase": "smux-1", "elapsed_seconds": 9.523840915877372, "legs": {"18298": {"bytes": 134217728, "completed": 16, "errors": [], "mbps": 112.74251990181241}}, "aggregate_mbps": 112.74251990181241, "budget_reserved_bytes": 134217728, "budget_exhausted": true, "new_enobufs_lines": 0}
+{"experiment": "pool4-first", "kind": "bulk", "phase": "smux-8", "elapsed_seconds": 4.512158624827862, "legs": {"18298": {"bytes": 134217728, "completed": 16, "errors": [], "mbps": 237.96632904078436}}, "aggregate_mbps": 237.96632904078436, "budget_reserved_bytes": 134217728, "budget_exhausted": true, "new_enobufs_lines": 0}
+{"experiment": "pool4-first", "kind": "bulk", "phase": "Vision-8", "elapsed_seconds": 4.217878041323274, "legs": {"18398": {"bytes": 134217728, "completed": 16, "errors": [], "mbps": 254.56919652023296}}, "aggregate_mbps": 254.56919652023296, "budget_reserved_bytes": 134217728, "budget_exhausted": true, "new_enobufs_lines": 0}
+{"experiment": "pool4-reverse", "kind": "bulk", "phase": "smux-1", "elapsed_seconds": 10.090737916063517, "legs": {"18298": {"bytes": 133103616, "completed": 15, "errors": [], "mbps": 105.52537751524507}}, "aggregate_mbps": 105.52537751524507, "budget_reserved_bytes": 134217728, "budget_exhausted": true, "new_enobufs_lines": 0}
+{"experiment": "pool4-reverse", "kind": "bulk", "phase": "Vision-1", "elapsed_seconds": 10.069231667090207, "legs": {"18398": {"bytes": 52494336, "completed": 6, "errors": [], "mbps": 41.706726181756224}}, "aggregate_mbps": 41.706726181756224, "budget_reserved_bytes": 58720256, "budget_exhausted": false, "new_enobufs_lines": 0}
+{"experiment": "pool4-reverse", "kind": "bulk", "phase": "Vision-8", "elapsed_seconds": 4.2347132079303265, "legs": {"18398": {"bytes": 134217728, "completed": 16, "errors": [], "mbps": 253.55715281715158}}, "aggregate_mbps": 253.55715281715158, "budget_reserved_bytes": 134217728, "budget_exhausted": true, "new_enobufs_lines": 0}
+{"experiment": "pool4-reverse", "kind": "bulk", "phase": "smux-8", "elapsed_seconds": 5.044883084017783, "legs": {"18298": {"bytes": 134217728, "completed": 16, "errors": [], "mbps": 212.83780141538261}}, "aggregate_mbps": 212.83780141538261, "budget_reserved_bytes": 134217728, "budget_exhausted": true, "new_enobufs_lines": 0}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.337616 0.448395 0.448595", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.574014 0.730434 1.188463", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.453223 0.620044 0.620104", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 1.463832 1.631781 1.631840", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.238029 0.405866 0.405904", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": false, "timing": "000 0.000000 0.000000 5.002195", "error": "curl: (28) Connection timed out after 5002 milliseconds"}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.581977 0.704341 0.704468", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.363016 0.486879 0.486971", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.378086 0.495472 0.495644", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.155760 0.284388 0.284507", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.574712 0.780051 0.780094", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.242281 0.474923 0.474969", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.233761 0.400957 0.401022", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.802235 0.967919 0.968006", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.125170 0.246013 0.246106", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.342078 0.454510 0.454631", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.360960 0.479409 0.479516", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.126722 0.249731 0.249864", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.452863 0.618144 0.618177", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.254303 0.443122 0.443170", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.243778 0.425125 0.425161", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.457998 0.624345 0.624393", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.127404 0.254366 0.254442", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.344620 0.456730 0.456838", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.369458 0.495593 0.495730", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.117836 0.234747 0.234815", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.490001 0.663134 0.663184", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.243634 0.425292 0.425338", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.241129 0.407669 0.407709", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.916737 1.476256 1.476320", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.125933 0.244952 0.245054", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.344296 0.455427 0.455527", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.735321 0.885297 0.885421", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.143709 0.264914 0.265035", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.460146 0.625633 0.625677", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.232724 0.398630 0.398665", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.233439 0.402656 0.402691", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.453126 0.619615 0.619653", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.273030 0.395824 0.395916", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.358416 0.479385 0.479514", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.640360 0.751423 0.751527", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.127135 0.238786 0.239289", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.462383 0.630960 0.630995", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.241067 0.419694 0.419741", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "www.gstatic.com", "ok": true, "timing": "204 0.233918 0.404378 0.404412", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "www.gstatic.com", "ok": true, "timing": "204 0.456888 0.623123 0.623156", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "smux", "host": "cloudflare.com", "ok": true, "timing": "200 0.127926 0.247457 0.247651", "error": ""}
+{"experiment": "pool8-first", "kind": "fresh_https", "leg": "Vision", "host": "cloudflare.com", "ok": true, "timing": "200 0.339640 0.453804 0.453981", "error": ""}
+{"experiment": "pool8-first", "kind": "bulk", "phase": "Vision-1", "elapsed_seconds": 10.287152042146772, "legs": {"18398": {"bytes": 58982400, "completed": 7, "errors": [], "mbps": 45.868788374739545}}, "aggregate_mbps": 45.868788374739545, "budget_reserved_bytes": 67108864, "budget_exhausted": false, "new_enobufs_lines": 0}
+{"experiment": "pool8-first", "kind": "bulk", "phase": "smux-1", "elapsed_seconds": 10.111141042318195, "legs": {"18298": {"bytes": 125829120, "completed": 15, "errors": [], "mbps": 99.55681122307911}}, "aggregate_mbps": 99.55681122307911, "budget_reserved_bytes": 134217728, "budget_exhausted": true, "new_enobufs_lines": 0}
+{"experiment": "pool8-first", "kind": "bulk", "phase": "smux-8", "elapsed_seconds": 4.5392757919617, "legs": {"18298": {"bytes": 134217728, "completed": 16, "errors": [], "mbps": 236.54474264406178}}, "aggregate_mbps": 236.54474264406178, "budget_reserved_bytes": 134217728, "budget_exhausted": true, "new_enobufs_lines": 0}
+{"experiment": "pool8-first", "kind": "bulk", "phase": "Vision-8", "elapsed_seconds": 4.551783375442028, "legs": {"18398": {"bytes": 134217728, "completed": 16, "errors": [], "mbps": 235.8947549641964}}, "aggregate_mbps": 235.8947549641964, "budget_reserved_bytes": 134217728, "budget_exhausted": true, "new_enobufs_lines": 0}
+{"experiment": "pool8-reverse", "kind": "bulk", "phase": "smux-1", "elapsed_seconds": 8.29132820898667, "legs": {"18298": {"bytes": 134217728, "completed": 16, "errors": [], "mbps": 129.50178752256005}}, "total_connections": 1, "connections_per_leg": 1, "aggregate_mbps": 129.50178752256005, "budget_reserved_bytes": 134217728, "budget_exhausted": true, "new_enobufs_lines": 0}
+{"experiment": "pool8-reverse", "kind": "bulk", "phase": "Vision-1", "elapsed_seconds": 10.275999708101153, "legs": {"18398": {"bytes": 67108864, "completed": 8, "errors": [], "mbps": 52.24512721392491}}, "total_connections": 1, "connections_per_leg": 1, "aggregate_mbps": 52.24512721392491, "budget_reserved_bytes": 75497472, "budget_exhausted": false, "new_enobufs_lines": 0}
+{"experiment": "pool8-reverse", "kind": "bulk", "phase": "Vision-8", "elapsed_seconds": 4.15656154230237, "legs": {"18398": {"bytes": 134217728, "completed": 16, "errors": [], "mbps": 258.32453413049706}}, "total_connections": 8, "connections_per_leg": 8, "aggregate_mbps": 258.32453413049706, "budget_reserved_bytes": 134217728, "budget_exhausted": true, "new_enobufs_lines": 0}
+{"experiment": "pool8-reverse", "kind": "bulk", "phase": "smux-8", "elapsed_seconds": 3.368414666969329, "legs": {"18298": {"bytes": 134217728, "completed": 16, "errors": [], "mbps": 318.76770830180476}}, "total_connections": 8, "connections_per_leg": 8, "aggregate_mbps": 318.76770830180476, "budget_reserved_bytes": 134217728, "budget_exhausted": true, "new_enobufs_lines": 0}

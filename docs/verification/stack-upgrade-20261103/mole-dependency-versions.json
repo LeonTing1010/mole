@@ -1,0 +1,57 @@
+[
+  {
+    "module": "github.com/spf13/cobra",
+    "current": "v1.10.2",
+    "latest": "v1.10.2",
+    "published_at": "2025-12-03T23:51:15Z",
+    "origin": {
+      "VCS": "git",
+      "URL": "https://github.com/spf13/cobra",
+      "Hash": "88b30ab89da2d0d0abb153818746c5a2d30eccec",
+      "Ref": "refs/tags/v1.10.2"
+    }
+  },
+  {
+    "module": "github.com/spf13/pflag",
+    "current": "v1.0.9",
+    "latest": "v1.0.10",
+    "published_at": "2025-09-02T06:08:29Z",
+    "origin": {
+      "VCS": "git",
+      "URL": "https://github.com/spf13/pflag",
+      "Hash": "0491e5702ad2bb108bc519a5221bcc0f52aa9564",
+      "Ref": "refs/tags/v1.0.10"
+    }
+  },
+  {
+    "module": "golang.org/x/crypto",
+    "current": "v0.54.0",
+    "latest": "v0.58.0",
+    "published_at": "2026-10-09T16:24:17Z",
+    "origin": {
+      "VCS": "git",
+      "URL": "https://go.googlesource.com/crypto",
+      "Hash": "8fdf07b3114278fb3b78c1cf1814e08bd851eb4c",
+      "Ref": "refs/tags/v0.58.0"
+    }
+  },
+  {
+    "module": "golang.org/x/sys",
+    "current": "v0.47.0",
+    "latest": "v0.49.0",
+    "published_at": "2026-10-06T18:35:47Z",
+    "origin": {
+      "VCS": "git",
+      "URL": "https://go.googlesource.com/sys",
+      "Hash": "b6b8557e8e2974925aec7a136ba0e323eedc5f43",
+      "Ref": "refs/tags/v0.49.0"
+    }
+  },
+  {
+    "module": "gopkg.in/yaml.v3",
+    "current": "v3.0.1",
+    "latest": "v3.0.1",
+    "published_at": "2022-05-27T08:35:30Z",
+    "origin": null
+  }
+]

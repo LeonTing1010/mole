@@ -1,0 +1,52 @@
+{
+  "recorded_at": "2026-11-03T08:21:41.555841+08:00",
+  "scope": "Concurrent required protocol installation after SSH setup; HY2 before optional cleanup; shared account mutation lock; timestamped local stages",
+  "source_baseline_reproduces_installed_binary": true,
+  "previous_binary_sha256": "7b6d284c7d951f0d01f522775565eddb199b11570cba1f132b21be02b20b3a16",
+  "installed_binary_sha256": "506bd23d10d991111b69d0e29fc74bedba307821d1bf9d4d2f60820da6de8e41",
+  "installed_path": "/usr/local/bin/mole",
+  "rollback_binary": "/Users/leo/.mole/changes/deploy-performance-20261103-082141/mole.before",
+  "source_paths": [
+    "cmd/deploy_vultr.go",
+    "cmd/nodeinstall.go",
+    "cmd/server.go",
+    "README.md",
+    "cmd/deploy_performance_test.go",
+    "docs/plans/2026-11-03-deploy-performance.md"
+  ],
+  "verification": {
+    "original_behavior_reproduced_failures": true,
+    "new_behavior_tests": "passed",
+    "go_race_all_packages": "passed",
+    "python_tests": 6,
+    "go_vet": "passed",
+    "git_diff_check": "passed",
+    "macos_build": "passed"
+  },
+  "runtime": {
+    "vpn_restarted": false,
+    "pid_unchanged": 31849,
+    "config_sha256_unchanged": "6787c731e13e19eb58f5e70ef93b68aa1081be06c870b689875d4d336a1d1bf2"
+  },
+  "fresh_cloud_deployment": "unobserved; no new instance created",
+  "end_to_end_deployment_speedup_seconds": "unobserved",
+  "original_deployment_timing_seconds": {
+    "total": 131,
+    "through_address": 18,
+    "address_to_authenticated_https_ready": 113
+  },
+  "post_install_existing_node_verification": {
+    "status": "ready",
+    "checked_at": "2026-11-03T00:22:12Z",
+    "hy2": {
+      "verdict": "alive",
+      "rtt_ns": 468129542,
+      "detail": "authenticated HTTPS payload received"
+    },
+    "reality": {
+      "verdict": "alive",
+      "rtt_ns": 1783991709,
+      "detail": "authenticated HTTPS payload received"
+    }
+  }
+}

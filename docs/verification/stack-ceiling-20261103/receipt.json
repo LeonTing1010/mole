@@ -1,0 +1,175 @@
+{
+  "created_at": "2026-11-03T10:35:53.299612+08:00",
+  "result": "source integrated, stable local engine/controller activated, REALITY download override600 confirmed; HY2/up400 unchanged",
+  "ceiling_gain_percent": 25.560086678302074,
+  "clean_comparison": {
+    "400": {
+      "single": {
+        "trials_mbps": [
+          181.13,
+          183.35,
+          133.13
+        ],
+        "median_mbps": 181.1287547903973,
+        "tls_median_s": 0.2333785,
+        "tls_p95_s": 0.260186,
+        "tls_max_s": 0.569667,
+        "tls_failures": 0
+      },
+      "eight": {
+        "trials_mbps": [
+          378.16,
+          371.59,
+          378.95
+        ],
+        "median_mbps": 378.1642147676433,
+        "tls_median_s": 0.263399,
+        "tls_p95_s": 0.893143,
+        "tls_max_s": 1.256717,
+        "tls_failures": 0
+      }
+    },
+    "500": {
+      "single": {
+        "trials_mbps": [
+          175.08,
+          193.03,
+          174.86
+        ],
+        "median_mbps": 175.07791519788952,
+        "tls_median_s": 0.233287,
+        "tls_p95_s": 0.251449,
+        "tls_max_s": 0.254757,
+        "tls_failures": 0
+      },
+      "eight": {
+        "trials_mbps": [
+          361.17,
+          407.35,
+          350.83
+        ],
+        "median_mbps": 361.1748232742158,
+        "tls_median_s": 0.444938,
+        "tls_p95_s": 0.702321,
+        "tls_max_s": 0.929252,
+        "tls_failures": 0
+      }
+    },
+    "600": {
+      "single": {
+        "trials_mbps": [
+          159.73,
+          189.17,
+          178.07
+        ],
+        "median_mbps": 178.06666204833496,
+        "tls_median_s": 0.254574,
+        "tls_p95_s": 0.292056,
+        "tls_max_s": 0.329604,
+        "tls_failures": 0
+      },
+      "eight": {
+        "trials_mbps": [
+          474.82,
+          552.5,
+          430.11
+        ],
+        "median_mbps": 474.8233158485733,
+        "tls_median_s": 0.318341,
+        "tls_p95_s": 0.766294,
+        "tls_max_s": 0.783919,
+        "tls_failures": 0
+      }
+    }
+  },
+  "production_soak": {
+    "bytes": 1073741824,
+    "mbps": 412.08112445737964,
+    "seconds": 20.84525129199028,
+    "tls_success": 43,
+    "errors": {
+      "enobufs": 0,
+      "timeout": 0,
+      "missing_fakeip": 0
+    }
+  },
+  "post_activation_tls": {
+    "passed": 20,
+    "total": 20
+  },
+  "activation": {
+    "started_at": "2026-11-03T10:29:27.127894+08:00",
+    "rollback": false,
+    "old_pid": 21648,
+    "node_found": true,
+    "old_reality_override": 400,
+    "down_exit": 0,
+    "up_exit": 0,
+    "new_pid": 48600,
+    "singbox_pid": 48632,
+    "lid_destroy": "armed",
+    "reality_rate_mbps": null,
+    "config_sha256": "873aae6b94ad4b580992d3f32d3aa2e80967c0f6ffccee5d13125927034ee26f",
+    "finished_at": "2026-11-03T10:29:31.294165+08:00"
+  },
+  "runtime": {
+    "pid": 48600,
+    "singbox_pid": 48632,
+    "installed_sha256": "cd425fd257df61ee5a06259a9937723eb6ec0a1a8ce38b0a1dca09fffee6f5ed",
+    "installed_inode": 1274832255,
+    "mapped_inodes": [
+      1274832255
+    ],
+    "daemon_maps_installed_binary": true,
+    "pf_enabled": true,
+    "pf_anchor_read_ok": true,
+    "pf_anchor_rules_count": 80,
+    "pf_anchor_has_block_out": true,
+    "pf_vps_exemption_present": true,
+    "cache_mode": "0o600",
+    "lid_destroy": "armed",
+    "engine_sha256": "6546126c1759683fe85798da92409215d53c50e0f2b346b4f74a61babc8dbec2",
+    "engine_path": "/Users/leo/.mole/bin/sing-box",
+    "engine_inode": 1274832254,
+    "engine_mapped_inodes": [
+      1274832254
+    ],
+    "engine_maps_installed_binary": true,
+    "engine_version": "sing-box version 1.14.4",
+    "reality_rate_mbps": 600,
+    "reality_pacing_state": "confirmed"
+  },
+  "install": {
+    "backup": "/Users/leo/.mole/changes/stack-ceiling-20261103-102833",
+    "cli_sha256": "cd425fd257df61ee5a06259a9937723eb6ec0a1a8ce38b0a1dca09fffee6f5ed",
+    "engine_sha256": "6546126c1759683fe85798da92409215d53c50e0f2b346b4f74a61babc8dbec2",
+    "previous_config_sha256": "647bf5dcf45eee62d6c9417bd2e6bcee600a9d01c90736e9613aaab5222af2e5",
+    "previous_servers_sha256": "00022079cf6d840302748bfb97b62202c98d6a8e583d8597378aa77c70f68614",
+    "reality_download_mbps": 600,
+    "go_build": "go1.26.10",
+    "source_hashes": {
+      "cmd/brutal.go": "39777aec1e631b79863bdc40d544307fd445b4cf7923b65761c63dc9c3d48bff",
+      "cmd/brutal_keeper_test.go": "1d6f758a2c180e1236a1ee40ab800faa29260d7376d777964672ebe815074c5b",
+      "cmd/up.go": "8403ddde0d6512cbab7928fb0e34b5c74d2ccd887dbb06518a195d2a2ea48de0",
+      "config/parser.go": "942dd62570e1c4a4c42297b344b39e5288d385f43475d0cda22c77599192533a",
+      "core/singbox.go": "809c59e324640d4aa9adffe625230fb43733fb75add5f63ef50b3bc93e03432b",
+      "go.mod": "c8eaa438952dbfea13af370a7631a9ee17e77f103e18ab4fe1932deb3c87b18b",
+      "go.sum": "56af8287a76157cd3ee92259c2b2e28d49ee8d87621507f141bae04abef24832",
+      "config/recovery_cache_test.go": "ac4fd70cdd79c60961959eb08a5d2fe645951cadf72ecbb064aba936516767b5",
+      "core/engine_contract.go": "2b987be7d3de85dd2a3b93dd6dbfc366b753bd176f8e9f5576f02cc9b678a8d6",
+      "core/engine_contract_test.go": "ae0a1e0d22d1fbe5890d486fd135c98e3ac00b54038c5e2dae7062d90528d242",
+      "core/fakeip_recovery.go": "3e543144b92b763996b252d613b2fd56bc1cb4855d0cc135df2ee38309268284",
+      "core/fakeip_recovery_test.go": "1de85f380f429ba19692bc19806234d8207efd5a6ed6584b07671e956a28322b",
+      "core/fakeip_engine_test.go": "ae8f410525a2689915f0bd127f414d28d9ff6f65b7963aef8a811b53d4ab83ba",
+      "docs/plans/2026-11-03-stack-and-ceiling.md": "28c920c8bf5006059ffb55eba5623cadad97d8d0f03d50dc96f4779e3b6cf99c"
+    }
+  },
+  "node_keeper_activation": "not applied: SSH reached over pinned/authenticated REALITY but node refused the local key; no firewall rule opened and no remote installation changed",
+  "source_scope": "only task delta integrated after baseline hash checks; all other tracked and existing untracked Go files preserved; no commit",
+  "limitations": [
+    "point-in-time bandwidth observations, no guaranteed WAN capacity",
+    "single-flow speed did not improve",
+    "FakeIP recovery qualified against intact consistent 1.14 cache after process SIGKILL, not disk corruption, power loss, or cache exhaustion",
+    "remote running sing-box/Hysteria/Brutal versions remain unobserved"
+  ]
+}

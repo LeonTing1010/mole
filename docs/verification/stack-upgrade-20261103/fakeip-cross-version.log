@@ -1,0 +1,73 @@
+{
+  "scope": "isolated exact current/stable/alpha binaries; enabled/store_fakeip from current config.Build; each case uses new private DB; graceful and forced restarts; production-style sniff enabled; plain non-SNI TCP; graceful engine restart; production unchanged",
+  "cases": [
+    {
+      "version": "current-to-stable",
+      "stopmode": "graceful",
+      "persistent": true,
+      "config_valid": true,
+      "cached_fakeip": "198.18.0.2",
+      "before_restart": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "after_restart_without_dns_refresh": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "log_tail": "",
+      "cache_mode_after_restart": "0o600"
+    },
+    {
+      "version": "stable-to-current",
+      "stopmode": "graceful",
+      "persistent": true,
+      "config_valid": true,
+      "cached_fakeip": "198.18.0.2",
+      "before_restart": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "after_restart_without_dns_refresh": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "log_tail": "",
+      "cache_mode_after_restart": "0o600"
+    },
+    {
+      "version": "stable-to-next",
+      "stopmode": "graceful",
+      "persistent": true,
+      "config_valid": true,
+      "cached_fakeip": "198.18.0.2",
+      "before_restart": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "after_restart_without_dns_refresh": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "log_tail": "",
+      "cache_mode_after_restart": "0o600"
+    },
+    {
+      "version": "next-to-stable",
+      "stopmode": "graceful",
+      "persistent": true,
+      "config_valid": true,
+      "cached_fakeip": "198.18.0.2",
+      "before_restart": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "after_restart_without_dns_refresh": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "log_tail": "",
+      "cache_mode_after_restart": "0o600"
+    }
+  ]
+}

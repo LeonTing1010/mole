@@ -1,0 +1,70 @@
+{
+  "recorded_at": "2026-11-02T03:13:19.386660+00:00",
+  "scope": "Deploy reliability implementation and bounded live acceptance; no sustained throughput claim.",
+  "base_commit": "adab94048c6c24e6a1713f227db42e98e847bb11",
+  "installed_binary": {
+    "path": "/usr/local/bin/mole",
+    "sha256": "7b6d284c7d951f0d01f522775565eddb199b11570cba1f132b21be02b20b3a16",
+    "previous_sha256": "db522f93b4576beb557d264e99ef6b8d1efae0849d0d039ea07f344487319173"
+  },
+  "daemon": {
+    "pid": 34705,
+    "started_at_local": "2026-11-02T11:09:30+08:00",
+    "executable": "/usr/local/bin/mole",
+    "sing_box_pid": 34733,
+    "activation": "User restarted with mole down && mole up; fresh parent and child processes observed."
+  },
+  "verification": {
+    "go_test": {
+      "command": "go test ./... -count=1 -timeout=180s",
+      "result": "passed",
+      "log": "tests-final.log"
+    },
+    "go_vet": {
+      "command": "go vet ./...",
+      "result": "passed",
+      "log": "vet.log"
+    },
+    "race": {
+      "scope": "Relevant cmd and core regression tests; before final package-lock shell wait addition",
+      "result": "passed",
+      "log": "race.log"
+    },
+    "diff_check": "passed",
+    "source_hashes": "final-source-sha256.json",
+    "source_comparison": "All 27 listed source/test files match the tested isolated worktree and accepted build source."
+  },
+  "live_deployments": [
+    {
+      "name": "mole-accept-20261102-icn",
+      "instance_created_at": "2026-11-02T02:57:32Z",
+      "both_protocols_ready_at": "2026-11-02T02:59:21Z",
+      "seconds_created_to_ready": 109,
+      "build": "intermediate build before final package-lock wait change"
+    },
+    {
+      "name": "mole-accept-final-20261102-icn",
+      "deploy_id": "49e372b149fa9c3a65eef31b6a792ff6",
+      "instance_created_at": "2026-11-02T03:03:54Z",
+      "both_protocols_ready_at": "2026-11-02T03:05:39Z",
+      "seconds_created_to_ready": 105,
+      "seconds_command_prepared_to_ready": 119,
+      "build_sha256": "7b6d284c7d951f0d01f522775565eddb199b11570cba1f132b21be02b20b3a16",
+      "acceptance": "Both HY2 and REALITY authenticated and delivered HTTPS payloads; remote required services and separately completing optional Brutal service observed."
+    }
+  ],
+  "current_production_verification": "production-verification.json",
+  "cleanup": "cloud-cleanup.json",
+  "cancel_verification": {
+    "exit": 1,
+    "retained_after_cancel": true
+  },
+  "limitations": [
+    "Ready records the latest successful verification, not continuous availability.",
+    "Fresh daemon sample window had 7 observations: 1 slow, 0 failed; no long-term stability or sustained bandwidth conclusion.",
+    "Final deployment encountered a management direct-exemption timeout, recovered via routed API access, and passed acceptance.",
+    "Deploy interrupt cleanup was checked with deterministic lifecycle tests; live SIGINT exercised server verify retention only.",
+    "Pinned upstream binaries were accepted for amd64 in live deployment; arm64 checksums are configured but no arm64 VPS was deployed."
+  ],
+  "workspace": "Existing unstaged changes preserved; no staged changes, commit, or push created."
+}

@@ -1,0 +1,546 @@
+{
+  "started_at": "2026-11-03T09:22:21.764437+08:00",
+  "scope": "Current Wi-Fi; isolated same-node REALITY+smux IPv4/IPv6 clients, native physical interface; production unchanged; bypasses TUN; no upload, server/network-fault recovery, long-term or wired validation",
+  "phases": [
+    {
+      "phase": "ipv4",
+      "elapsed_seconds": 1.243579125002725,
+      "legs": {
+        "tested": {
+          "bytes": 16777216,
+          "started": 2,
+          "completed": 2,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 107.92857913219305
+        }
+      },
+      "total_connections": 1,
+      "connections_per_leg": 1,
+      "aggregate_mbps": 107.92857913219305,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "budget_reserved_bytes": 16777216,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 1,
+      "workers": 1
+    },
+    {
+      "phase": "ipv6",
+      "elapsed_seconds": 7.271949082991341,
+      "legs": {
+        "tested": {
+          "bytes": 16777216,
+          "started": 2,
+          "completed": 2,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 18.45691250973241
+        }
+      },
+      "total_connections": 1,
+      "connections_per_leg": 1,
+      "aggregate_mbps": 18.45691250973241,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "budget_reserved_bytes": 16777216,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 1,
+      "workers": 1
+    },
+    {
+      "phase": "ipv4",
+      "elapsed_seconds": 2.571544584003277,
+      "legs": {
+        "tested": {
+          "bytes": 67108864,
+          "started": 8,
+          "completed": 8,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 208.7737134093242
+        }
+      },
+      "total_connections": 8,
+      "connections_per_leg": 8,
+      "aggregate_mbps": 208.7737134093242,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "budget_reserved_bytes": 67108864,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 1,
+      "workers": 8
+    },
+    {
+      "phase": "ipv6",
+      "elapsed_seconds": 6.819628832978196,
+      "legs": {
+        "tested": {
+          "bytes": 67108864,
+          "started": 8,
+          "completed": 8,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 78.72435951408566
+        }
+      },
+      "total_connections": 8,
+      "connections_per_leg": 8,
+      "aggregate_mbps": 78.72435951408566,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "budget_reserved_bytes": 67108864,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 1,
+      "workers": 8
+    },
+    {
+      "phase": "ipv6",
+      "elapsed_seconds": 2.475271583010908,
+      "legs": {
+        "tested": {
+          "bytes": 16777216,
+          "started": 2,
+          "completed": 2,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 54.22343508534858
+        }
+      },
+      "total_connections": 1,
+      "connections_per_leg": 1,
+      "aggregate_mbps": 54.22343508534858,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "budget_reserved_bytes": 16777216,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 2,
+      "workers": 1
+    },
+    {
+      "phase": "ipv4",
+      "elapsed_seconds": 0.719319167023059,
+      "legs": {
+        "tested": {
+          "bytes": 16777216,
+          "started": 2,
+          "completed": 2,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 186.5899508217851
+        }
+      },
+      "total_connections": 1,
+      "connections_per_leg": 1,
+      "aggregate_mbps": 186.5899508217851,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "budget_reserved_bytes": 16777216,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 2,
+      "workers": 1
+    },
+    {
+      "phase": "ipv6",
+      "elapsed_seconds": 3.6286443330172915,
+      "legs": {
+        "tested": {
+          "bytes": 67108864,
+          "started": 8,
+          "completed": 8,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 147.95357790097353
+        }
+      },
+      "total_connections": 8,
+      "connections_per_leg": 8,
+      "aggregate_mbps": 147.95357790097353,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "budget_reserved_bytes": 67108864,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 2,
+      "workers": 8
+    },
+    {
+      "phase": "ipv4",
+      "elapsed_seconds": 1.5295324999897275,
+      "legs": {
+        "tested": {
+          "bytes": 67108864,
+          "started": 8,
+          "completed": 8,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 351.0032719171418
+        }
+      },
+      "total_connections": 8,
+      "connections_per_leg": 8,
+      "aggregate_mbps": 351.0032719171418,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "budget_reserved_bytes": 67108864,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 2,
+      "workers": 8
+    },
+    {
+      "phase": "ipv4",
+      "elapsed_seconds": 0.7256407499953639,
+      "legs": {
+        "tested": {
+          "bytes": 16777216,
+          "started": 2,
+          "completed": 2,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 184.96443040286468
+        }
+      },
+      "total_connections": 1,
+      "connections_per_leg": 1,
+      "aggregate_mbps": 184.96443040286468,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "budget_reserved_bytes": 16777216,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 3,
+      "workers": 1
+    },
+    {
+      "phase": "ipv6",
+      "elapsed_seconds": 2.7952172920049634,
+      "legs": {
+        "tested": {
+          "bytes": 16777216,
+          "started": 2,
+          "completed": 2,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 48.01692104005547
+        }
+      },
+      "total_connections": 1,
+      "connections_per_leg": 1,
+      "aggregate_mbps": 48.01692104005547,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "budget_reserved_bytes": 16777216,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 3,
+      "workers": 1
+    },
+    {
+      "phase": "ipv4",
+      "elapsed_seconds": 1.5293808749993332,
+      "legs": {
+        "tested": {
+          "bytes": 67108864,
+          "started": 8,
+          "completed": 8,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 351.0380708796519
+        }
+      },
+      "total_connections": 8,
+      "connections_per_leg": 8,
+      "aggregate_mbps": 351.0380708796519,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "budget_reserved_bytes": 67108864,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 3,
+      "workers": 8
+    },
+    {
+      "phase": "ipv6",
+      "elapsed_seconds": 2.7943702089833096,
+      "legs": {
+        "tested": {
+          "bytes": 67108864,
+          "started": 8,
+          "completed": 8,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "errors": [],
+          "mbps": 192.12590739554605
+        }
+      },
+      "total_connections": 8,
+      "connections_per_leg": 8,
+      "aggregate_mbps": 192.12590739554605,
+      "complete": true,
+      "stop_reason": "budget_delivered",
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "budget_reserved_bytes": 67108864,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": true,
+      "new_enobufs_lines": 0,
+      "round": 3,
+      "workers": 8
+    }
+  ],
+  "https": [
+    {
+      "mode": "ipv4",
+      "stage": "cold",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.656156,
+      "error": ""
+    },
+    {
+      "mode": "ipv6",
+      "stage": "cold",
+      "ok": true,
+      "status": 204,
+      "seconds": 1.218164,
+      "error": ""
+    },
+    {
+      "mode": "ipv4",
+      "stage": "fresh-https-0",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.424713,
+      "error": ""
+    },
+    {
+      "mode": "ipv6",
+      "stage": "fresh-https-0",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.694873,
+      "error": ""
+    },
+    {
+      "mode": "ipv6",
+      "stage": "fresh-https-1",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.694703,
+      "error": ""
+    },
+    {
+      "mode": "ipv4",
+      "stage": "fresh-https-1",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.42472,
+      "error": ""
+    },
+    {
+      "mode": "ipv4",
+      "stage": "fresh-https-2",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.422742,
+      "error": ""
+    },
+    {
+      "mode": "ipv6",
+      "stage": "fresh-https-2",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.734412,
+      "error": ""
+    },
+    {
+      "mode": "ipv4",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.426016,
+      "error": ""
+    },
+    {
+      "mode": "ipv6",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.735256,
+      "error": ""
+    },
+    {
+      "mode": "ipv4",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.425226,
+      "error": ""
+    },
+    {
+      "mode": "ipv6",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.710143,
+      "error": ""
+    },
+    {
+      "mode": "ipv6",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.692876,
+      "error": ""
+    },
+    {
+      "mode": "ipv4",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.421498,
+      "error": ""
+    },
+    {
+      "mode": "ipv6",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.694804,
+      "error": ""
+    },
+    {
+      "mode": "ipv4",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.42679,
+      "error": ""
+    },
+    {
+      "mode": "ipv4",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.421087,
+      "error": ""
+    },
+    {
+      "mode": "ipv6",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.712955,
+      "error": ""
+    },
+    {
+      "mode": "ipv4",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.425664,
+      "error": ""
+    },
+    {
+      "mode": "ipv6",
+      "stage": "warm-after-bulk",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.693828,
+      "error": ""
+    },
+    {
+      "mode": "ipv4",
+      "stage": "client-restart-only",
+      "ok": true,
+      "status": 204,
+      "seconds": 0.657335,
+      "error": ""
+    },
+    {
+      "mode": "ipv6",
+      "stage": "client-restart-only",
+      "ok": true,
+      "status": 204,
+      "seconds": 1.294651,
+      "error": ""
+    }
+  ],
+  "checks": {
+    "ipv4": {
+      "valid": true,
+      "error": "",
+      "log_tail": ""
+    },
+    "ipv6": {
+      "valid": true,
+      "error": "",
+      "log_tail": ""
+    }
+  },
+  "all_test_processes_exited": true,
+  "finished_at": "2026-11-03T09:23:34.877973+08:00"
+}

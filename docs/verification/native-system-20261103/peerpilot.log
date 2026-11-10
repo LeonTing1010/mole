@@ -1,0 +1,4 @@
+{"model": "mixed9000", "round": 1, "error": "owned-node pilot payload failed"}
+{"model": "gvisor9000", "round": 1, "workers": 1, "complete": true, "aggregate_mbps": 105.65078216136115, "engine_cpu_percent": 13.381714349561477}
+{"model": "gvisor9000", "round": 1, "workers": 8, "complete": true, "aggregate_mbps": 203.88292713665655, "engine_cpu_percent": 28.861877438399752}
+{"report": "/tmp/mole-native-system-20261103/peerpilot.json", "phases": 2, "error": null, "restore_errors": [], "owned_interface_removed": true}

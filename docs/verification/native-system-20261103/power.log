@@ -1,0 +1,9 @@
+{"model": "base", "round": 1, "workers": 1, "complete": true, "aggregate_mbps": 114.35147486037569, "engine_cpu_percent": 18.743667356135433}
+{"model": "base", "round": 1, "workers": 8, "complete": true, "aggregate_mbps": 216.39743225235063, "engine_cpu_percent": 29.424228806833913}
+{"model": "power", "round": 1, "workers": 1, "complete": true, "aggregate_mbps": 109.19551626410947, "engine_cpu_percent": 13.830689910723725}
+{"model": "power", "round": 1, "workers": 8, "complete": true, "aggregate_mbps": 208.97567305154243, "engine_cpu_percent": 26.07958408902091}
+{"model": "power", "round": 2, "workers": 1, "complete": true, "aggregate_mbps": 107.84322857758494, "engine_cpu_percent": 16.873387993345286}
+{"model": "power", "round": 2, "workers": 8, "complete": true, "aggregate_mbps": 215.01687072960715, "engine_cpu_percent": 30.037509845049186}
+{"model": "base", "round": 2, "workers": 1, "complete": true, "aggregate_mbps": 101.06881562174478, "engine_cpu_percent": 11.295320349381655}
+{"model": "base", "round": 2, "workers": 8, "complete": true, "aggregate_mbps": 210.4920437455631, "engine_cpu_percent": 28.62125484911}
+{"report": "/tmp/mole-native-system-20261103/power.json", "phases": 8, "error": null, "restore_errors": [], "owned_interface_removed": true}

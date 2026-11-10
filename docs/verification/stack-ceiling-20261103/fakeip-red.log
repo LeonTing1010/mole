@@ -1,0 +1,7 @@
+# github.com/LeonTing1010/mole/core [github.com/LeonTing1010/mole/core.test]
+core/fakeip_recovery_test.go:34:10: undefined: recoverFakeIPCache
+core/fakeip_recovery_test.go:39:20: undefined: decodeFakeIPMetadata
+core/fakeip_recovery_test.go:43:10: undefined: recoverFakeIPCache
+core/fakeip_recovery_test.go:52:28: undefined: recoverFakeIPCache
+FAIL	github.com/LeonTing1010/mole/core [build failed]
+FAIL

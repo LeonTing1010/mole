@@ -1,0 +1,31 @@
+{
+  "checked_at": "2026-11-02T03:12:37.142076+00:00",
+  "test_resources": [
+    {
+      "deploy_id": "9068d3cfdc28994fed8e82e0e036eec4",
+      "name": "mole-accept-20261102-icn",
+      "instance_id": "4d37efb1-9791-4dd3-bd6b-ff3900a3655b",
+      "instance_get_status": 404,
+      "script_id": "69c81ff8-24bb-4d45-bfb4-acf5b89a5a1a",
+      "script_delete_status": 204,
+      "script_get_status": 404
+    },
+    {
+      "deploy_id": "49e372b149fa9c3a65eef31b6a792ff6",
+      "name": "mole-accept-final-20261102-icn",
+      "instance_id": "6d892e25-c6b5-4d89-b34f-f9daa40c3319",
+      "instance_get_status": 404,
+      "script_id": "112d37b4-63de-4d4f-9e75-2a68a41b900f",
+      "script_delete_status": 204,
+      "script_get_status": 404
+    }
+  ],
+  "remaining_instances": [
+    {
+      "id": "0c972fb1-8de0-47bb-9284-374fd4618d4b",
+      "label": "nrt-1793578077",
+      "main_ip": "139.180.199.247",
+      "status": "active"
+    }
+  ]
+}

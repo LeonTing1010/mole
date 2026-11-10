@@ -1,0 +1,10 @@
+● Running — pid 34705
+   Active:  nrt-1793578077 — nrt (139.180.199.247)
+   Shield:  🛡️ kill switch armed — foreign egress locked to tunnel, CN direct
+   Mode:    🟡 proxy — collecting probe samples (7/20); 1 slow or failed
+   Dials:   1/7 probe requests slow or failed (1 slow >1000ms, 0 failed; last sample 2026-11-02 11:12:12) — collecting samples (7/20)
+   Profile: VLESS+REALITY over TCP/443, TCP Brutal ↓400 Mbps (primary; hy2 ladder ↓400 Mbps on standby)
+   Lid:     🟢 destroy-on-lid-close armed — shutting the lid deletes the server
+   Link:    🟢 gateway 192.168.1.1 — 0/12 echoes lost, median 3ms
+   Probed:  7s ago
+   Tunnel:  warm (295ms via proxy, 12s ago)

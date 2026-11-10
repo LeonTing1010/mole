@@ -1,0 +1,18 @@
+{
+  "stage": "ready",
+  "updated_at": "2026-11-03T02:32:50Z",
+  "verification": {
+    "status": "ready",
+    "checked_at": "2026-11-03T02:32:50Z",
+    "hy2": {
+      "verdict": "alive",
+      "rtt_ns": 496239709,
+      "detail": "authenticated HTTPS payload received"
+    },
+    "reality": {
+      "verdict": "alive",
+      "rtt_ns": 470544750,
+      "detail": "authenticated HTTPS payload received"
+    }
+  }
+}

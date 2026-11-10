@@ -1,0 +1,173 @@
+{
+  "suite": "peerpilot",
+  "scope": "same-node REALITY+smux; complete owned-node payload over full isolated TUN; unbound application sockets; only two owned host routes; production remains active",
+  "started_at": "2026-11-03T09:24:25.311953+08:00",
+  "phases": [
+    {
+      "model": "gvisor9000",
+      "round": 1,
+      "workers": 1,
+      "budget_bytes": 16777216,
+      "delivered_bytes": 16777216,
+      "complete": true,
+      "elapsed_seconds": 1.2703902920000003,
+      "aggregate_mbps": 105.65078216136115,
+      "engine_cpu_seconds": 0.16999999999999998,
+      "engine_cpu_percent": 13.381714349561477,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        }
+      ],
+      "new_production_enobufs": 0
+    },
+    {
+      "model": "gvisor9000",
+      "round": 1,
+      "workers": 8,
+      "budget_bytes": 67108864,
+      "delivered_bytes": 67108864,
+      "complete": true,
+      "elapsed_seconds": 2.633231333,
+      "aggregate_mbps": 203.88292713665655,
+      "engine_cpu_seconds": 0.76,
+      "engine_cpu_percent": 28.861877438399752,
+      "requests": [
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        },
+        {
+          "ok": true,
+          "status": 200,
+          "bytes": 8388608,
+          "wanted": 8388608,
+          "error": ""
+        }
+      ],
+      "new_production_enobufs": 0
+    }
+  ],
+  "checks": [
+    {
+      "model": "mixed9000",
+      "round": 1,
+      "controls": {
+        "sysctls": {
+          "kern.ipc.maxsockbuf": "8388608",
+          "net.inet.tcp.autorcvbufmax": "4194304",
+          "net.inet.tcp.autosndbufmax": "4194304"
+        },
+        "battery_low_power": "1"
+      },
+      "warm": {
+        "ok": false,
+        "status": 0,
+        "bytes": 0,
+        "wanted": 1024,
+        "error": "curl: (52) Empty reply from server\n"
+      },
+      "error": "owned-node pilot payload failed",
+      "engine_log_tail": "\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;80m912794432\u001b[0m 15ms] connection: open connection to localhost:8098 using outbound/vless[tested]: context canceled\n"
+    },
+    {
+      "model": "gvisor9000",
+      "round": 1,
+      "controls": {
+        "sysctls": {
+          "kern.ipc.maxsockbuf": "8388608",
+          "net.inet.tcp.autorcvbufmax": "4194304",
+          "net.inet.tcp.autosndbufmax": "4194304"
+        },
+        "battery_low_power": "1"
+      },
+      "warm": {
+        "ok": true,
+        "status": 200,
+        "bytes": 1024,
+        "wanted": 1024,
+        "error": ""
+      },
+      "tls_authenticated": true,
+      "engine_log_tail": ""
+    }
+  ],
+  "production_config_before": "647bf5dcf45eee62d6c9417bd2e6bcee600a9d01c90736e9613aaab5222af2e5",
+  "controls_before": {
+    "sysctls": {
+      "kern.ipc.maxsockbuf": "8388608",
+      "net.inet.tcp.autorcvbufmax": "4194304",
+      "net.inet.tcp.autosndbufmax": "4194304"
+    },
+    "battery_low_power": "1"
+  },
+  "restore_errors": [],
+  "controls_after": {
+    "sysctls": {
+      "kern.ipc.maxsockbuf": "8388608",
+      "net.inet.tcp.autorcvbufmax": "4194304",
+      "net.inet.tcp.autosndbufmax": "4194304"
+    },
+    "battery_low_power": "1"
+  },
+  "production_config_after": "647bf5dcf45eee62d6c9417bd2e6bcee600a9d01c90736e9613aaab5222af2e5",
+  "owned_interface_removed": true,
+  "new_production_enobufs": 0,
+  "finished_at": "2026-11-03T09:24:32.029444+08:00"
+}

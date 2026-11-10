@@ -1,0 +1,27 @@
+🚀 Deploying mole-accept-final-20261102-icn in icn (vc2-1c-1gb, hysteria2 on port 443)
+[2026-11-02T03:03:40Z] deployment 49e372b149fa9c3a65eef31b6a792ff6: prepared
+Deployment receipt: /Users/leo/.mole/deployments/49e372b149fa9c3a65eef31b6a792ff6/receipt.json
+[2026-11-02T03:03:40Z] deployment 49e372b149fa9c3a65eef31b6a792ff6: creating_startup_script
+2026/11/02 11:03:45 management API: direct exemption unavailable: exempt [66.55.134.139]: signal: killed ()
+[2026-11-02T03:03:46Z] deployment 49e372b149fa9c3a65eef31b6a792ff6: preparing_firewall
+[2026-11-02T03:03:51Z] deployment 49e372b149fa9c3a65eef31b6a792ff6: creating_instance
+[2026-11-02T03:03:54Z] deployment 49e372b149fa9c3a65eef31b6a792ff6: created
+[2026-11-02T03:03:54Z] deployment 49e372b149fa9c3a65eef31b6a792ff6: waiting_for_address
+Address assigned: 141.164.49.109; waiting for server installation.
+[2026-11-02T03:04:00Z] deployment 49e372b149fa9c3a65eef31b6a792ff6: verifying
+Verifying authenticated protocol requests from outside the tunnel...
+   reality: silent — no answer yet
+   hy2: silent — no answer yet
+elapsed=15s remaining=5m39s HY2=silent REALITY=silent (remote installation stage unobserved)
+elapsed=30s remaining=5m24s HY2=silent REALITY=silent (remote installation stage unobserved)
+elapsed=45s remaining=5m9s HY2=silent REALITY=silent (remote installation stage unobserved)
+elapsed=1m0s remaining=4m54s HY2=silent REALITY=silent (remote installation stage unobserved)
+elapsed=1m15s remaining=4m39s HY2=silent REALITY=silent (remote installation stage unobserved)
+   reality: refused — the box is up, nothing is listening yet
+   hy2: refused — the box is up, nothing is listening yet
+elapsed=1m30s remaining=4m24s HY2=refused REALITY=refused (remote installation stage unobserved)
+   hy2: answers (463ms)
+   reality: answers (491ms)
+All requested protocols authenticated and delivered HTTPS payloads.
+[2026-11-02T03:05:39Z] deployment 49e372b149fa9c3a65eef31b6a792ff6: ready
+Requested tunnels ready. Optional Brutal capability is checked separately by the client.

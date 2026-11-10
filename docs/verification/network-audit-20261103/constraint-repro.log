@@ -1,0 +1,29 @@
+=== RUN   TestAuditAbandonFallbackCommitsActualRoute
+2026/11/03 08:31:12 tunnel keepalive failed (×6): Get "https://cloudflare.com/cdn-cgi/trace": HY2 transport unavailable
+2026/11/03 08:31:12 health:  → path-blackhole (probe alive fails=0 err=""; keepalive fails=6 err="Get \"https://cloudflare.com/cdn-cgi/trace\": HY2 transport unavailable"; fresh dials 0/0 bad)
+2026/11/03 08:31:12 fallback: released — keepalive dark ×6 on the hy2 fallback as well — back to proxy-reality
+2026/11/03 08:31:12 health: path-blackhole → healthy (probe alive fails=0 err=""; keepalive fails=0 err=""; fresh dials 0/0 bad)
+    network_audit_test.go:56: fallback=false actual_selector=proxy-bw-400 failure_count=0
+    network_audit_test.go:58: fallback cleared and evidence erased while actual traffic still uses the broken HY2 leg
+--- FAIL: TestAuditAbandonFallbackCommitsActualRoute (0.00s)
+=== RUN   TestAuditSingleOriginFailureDoesNotMoveHealthyTransport
+2026/11/03 08:31:12 tunnel keepalive failed (×6): http Service Unavailable
+2026/11/03 08:31:12 health:  → path-blackhole (probe alive fails=0 err=""; keepalive fails=6 err="http Service Unavailable"; fresh dials 0/0 bad)
+2026/11/03 08:31:12 fallback: keepalive dark ×6 on proxy-reality while the UDP probe still answers — moving to the hy2 ladder (proxy-bw-400, UDP/443) for 10m0s; TCP/443 is what stopped carrying, and Brutal on UDP is the other bet
+2026/11/03 08:31:12 health: path-blackhole → healthy (probe alive fails=0 err=""; keepalive fails=0 err=""; fresh dials 0/0 bad)
+    network_audit_test.go:81: independent origin delivered payload; actual_selector=proxy-bw-400 fallback=true
+    network_audit_test.go:83: one origin's 503 moved a transport that demonstrably still delivered another origin's payload
+--- FAIL: TestAuditSingleOriginFailureDoesNotMoveHealthyTransport (0.00s)
+=== RUN   TestAuditOptionalPacingBlocksRecoveryMeasurement
+    network_audit_test.go:102: expired dwell did not test REALITY at all because optional TCP pacing was unconfirmed
+--- PASS: TestAuditOptionalPacingBlocksRecoveryMeasurement (0.00s)
+FAIL
+FAIL	github.com/LeonTing1010/mole/core	0.364s
+=== RUN   TestAuditConcurrentStateWritersPreserveAtomicity
+    network_audit_test.go:28: first persistence error: rename /var/folders/p5/plpbyjhs08g4cpn5fvzphqh80000gp/T/TestAuditConcurrentStateWritersPreserveAtomicity1823155676/001/.mole/state.json.tmp /var/folders/p5/plpbyjhs08g4cpn5fvzphqh80000gp/T/TestAuditConcurrentStateWritersPreserveAtomicity1823155676/001/.mole/state.json: no such file or directory
+    network_audit_test.go:35: failed writes=200/288
+    network_audit_test.go:37: concurrent monitor state snapshots collided on their shared temporary file
+--- FAIL: TestAuditConcurrentStateWritersPreserveAtomicity (0.05s)
+FAIL
+FAIL	github.com/LeonTing1010/mole/utils	0.199s
+FAIL

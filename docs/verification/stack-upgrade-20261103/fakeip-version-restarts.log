@@ -1,0 +1,158 @@
+{
+  "scope": "isolated exact current/stable/alpha binaries; enabled/store_fakeip from current config.Build; each case uses new private DB; graceful and forced restarts; production-style sniff enabled; plain non-SNI TCP; graceful engine restart; production unchanged",
+  "cases": [
+    {
+      "version": "current",
+      "stopmode": "graceful",
+      "persistent": true,
+      "config_valid": true,
+      "cached_fakeip": "198.18.0.2",
+      "before_restart": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "after_restart_without_dns_refresh": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "log_tail": "",
+      "cache_mode_after_restart": "0o600"
+    },
+    {
+      "version": "current",
+      "stopmode": "kill-immediate",
+      "persistent": true,
+      "config_valid": true,
+      "cached_fakeip": "198.18.0.2",
+      "before_restart": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "after_restart_without_dns_refresh": {
+        "ok": false,
+        "socks_status": 1
+      },
+      "log_tail": "\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;225m2738085329\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n",
+      "cache_mode_after_restart": "0o600"
+    },
+    {
+      "version": "current",
+      "stopmode": "kill-after-2s",
+      "persistent": true,
+      "config_valid": true,
+      "cached_fakeip": "198.18.0.2",
+      "before_restart": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "after_restart_without_dns_refresh": {
+        "ok": false,
+        "socks_status": 1
+      },
+      "log_tail": "\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;225m2738085329\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;76m2997198908\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n",
+      "cache_mode_after_restart": "0o600"
+    },
+    {
+      "version": "stable",
+      "stopmode": "graceful",
+      "persistent": true,
+      "config_valid": true,
+      "cached_fakeip": "198.18.0.2",
+      "before_restart": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "after_restart_without_dns_refresh": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "log_tail": "\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;225m2738085329\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;76m2997198908\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n",
+      "cache_mode_after_restart": "0o600"
+    },
+    {
+      "version": "stable",
+      "stopmode": "kill-immediate",
+      "persistent": true,
+      "config_valid": true,
+      "cached_fakeip": "198.18.0.2",
+      "before_restart": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "after_restart_without_dns_refresh": {
+        "ok": false,
+        "socks_status": 1
+      },
+      "log_tail": "\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;225m2738085329\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;76m2997198908\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;85m1014860613\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n",
+      "cache_mode_after_restart": "0o600"
+    },
+    {
+      "version": "stable",
+      "stopmode": "kill-after-2s",
+      "persistent": true,
+      "config_valid": true,
+      "cached_fakeip": "198.18.0.2",
+      "before_restart": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "after_restart_without_dns_refresh": {
+        "ok": false,
+        "socks_status": 1
+      },
+      "log_tail": "\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;225m2738085329\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;76m2997198908\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;85m1014860613\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;229m3501313794\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mFATAL\u001b[0m[0000] start service: context canceled\n",
+      "cache_mode_after_restart": "0o600"
+    },
+    {
+      "version": "next",
+      "stopmode": "graceful",
+      "persistent": true,
+      "config_valid": true,
+      "cached_fakeip": "198.18.0.2",
+      "before_restart": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "after_restart_without_dns_refresh": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "log_tail": "\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;225m2738085329\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;76m2997198908\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;85m1014860613\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;229m3501313794\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mFATAL\u001b[0m[0000] start service: context canceled\n",
+      "cache_mode_after_restart": "0o600"
+    },
+    {
+      "version": "next",
+      "stopmode": "kill-immediate",
+      "persistent": true,
+      "config_valid": true,
+      "cached_fakeip": "198.18.0.2",
+      "before_restart": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "after_restart_without_dns_refresh": {
+        "ok": false,
+        "socks_status": 1
+      },
+      "log_tail": "\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;225m2738085329\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;76m2997198908\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;85m1014860613\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;229m3501313794\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mFATAL\u001b[0m[0000] start service: context canceled\n\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;189m1331110317\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n",
+      "cache_mode_after_restart": "0o600"
+    },
+    {
+      "version": "next",
+      "stopmode": "kill-after-2s",
+      "persistent": true,
+      "config_valid": true,
+      "cached_fakeip": "198.18.0.2",
+      "before_restart": {
+        "ok": true,
+        "body": "PONG"
+      },
+      "after_restart_without_dns_refresh": {
+        "ok": false,
+        "socks_status": 1
+      },
+      "log_tail": "\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;225m2738085329\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;76m2997198908\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;85m1014860613\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;229m3501313794\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mFATAL\u001b[0m[0000] start service: context canceled\n\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;189m1331110317\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n\u001b[31mERROR\u001b[0m[0000] [\u001b[38;5;78m63508798\u001b[0m 0ms] router: missing fakeip record, try enable `experimental.cache_file`\n",
+      "cache_mode_after_restart": "0o600"
+    }
+  ]
+}
