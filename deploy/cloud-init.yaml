@@ -1,0 +1,378 @@
+# mole — VPS cloud-init (Ubuntu 22.04/24.04 on Vultr/Hetzner/DigitalOcean)
+#
+# Usage (Vultr example):
+#   vultr-cli instance create \
+#     --region lax --plan vc2-1c-2gb --os 26 \
+#     --label mole-server \
+#     --userdata "$(cat deploy/cloud-init.yaml)"
+#
+# After boot (~3 min):
+#   ssh root@<ip> "cat /etc/mole/config.json"   → REALITY + hy2 URI for mole CLI
+#   mole server adopt <reality-uri> <hy2-uri>  → import into local servers.json
+#   mole up                                     → bring up client tunnel
+#
+# What this does:
+#   1. Installs sing-box v1.14.4 (.deb), hysteria2 v2.13.0 (binary), python3
+#   2. Builds + loads tcp-brutal v2.0.1 kernel module via DKMS (optional;
+#      VPS without kernel headers gracefully falls back to BBR)
+#   3. Writes REALITY + hy2 config files with auto-generated keys/certs
+#   4. Starts sing-box, hysteria2, and the Brutal keeper
+#   5. Emits /etc/mole/config.json with the two URIs the client needs
+
+# NOTE: all sha256 digests must match. Update versions + digests together.
+# CURRENT: sing-box 1.14.4, hysteria2 2.13.0, tcp-brutal 2.0.1
+
+# cloud-init schema: v1 + #cloud-config at the very first line
+#cloud-config
+
+hostname: mole
+fqdn: mole.local
+
+users:
+  - name: mole
+    shell: /usr/sbin/nologin
+    system: true
+
+write_files:
+  # ---- sing-box server config (REALITY + hy2 ladder on one port) ----
+  - path: /etc/sing-box/config.json
+    permissions: "0644"
+    content: |
+      {
+        "log": {"level": "warn"},
+        "dns": {
+          "servers": [
+            {"type": "udp", "server": "223.5.5.5", "tag": "dns-direct"},
+            {"type": "udp", "server": "8.8.8.8", "tag": "dns-remote"}
+          ],
+          "final": "dns-remote",
+          "strategy": "ipv4_only"
+        },
+        "inbounds": [
+          {
+            "type": "vless",
+            "tag": "reality-in",
+            "listen": "0.0.0.0",
+            "listen_port": 443,
+            "users": [{"uuid": "${USER_UUID}", "flow": "xtls-rprx-vision"}],
+            "tls": {
+              "enabled": true,
+              "protocol": "reality",
+              "certificate_path": "/etc/mole/server.crt",
+              "key_path": "/etc/mole/server.key",
+              "reality": {
+                "handshake": {
+                  "server_name": "www.microsoft.com",
+                  "server": "www.microsoft.com",
+                  "server_port": 443,
+                  "transport": "tcp"
+                },
+                "private_key": "${REALITY_PRIV}",
+                "short_ids": ["${REALITY_SHORT}"]
+              }
+            }
+          },
+          {
+            "type": "hysteria2",
+            "tag": "hy2-in",
+            "listen": "0.0.0.0",
+            "listen_port": 443,
+            "users": [{"password": "${HY2_PASSWORD}"}],
+            "tls": {
+              "enabled": true,
+              "certificate_path": "/etc/mole/server.crt",
+              "key_path": "/etc/mole/server.key"
+            }
+          }
+        ],
+        "outbounds": [
+          {"type": "direct", "tag": "direct"},
+          {"type": "block", "tag": "block"}
+        ],
+        "route": {
+          "rules": [
+            {"protocol": "quic", "action": "reject"},
+            {"domain_suffix": ["cn", "com.cn", "net.cn", "edu.cn", "中国"], "outbound": "direct"},
+            {"ip_cidr": ["1.1.1.1/32", "223.5.5.5/32", "192.168.0.0/16", "10.0.0.0/8", "127.0.0.0/8"], "outbound": "direct"},
+            {"ip_cidr": ["0.0.0.0/0"], "outbound": "direct"}
+          ],
+          "final": "direct",
+          "auto_detect_interface": true
+        }
+      }
+
+  # ---- REALITY private key (32 bytes, base64url-encoded) ----
+  - path: /etc/mole/reality.key
+    permissions: "0600"
+    content: "${REALITY_PRIV}"
+
+  # ---- REALITY short ID (8 bytes hex) ----
+  - path: /etc/mole/reality.short
+    permissions: "0600"
+    content: "${REALITY_SHORT}"
+
+  # ---- hy2 password ----
+  - path: /etc/mole/hy2.pass
+    permissions: "0600"
+    content: "${HY2_PASSWORD}"
+
+  # ---- UUID (client auth) ----
+  - path: /etc/mole/user.uuid
+    permissions: "0600"
+    content: "${USER_UUID}"
+
+  # ---- Brutal keeper (same Python as mole's embedded snippet) ----
+  - path: /usr/local/bin/mole-brutal-keeper
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env python3
+      """TCP Brutal rule keeper — mole server side."""
+      import http.server, json, os, re, subprocess, sys, threading, time, urllib.parse
+      BRUTAL_DIR = "/proc/net/tcp_brutal"
+      DEFAULT_MBPS = int(os.environ.get("MOLE_DEFAULT_MBPS", "100"))
+      DEFAULT_GAIN = int(os.environ.get("MOLE_DEFAULT_GAIN", "20"))
+      RATE_FILE = "/etc/mole-brutal-rate"
+      GAIN_FILE = "/etc/mole-brutal-gain"
+      def _read_first(path, default):
+          try:
+              with open(path) as f: return f.read().strip() or default
+          except OSError: return default
+      def _brutal_supported(): return os.path.isdir(BRUTAL_DIR)
+      def _build_rules(mbps, gain):
+          rules = []
+          try:
+              with open("/proc/net/tcp") as f: lines = f.readlines()[1:]
+              peers = set()
+              for line in lines:
+                  parts = line.split()
+                  if len(parts) < 10: continue
+                  st, local, remote = parts[3], parts[1], parts[2]
+                  if st != "01": continue
+                  try:
+                      ip_hex, port_hex = remote.split(":")
+                      ip = ".".join(str(int(ip_hex[i:i+2],16)) for i in (0,2,4,6))
+                      port = int(port_hex, 16)
+                      if port == 443: peers.add(ip)
+                  except (ValueError, IndexError): pass
+              for ip in peers:
+                  rule = f"add {ip}/32 rate={mbps*125000} gain={gain}"
+                  rules.append(rule)
+          except OSError: pass
+          return rules
+      def _apply_rules(mbps=None, gain=None):
+          if not _brutal_supported(): return False
+          mbps = mbps if mbps is not None else int(_read_first(RATE_FILE, str(DEFAULT_MBPS)))
+          gain = gain if gain is not None else int(_read_first(GAIN_FILE, str(DEFAULT_GAIN)))
+          try:
+              with open(f"{BRUTAL_DIR}/rules", "w") as f: f.write("flush\n")
+              for rule in _build_rules(mbps, gain):
+                  try:
+                      with open(f"{BRUTAL_DIR}/rules", "w") as f: f.write(rule + "\n")
+                  except OSError: pass
+          except OSError: return False
+          return True
+      class Handler(http.server.BaseHTTPRequestHandler):
+          def _reply(self, code, body):
+              if isinstance(body, dict): body = json.dumps(body)
+              self.send_response(code)
+              self.send_header("Content-Type", "application/json")
+              self.send_header("Content-Length", str(len(body)))
+              self.end_headers()
+              self.wfile.write(body.encode())
+          def do_GET(self):
+              u = urllib.parse.urlparse(self.path)
+              q = urllib.parse.parse_qs(u.query)
+              if u.path == "/rate":
+                  mbps = int(q.get("mbps", [DEFAULT_MBPS])[0])
+                  gain = int(q.get("gain", [DEFAULT_GAIN])[0])
+                  if gain > 0:
+                      open(GAIN_FILE, "w").write(str(gain))
+                  open(RATE_FILE, "w").write(str(mbps))
+                  ok = _apply_rules(mbps, gain if gain > 0 else None)
+                  self._reply(200, {"ok": ok, "rate_mbps": mbps, "gain": gain, "module": _brutal_supported()})
+              elif u.path == "/health":
+                  peers = 0
+                  try:
+                      with open("/proc/net/tcp") as f:
+                          for line in f.readlines()[1:]:
+                              parts = line.split()
+                              if len(parts) >= 10 and parts[3] == "01":
+                                  try:
+                                      if int(parts[2].split(":")[1],16) == 443: peers += 1
+                                  except: pass
+                  except OSError: pass
+                  self._reply(200, {"brutal_module": _brutal_supported(), "peers_on_443": peers, "rate_mbps": int(_read_first(RATE_FILE, str(DEFAULT_MBPS))), "gain": int(_read_first(GAIN_FILE, str(DEFAULT_GAIN)))})
+              elif u.path == "/bulk":
+                  n = min(int(q.get("bytes", [65536])[0]), 16*1024*1024)
+                  self._reply(200, os.urandom(n))
+              elif u.path == "/status":
+                  self._reply(200, {"module": _brutal_supported(), "rate": _read_first(RATE_FILE, str(DEFAULT_MBPS)), "gain": _read_first(GAIN_FILE, str(DEFAULT_GAIN))})
+              else: self._reply(404, {"error": "not found"})
+          def log_message(self, *a, **kw): pass
+      def _loop():
+          _apply_rules()
+          while True:
+              time.sleep(5)
+              _apply_rules()
+      threading.Thread(target=_loop, daemon=True).start()
+      server = http.server.HTTPServer(("127.0.0.1", 8098), Handler)
+      server.serve_forever()
+
+  # ---- systemd: Brutal keeper ----
+  - path: /etc/systemd/system/mole-brutal-keeper.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=mole: TCP Brutal rule keeper + in-band rate endpoint
+      After=network-online.target
+
+      [Service]
+      ExecStart=/usr/bin/python3 /usr/local/bin/mole-brutal-keeper
+      Restart=always
+      RestartSec=2
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # ---- systemd: Brutal DKMS install (oneshot, optional) ----
+  - path: /etc/systemd/system/mole-brutal-install.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=mole: TCP Brutal DKMS module installation
+      After=network-online.target
+      ConditionPathExists=/usr/src
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/mole-brutal-install
+      TimeoutStartSec=300
+      StandardOutput=append:/var/log/mole-brutal.log
+      StandardError=append:/var/log/mole-brutal.log
+
+  # ---- install script: TCP Brutal DKMS ----
+  - path: /usr/local/bin/mole-brutal-install
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      DKMS_SHA=64a2778f308f7684cb5a137d578bc071e373960a3b9b79f9de015b84b29a7299
+      INSTALLER_SHA=399eebb8df5e14f4ca1e11468b292f27585f633aa56f08d0c20e9eb1d5f35880
+      apt-get -qq update
+      apt-get -qq -y install dkms linux-headers-$(uname -r) curl >/dev/null 2>&1 || true
+      TMP=$(mktemp); ARCHIVE=$(mktemp --suffix=.tar.gz)
+      curl -fsSL -o "$TMP" https://raw.githubusercontent.com/HyNetworks/tcp-brutal/d2397ff8bca04a29fd2de01cf7d2d4b825224de8/scripts/install_dkms.sh
+      echo "$INSTALLER_SHA  $TMP" | sha256sum -c - || { echo "installer digest mismatch"; exit 1; }
+      curl -fsSL -o "$ARCHIVE" https://github.com/HyNetworks/tcp-brutal/releases/download/v2.0.1/tcp-brutal.dkms.tar.gz
+      echo "$DKMS_SHA  $ARCHIVE" | sha256sum -c - || { echo "archive digest mismatch"; exit 1; }
+      bash "$TMP" --local "$ARCHIVE"
+      modprobe brutal 2>/dev/null || true
+      rm -f "$TMP" "$ARCHIVE"
+
+  # ---- install script: sing-box v1.14.4 + hysteria2 v2.13.0 ----
+  - path: /usr/local/bin/mole-install-engines
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      DEBIAN_FRONTEND=noninteractive
+      SB_SHA=4e9b8809aed0e3ac78ad14fa3a0af533402425d736f0cc9dc75b1c03d381b614
+      SB_SHA_ARM=8f52525d84ff0f4fd2cec4bb12ed330590fc741ea5250fe7cfc94ae1f1069ac2
+      HY2_SHA=907ba8c9693edb104b20582681fb7dc15639d5b64a9cbb616a7b539190a86691
+      HY2_SHA_ARM=a68a61a84452ca250ce0368202521965ca9cc9d801a404f1dc9008ac6cf677a7
+      case $(uname -m) in
+        x86_64) SB_ARCH=amd64; SB_DIGEST=$SB_SHA; HY2_ARCH=amd64; HY2_DIGEST=$HY2_SHA ;;
+        aarch64) SB_ARCH=arm64; SB_DIGEST=$SB_SHA_ARM; HY2_ARCH=arm64; HY2_DIGEST=$HY2_SHA_ARM ;;
+        *) echo "unsupported arch"; exit 1 ;;
+      esac
+      apt-get -qq update
+      apt-get -qq -y install python3 >/dev/null 2>&1 || true
+      SB_DEB=$(mktemp --suffix=.deb)
+      curl -fsSL -o "$SB_DEB" "https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box_1.14.4_linux_${SB_ARCH}.deb"
+      echo "$SB_DIGEST  $SB_DEB" | sha256sum -c -
+      dpkg --force-confold -i "$SB_DEB"
+      rm -f "$SB_DEB"
+      HY2_BIN=$(mktemp)
+      curl -fsSL -o "$HY2_BIN" "https://github.com/HyNetworks/hysteria/releases/download/app/v2.13.0/hysteria-linux-${HY2_ARCH}"
+      echo "$HY2_DIGEST  $HY2_BIN" | sha256sum -c -
+      install -m 755 "$HY2_BIN" /usr/local/bin/hysteria
+      rm -f "$HY2_BIN"
+      id hysteria >/dev/null 2>&1 || useradd --system --home-dir /var/lib/hysteria --create-home --shell /usr/sbin/nologin hysteria
+      mkdir -p /etc/hysteria /etc/mole /var/log/mole
+
+  # ---- Hysteria2 server config ----
+  - path: /etc/hysteria/config.yaml
+    permissions: "0644"
+    content: |
+      listen: :443
+      tls:
+        cert: /etc/mole/server.crt
+        key: /etc/mole/server.key
+      auth:
+        type: password
+        password: "${HY2_PASSWORD}"
+      masquerade:
+        type: proxy
+        proxy:
+          url: https://www.microsoft.com
+          rewriteHost: true
+
+  # ---- REALITY self-signed cert generation script (run once on first boot) ----
+  - path: /usr/local/bin/mole-gen-cert
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      [ -f /etc/mole/server.crt ] && exit 0
+      openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+        -keyout /etc/mole/server.key \
+        -out /etc/mole/server.crt \
+        -subj "/CN=www.microsoft.com" 2>/dev/null || \
+      openssl req -x509 -nodes -days 3650 -newkey ec:<(openssl ecparam -name prime256v1) \
+        -keyout /etc/mole/server.key \
+        -out /etc/mole/server.crt \
+        -subj "/CN=www.microsoft.com"
+
+# ---- Bootstrap: generate all secrets, start everything, emit config.json ----
+runcmd:
+  - [ bash, /usr/local/bin/mole-install-engines ]
+  # Generate REALITY key (48 bytes base64url)
+  - [ bash, -c, 'umask 077; python3 -c "import secrets,base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip(\"=\"))" > /etc/mole/reality.key' ]
+  # Generate REALITY short ID (8 bytes hex, no nulls)
+  - [ bash, -c, 'umask 077; python3 -c "import secrets; h=secrets.token_hex(8); print(h if \"00\" not in h else h[:14]+\"01\")" > /etc/mole/reality.short' ]
+  # Generate UUID
+  - [ bash, -c, 'umask 077; python3 -c "import uuid; print(uuid.uuid4())" > /etc/mole/user.uuid' ]
+  # Generate HY2 password
+  - [ bash, -c, 'umask 077; python3 -c "import secrets; print(secrets.token_urlsafe(24))" > /etc/mole/hy2.pass' ]
+  # Generate self-signed cert
+  - [ bash, /usr/local/bin/mole-gen-cert ]
+  # Install Brutal DKMS (async, optional — fails don't break REALITY)
+  - [ bash, -c, 'systemctl enable mole-brutal-install.service && systemctl start --no-block mole-brutal-install.service || true' ]
+  # Start Brutal keeper
+  - [ systemctl, enable, --now, mole-brutal-keeper.service ]
+  # Start sing-box + hysteria2
+  - [ bash, -c, 'systemctl enable --now sing-box || true; systemctl enable --now hysteria-server || true' ]
+  # Emit client config JSON
+  - |
+    bash << 'OUTER'
+    set -euo pipefail
+    IPV4=$(curl -fsSL -m 5 https://api.ipify.org 2>/dev/null || curl -fsSL -m 5 https://v4.ident.me 2>/dev/null || echo "CHANGEME")
+    UUID=$(cat /etc/mole/user.uuid)
+    REALITY_PRIV=$(cat /etc/mole/reality.key)
+    REALITY_SHORT=$(cat /etc/mole/reality.short)
+    HY2_PASS=$(cat /etc/mole/hy2.pass)
+    REALITY_URI="vless://${UUID}@${IPV4}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.microsoft.com&fp=chrome&pbk=${REALITY_PRIV}&sid=${REALITY_SHORT}&type=tcp&headerType=none#reality"
+    HY2_URI="hysteria2://${HY2_PASS}@${IPV4}:443/?sni=www.microsoft.com&insecure=1&obfs=salamander&obfs-password=${HY2_PASS}#hy2"
+    cat > /etc/mole/config.json << EOF
+    {
+      "server_ip": "${IPV4}",
+      "reality_uri": "${REALITY_URI}",
+      "hy2_uri": "${HY2_URI}",
+      "setup_done": "$(date -Is)",
+      "next_step": "mole server adopt ${REALITY_URI} ${HY2_URI}"
+    }
+    EOF
+    chmod 644 /etc/mole/config.json
+    echo "mole VPS ready — /etc/mole/config.json:"
+    cat /etc/mole/config.json
+    OUTER
