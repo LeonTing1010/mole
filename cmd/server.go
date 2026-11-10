@@ -864,7 +864,19 @@ func destroyServerWithin(name string, forceLocal bool, budget time.Duration) err
 			fmt.Printf("⚠️  Server DELETE failed: %v\n", err)
 			fmt.Printf("    --force-local set; removing local entry anyway. Verify the remote instance is really gone before forcing removal.\n")
 		default:
-			return fmt.Errorf("server delete failed: %w\n    The local entry was NOT removed. If the instance is really gone on the server, retry with --force-local.", err)
+			// A transport failure leaves the DELETE's outcome unknown: Vultr may
+			// have processed the request and lost the reply on the way back.
+			// Concluding "failed, still billing" from that alone invents a bill
+			// that may not exist — on 2026-11-03 a lid close destroyed the
+			// instance, the reply never arrived, and servers.json kept a phantom
+			// the daemon then dialled all evening with no host at the address.
+			// Ask the account which answer is true; only an account that
+			// answers can settle it, and only an absent instance counts as gone.
+			if gone, ok := instanceGoneRemotely(target.InstanceID); ok && gone {
+				fmt.Printf("ℹ️  The DELETE answered with an error (%v), but %s is no longer on the account — treating it as destroyed\n", err, target.InstanceID)
+			} else {
+				return fmt.Errorf("server delete failed: %w\n    The local entry was NOT removed. If the instance is really gone on the server, retry with --force-local.", err)
+			}
 		}
 	}
 
@@ -906,6 +918,31 @@ func destroyServerWithin(name string, forceLocal bool, budget time.Duration) err
 // on, held in a var so a test can answer for the account — including refusing to
 // answer, which is the branch that must never be mistaken for "empty".
 var listInstancesForDestroy = serverListInstancesWithin
+
+// deleteVerifyBudget is the window given to the account read that settles an
+// ambiguous DELETE. Short on purpose: it only runs after a delete has already
+// failed, and the caller may be a machine about to sleep on a lid close.
+const deleteVerifyBudget = 4 * time.Second
+
+// instanceGoneRemotely answers the one question that decides whether an
+// ambiguous DELETE deleted anything: is this instance still on the account?
+// ok is false when the account could not be read, which must never be mistaken
+// for "gone" — the same rule destroyActiveServerWithin follows.
+func instanceGoneRemotely(id string) (gone, ok bool) {
+	if id == "" {
+		return false, false
+	}
+	remote, err := listInstancesForDestroy(deleteVerifyBudget)
+	if err != nil {
+		return false, false
+	}
+	for _, r := range remote {
+		if r.ID == id {
+			return false, true
+		}
+	}
+	return true, true
+}
 
 func destroyActiveServerWithin(budget time.Duration) error {
 	servers, err := loadServers()

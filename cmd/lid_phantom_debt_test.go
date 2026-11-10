@@ -82,6 +82,64 @@ func TestAnUnreachableAccountIsNeverReadAsEmpty(t *testing.T) {
 	}
 }
 
+// The mirror of the phantom debt above, from the side that was silent for a
+// whole evening on 2026-11-03: the lid close really did delete the instance, but
+// the DELETE's reply never came back over a path that went dark. The old code
+// read that as "failed, still billing", kept servers.json intact and filed a
+// debt; the daemon then spent the evening dialling an address with no host on it.
+// An account that answers and no longer lists the instance is proof enough.
+func TestAnAmbiguousDeleteThatTheAccountConfirmsIsNotADebt(t *testing.T) {
+	withServers(t, Server{
+		Name: "icn-1793695926", InstanceID: "30f0a1c5-1976-40a8-b4d5-a19de134170c",
+		Region: "icn", IP: "141.164.49.109", Active: true,
+	})
+	// The empty account: the instance really is gone.
+	withAccount(t, nil, nil)
+
+	// The scratch HOME holds no Vultr key, so the DELETE fails before it reaches
+	// the network — the same shape as a reply lost on the way back.
+	if err := destroyServerWithin("icn-1793695926", false, time.Second); err != nil {
+		t.Fatalf("destroyServerWithin = %v, want success — the account says the instance is gone", err)
+	}
+	if left, _ := loadServers(); len(left) != 0 {
+		t.Fatalf("servers.json still holds %+v; the daemon would keep dialling a host that does not exist", left)
+	}
+}
+
+// The same ambiguous DELETE, but the account still lists the instance: it is
+// billing, and dropping the local entry would lose the only route to destroy it.
+func TestAnAmbiguousDeleteThatTheAccountStillListsStaysADebt(t *testing.T) {
+	withServers(t, Server{
+		Name: "icn-1793695926", InstanceID: "30f0a1c5-1976-40a8-b4d5-a19de134170c",
+		Region: "icn", IP: "141.164.49.109", Active: true,
+	})
+	withAccount(t, []serverInstance{{ID: "30f0a1c5-1976-40a8-b4d5-a19de134170c", Label: "icn-1793695926"}}, nil)
+
+	if err := destroyServerWithin("icn-1793695926", false, time.Second); err == nil {
+		t.Fatal("destroyServerWithin = nil, want a failure — the instance is still on the account")
+	}
+	if left, _ := loadServers(); len(left) != 1 {
+		t.Errorf("local entry removed although the instance still exists remotely; servers.json now holds %+v", left)
+	}
+}
+
+// An account that cannot be read settles nothing. Silence is not "gone", for the
+// same reason it is not "empty" in destroyActiveServerWithin.
+func TestAnAmbiguousDeleteWithAnUnreadableAccountStaysADebt(t *testing.T) {
+	withServers(t, Server{
+		Name: "icn-1793695926", InstanceID: "30f0a1c5-1976-40a8-b4d5-a19de134170c",
+		Region: "icn", IP: "141.164.49.109", Active: true,
+	})
+	withAccount(t, nil, errors.New("context deadline exceeded"))
+
+	if err := destroyServerWithin("icn-1793695926", false, time.Second); err == nil {
+		t.Fatal("destroyServerWithin = nil, want a failure — the account never answered")
+	}
+	if left, _ := loadServers(); len(left) != 1 {
+		t.Errorf("local entry removed on an unanswered account; servers.json now holds %+v", left)
+	}
+}
+
 // The daemon's hook used to close over the server that was active when `mole up`
 // ran. Resolving it per call is what keeps a second lid close pointed at the
 // server that actually exists — a deploy between lid closes changes the answer.
