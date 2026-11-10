@@ -54,6 +54,13 @@ type Server struct {
 	// RealityDownMbps paces the node's TCP Brutal sender independently of the
 	// hysteria2 ladder. Zero keeps the historical shared-ceiling behavior.
 	RealityDownMbps int `json:"reality_down_mbps,omitempty"`
+	// BrutalGain sets TCP Brutal's cwnd_gain (tenths of window multiplier: 5=0.5x
+	//…80=8.0x). Zero lets the keeper use its built-in default (currently 20).
+	// Gain tunes how aggressively Brutal opens its congestion window: higher
+	// values flood the path but may collapse on lossy links, lower values keep
+	// windows small enough to stay out of the queue. Use `mole server gain-tune`
+	// to scan candidate values on a live node.
+	BrutalGain int `json:"brutal_gain,omitempty"`
 
 	// TLS identity. TLSCertPEM is the server's leaf certificate, pinned by the
 	// client so the tunnel verifies without a domain, a CA, or a Certificate
@@ -469,6 +476,14 @@ var serverImportCmd = &cobra.Command{
 	RunE:  runImport,
 }
 
+var serverGainTuneCmd = &cobra.Command{
+	Use:   "gain-tune [name]",
+	Short: "Scan Brutal cwnd_gain values on the active (or named) server and pin the best one",
+	Long:  "Scans cwnd_gain ∈ [10, 15, 20, 25] (tenths of window multiplier) by setting each via the keeper's /gain endpoint, waiting 2s for the rule to settle, running a 64MB bulk through the REALITY leg, and recording Mbps. The best gain is written to servers.json as brutal_gain and takes effect on the next `mole up` or supervisor re-push. Works on a live tunnel — no restart needed between steps.",
+	Args:  cobra.MaximumNArgs(1),
+	RunE:  runGainTune,
+}
+
 func init() {
 	serverCmd.AddCommand(serverDeployCmd)
 	serverCmd.AddCommand(serverDestroyCmd)
@@ -480,6 +495,7 @@ func init() {
 	serverCmd.AddCommand(serverStopCmd)
 	serverCmd.AddCommand(serverStartCmd)
 	serverCmd.AddCommand(serverImportCmd)
+	serverCmd.AddCommand(serverGainTuneCmd)
 
 	// Seoul, not Tokyo. Measured from a China Mobile Shanghai line on 2026-07-31,
 	// all three sampled in the same minute: icn 0% loss / 107ms median, nrt 5.8%
@@ -1226,6 +1242,104 @@ func runImport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Printf("✅ Imported %q (%s:%d)\n", srv.Name, serverHost(*srv), srv.Port)
+	return nil
+}
+
+// runGainTune scans Brutal cwnd_gain candidates on a live tunnel and pins the best.
+// The keeper's /gain endpoint changes the kernel parameter in 3s or less (next
+// sweep), and a 64MB bulk through /bulk measures the REALITY leg's single-stream
+// throughput at that gain. Writes the winner to servers.json.brutal_gain.
+func runGainTune(_ *cobra.Command, args []string) error {
+	var srv *Server
+	var err error
+	if len(args) > 0 {
+		servers, err2 := loadServers()
+		if err2 != nil {
+			return err2
+		}
+		if idx := indexByName(servers, args[0]); idx >= 0 {
+			srv = &servers[idx]
+		} else {
+			return fmt.Errorf("no server named %q", args[0])
+		}
+	} else {
+		srv, err = ActiveServer()
+		if err != nil {
+			return err
+		}
+	}
+
+	// Keeper lives on 127.0.0.1:8098 (default BrutalKeeperPort). We reach it
+	// through the REALITY leg when no rate-leg inbound exists — but gain-tune
+	// needs the tunnel up first, which means the supervisor has already
+	// established the mux pool. Check that the keeper answers on the leg.
+	keeperURL := fmt.Sprintf("http://127.0.0.1:%d", core.BrutalKeeperPort)
+
+	probe, err := http.Get(keeperURL + "/health")
+	if err != nil {
+		return fmt.Errorf("gain-tune: tunnel not reachable — `mole up` first (%w)", err)
+	}
+	probe.Body.Close()
+
+	candidates := []int{10, 15, 20, 25}
+	results := make(map[int]float64, len(candidates))
+
+	fmt.Printf("📊 Scanning Brutal cwnd_gain on %s (%s)...\n", srv.Name, srv.IP)
+	fmt.Println("   gain   single 64MB")
+
+	for _, g := range candidates {
+		// Set gain via keeper's /gain endpoint (applies in next sweep ≤3s).
+		gainURL := fmt.Sprintf("%s/gain?g=%d", keeperURL, g)
+		resp, err := http.Get(gainURL)
+		if err != nil {
+			fmt.Printf("   %2d     error: %v\n", g, err)
+			continue
+		}
+		resp.Body.Close()
+
+		// Wait for keeper sweep to re-apply the rule at the new gain.
+		time.Sleep(3 * time.Second)
+
+		// Measure single-stream bulk.
+		start := time.Now()
+		bulkURL := fmt.Sprintf("%s/bulk?bytes=%d", keeperURL, 64<<20)
+		resp, err = http.Get(bulkURL)
+		if err != nil {
+			fmt.Printf("   %2d     error: %v\n", g, err)
+			continue
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		elapsed := time.Since(start).Seconds()
+		if elapsed < 0.1 {
+			fmt.Printf("   %2d     error: bulk took <0.1s (rule not applied?)\n", g)
+			continue
+		}
+		mbps := float64(64*8) / elapsed
+		results[g] = mbps
+		fmt.Printf("   %2d     %6.1f Mbps\n", g, mbps)
+	}
+
+	if len(results) == 0 {
+		return fmt.Errorf("gain-tune: no gain candidate produced a measurable bulk; tunnel may be down or keeper module missing")
+	}
+
+	// Pick the highest Mbps. sort.Ints gives ascending order; we iterate
+	// highest first and take the first result.
+	sort.Slice(candidates, func(i, j int) bool { return results[candidates[i]] > results[candidates[j]] })
+	bestGain := candidates[0]
+	bestMbps := results[bestGain]
+
+	fmt.Printf("\n✅ Optimal gain for %s (%s) = %d → %.1f Mbps\n", srv.Name, srv.IP, bestGain, bestMbps)
+
+	// Persist to servers.json.
+	if err := changeServer(srv.InstanceID, srv.Name, func(s *Server) {
+		s.BrutalGain = bestGain
+	}); err != nil {
+		return fmt.Errorf("write brutal_gain to servers.json: %w", err)
+	}
+	fmt.Printf("📝 Written brutal_gain=%d to %s (takes effect on next `mole up` or supervisor re-push)\n",
+		bestGain, utils.ServersPath())
 	return nil
 }
 

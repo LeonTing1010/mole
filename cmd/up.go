@@ -347,6 +347,7 @@ func runDaemon() error {
 		// peak/off-peak selector and the supervisor flips it by the clock.
 		Schedule:        srv.Schedule(),
 		RealityRateMbps: srv.RealityDownMbps,
+		BrutalGain:      srv.BrutalGain,
 		// Arms the automatic failover to the REALITY leg. Derived from the same
 		// StandbyURI the parent built the config from, so the flag and the
 		// selector member it names can never disagree — selecting a member
@@ -436,7 +437,7 @@ func runDaemon() error {
 // A rate push over a non-mux socket installs the rule for this client's /32
 // without ever entering the pool.
 func preflightPacing(ctx context.Context, srv *Server) {
-	uri, rate := srv.StandbyURI(), srv.RealityDownMbps
+	uri, rate, gain := srv.StandbyURI(), srv.RealityDownMbps, srv.BrutalGain
 	if uri == "" {
 		return
 	}
@@ -529,7 +530,7 @@ func preflightPacing(ctx context.Context, srv *Server) {
 	deadline := time.Now().Add(65 * time.Second)
 	warned := false
 	for {
-		res, err := core.PushBrutalRateVia(port, rate, 5000)
+		res, err := core.PushBrutalRateViaWithGain(port, rate, gain, 5000)
 		if !warned && (err != nil || res.Applied == 0) {
 			detail := "keeper did not confirm the rule"
 			if err != nil {
@@ -553,7 +554,7 @@ func preflightPacing(ctx context.Context, srv *Server) {
 					return
 				case <-time.After(200 * time.Millisecond):
 				}
-				r2, err2 := core.PushBrutalRateVia(port, rate, 5000)
+				r2, err2 := core.PushBrutalRateViaWithGain(port, rate, gain, 5000)
 				if err2 == nil && r2.Applied > 0 {
 					res.Peers = r2.Peers
 					res.Applied = r2.Applied

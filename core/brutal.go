@@ -121,7 +121,18 @@ type BrutalResult struct {
 // The lesson generalises past this one call: a success signal that cannot
 // distinguish "it worked" from "nothing happened" is not a success signal.
 func PushBrutalRate(mbps, timeoutMs int) (BrutalResult, error) {
-	return brutalGET(BrutalRateURL(mbps), timeoutMs)
+	return pushBrutalRate(mbps, 0, timeoutMs)
+}
+
+// PushBrutalRateWithGain pushes rate AND cwnd_gain together via a single keeper call.
+// gain=0 skips the gain parameter (keeper uses its built-in default).
+func PushBrutalRateWithGain(mbps, gain, timeoutMs int) (BrutalResult, error) {
+	return pushBrutalRate(mbps, gain, timeoutMs)
+}
+
+// pushBrutalRate is the internal implementation. gain=0 → no &gain= query param.
+func pushBrutalRate(mbps, gain, timeoutMs int) (BrutalResult, error) {
+	return brutalGET(brutalRateURL(mbps, gain), timeoutMs)
 }
 
 // PushBrutalRateVia is PushBrutalRate through an arbitrary local forwarder.
@@ -129,11 +140,29 @@ func PushBrutalRate(mbps, timeoutMs int) (BrutalResult, error) {
 // exist yet: its whole job is to install the rule before the first engine
 // session is dialled.
 func PushBrutalRateVia(port, mbps, timeoutMs int) (BrutalResult, error) {
-	return brutalGET(BrutalRateURLAt(port, mbps), timeoutMs)
+	return PushBrutalRateViaWithGain(port, mbps, 0, timeoutMs)
+}
+
+// PushBrutalRateViaWithGain is PushBrutalRateVia with an optional cwnd_gain.
+func PushBrutalRateViaWithGain(port, mbps, gain, timeoutMs int) (BrutalResult, error) {
+	return brutalGET(brutalRateURLAt(port, mbps, gain), timeoutMs)
+}
+
+// brutalRateURL builds the /rate URL for the default keeper port.
+func brutalRateURL(mbps, gain int) string {
+	return brutalRateURLAt(BrutalKeeperPort, mbps, gain)
 }
 
 // BrutalRateURLAt names the keeper on a specific local forwarder port.
 func BrutalRateURLAt(port, mbps int) string {
+	return brutalRateURLAt(port, mbps, 0)
+}
+
+// brutalRateURLAt builds the /rate URL with optional gain. gain=0 omits the param.
+func brutalRateURLAt(port, mbps, gain int) string {
+	if gain > 0 {
+		return fmt.Sprintf("http://127.0.0.1:%d/rate?mbps=%d&gain=%d", port, mbps, gain)
+	}
 	return fmt.Sprintf("http://127.0.0.1:%d/rate?mbps=%d", port, mbps)
 }
 

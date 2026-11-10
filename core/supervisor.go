@@ -43,6 +43,8 @@ type Supervisor struct {
 	// realityRateMbps overrides the shared ladder rate for node-side TCP Brutal.
 	// Zero preserves the shared rate used by older server entries.
 	realityRateMbps int
+	// brutalGain forwards the per-server cwnd_gain to the keeper; zero = skip.
+	brutalGain int
 
 	// Destroy-on-lid-close. Inert unless both are set; see runSleepDestroy.
 	destroyOnLidClose bool
@@ -180,6 +182,10 @@ type SupervisorOpts struct {
 	// it zero to keep a plain fixed-bandwidth server.
 	Schedule        BandwidthSchedule
 	RealityRateMbps int
+	// BrutalGain forwards the per-server cwnd_gain pin to the keeper on every
+	// rate push. Zero skips the gain parameter and lets the keeper use its
+	// built-in default. See cmd/server.go:Server.BrutalGain for full doc.
+	BrutalGain int
 
 	// DestroyOnLidClose destroys the server when the lid is shut — the sleep
 	// notification, gated on the clamshell actually being closed, so idle and
@@ -244,6 +250,7 @@ func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervis
 		probeTimeMs:       opts.ProbeTimeMs,
 		schedule:          opts.Schedule,
 		realityRateMbps:   opts.RealityRateMbps,
+		brutalGain:         opts.BrutalGain,
 		hasReality:        opts.HasRealityLeg,
 		verifyLegEgress:   opts.VerifyLegEgress,
 		realityAddr:       opts.RealityAddr,
@@ -1624,7 +1631,7 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 		}
 		if s.hasReality && tcpRate > 0 && (tcpRate != pushedRate || time.Since(pushedAt) > 10*time.Minute) {
 			pacingChanged = true
-			res, err := PushBrutalRate(tcpRate, s.probeTimeMs)
+			res, err := pushBrutalRate(tcpRate, s.brutalGain, s.probeTimeMs)
 			switch {
 			case err != nil:
 				unconfirmed++
