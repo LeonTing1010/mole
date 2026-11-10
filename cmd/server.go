@@ -692,6 +692,7 @@ func configureDeployCeiling(srv *Server) {
 		srv.UpMbps, srv.DownMbps = l.UpMbps, l.DownMbps
 		srv.PeakUpMbps, srv.PeakDownMbps = l.PeakUpMbps, l.PeakDownMbps
 		srv.RealityDownMbps = l.RealityDownMbps
+		srv.RealityRateAuto = l.RealityRateAuto
 		srv.PeakStartHour, srv.PeakEndHour = l.PeakStartHour, l.PeakEndHour
 	}
 }

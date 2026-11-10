@@ -31,11 +31,17 @@ import (
 // An inherited ceiling that is too LOW has nothing to correct it, which is the
 // asymmetry that argues for remembering at all.
 type regionLadder struct {
-	UpMbps          int    `json:"up_mbps"`
-	DownMbps        int    `json:"down_mbps"`
-	PeakUpMbps      int    `json:"peak_up_mbps"`
-	PeakDownMbps    int    `json:"peak_down_mbps"`
-	RealityDownMbps int    `json:"reality_down_mbps,omitempty"`
+	UpMbps          int `json:"up_mbps"`
+	DownMbps        int `json:"down_mbps"`
+	PeakUpMbps      int `json:"peak_up_mbps"`
+	PeakDownMbps    int `json:"peak_down_mbps"`
+	RealityDownMbps int `json:"reality_down_mbps,omitempty"`
+	// RealityRateAuto is remembered alongside the rates: it is the operator's
+	// choice about who owns the REALITY leg's declaration, not a property of
+	// the instance, and losing it on redeploy silently reverts the leg to a
+	// pinned rate — which is exactly the stale-declaration failure the
+	// governor exists to prevent.
+	RealityRateAuto bool   `json:"reality_rate_auto,omitempty"`
 	PeakStartHour   int    `json:"peak_start_hour"`
 	PeakEndHour     int    `json:"peak_end_hour"`
 	RememberedAt    string `json:"remembered_at"`
@@ -100,6 +106,7 @@ func rememberLadder(s Server) {
 		UpMbps: up, DownMbps: down,
 		PeakUpMbps: peakUp, PeakDownMbps: peakDown,
 		RealityDownMbps: s.RealityDownMbps,
+		RealityRateAuto: s.RealityRateAuto,
 		PeakStartHour:   start, PeakEndHour: end,
 		RememberedAt: time.Now().Format(time.RFC3339),
 	}

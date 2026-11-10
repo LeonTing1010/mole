@@ -19,6 +19,7 @@ func TestLadderMemorySurvivesTheServer(t *testing.T) {
 		Name: "icn-1", Region: "icn",
 		UpMbps: 10, DownMbps: 65,
 		PeakUpMbps: 5, PeakDownMbps: 50,
+		RealityDownMbps: 35, RealityRateAuto: true,
 		PeakStartHour: 12, PeakEndHour: 2,
 	}
 	rememberLadder(measured)
@@ -32,6 +33,12 @@ func TestLadderMemorySurvivesTheServer(t *testing.T) {
 	}
 	if got.PeakDownMbps != 50 || got.PeakUpMbps != 5 {
 		t.Errorf("peak ceiling came back as %d↓/%d↑, want 50/5", got.PeakDownMbps, got.PeakUpMbps)
+	}
+	if got.RealityDownMbps != 35 {
+		t.Errorf("REALITY leg rate came back as %d, want 35", got.RealityDownMbps)
+	}
+	if !got.RealityRateAuto {
+		t.Error("reality_rate_auto was dropped — a redeploy would silently pin the leg again")
 	}
 	if got.PeakStartHour != 12 || got.PeakEndHour != 2 {
 		t.Errorf("peak window came back as %d→%d, want 12→2", got.PeakStartHour, got.PeakEndHour)
