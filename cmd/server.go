@@ -438,9 +438,10 @@ var serverLsCmd = &cobra.Command{
 var reconcileDestroyRemote bool
 
 var serverReconcileCmd = &cobra.Command{
-	Use:   "reconcile",
-	Short: "Compare local servers.json against the server; show drift",
-	RunE:  runReconcile,
+	Use:     "sync",
+	Aliases: []string{"reconcile"},
+	Short:   "Compare local servers.json against Vultr; show drift",
+	RunE:    runReconcile,
 }
 
 var serverAdoptCmd = &cobra.Command{
@@ -479,11 +480,12 @@ var serverImportCmd = &cobra.Command{
 }
 
 var serverGainTuneCmd = &cobra.Command{
-	Use:   "gain-tune [name]",
-	Short: "Scan Brutal cwnd_gain values on the active (or named) server and pin the best one",
-	Long:  "Scans cwnd_gain ∈ [10, 15, 20, 25] (tenths of window multiplier) by setting each via the keeper's /gain endpoint, waiting 2s for the rule to settle, running a 64MB bulk through the REALITY leg, and recording Mbps. The best gain is written to servers.json as brutal_gain and takes effect on the next `mole up` or supervisor re-push. Works on a live tunnel — no restart needed between steps.",
-	Args:  cobra.MaximumNArgs(1),
-	RunE:  runGainTune,
+	Use:     "tune [name]",
+	Aliases: []string{"gain-tune"},
+	Short:   "Scan Brutal cwnd_gain values on the active (or named) server and pin the best one",
+	Long:    "Scans cwnd_gain ∈ [10, 15, 20, 25] (tenths of window multiplier) by setting each via the keeper's /gain endpoint, waiting 2s for the rule to settle, running a 64MB bulk through the REALITY leg, and recording Mbps. The best gain is written to servers.json as brutal_gain and takes effect on the next `mole up` or supervisor re-push. Works on a live tunnel — no restart needed between steps.",
+	Args:    cobra.MaximumNArgs(1),
+	RunE:    runGainTune,
 }
 
 func init() {
