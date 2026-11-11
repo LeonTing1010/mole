@@ -18,13 +18,15 @@ import (
 // single-stream probe would report a healthy number on a path that collapses
 // under the actual workload, which is how gain scanning used to pick wrong.
 func BulkConcurrent(baseURL string, n, bytesPerStream int) (float64, error) {
+	// Bound the complete exchange and use fresh streams through the local forwarder.
+	client := &http.Client{Timeout: 20 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
+	return bulkConcurrentWithClient(client, baseURL, n, bytesPerStream)
+}
+
+func bulkConcurrentWithClient(client *http.Client, baseURL string, n, bytesPerStream int) (float64, error) {
 	if n <= 0 || bytesPerStream <= 0 {
 		return 0, fmt.Errorf("stream count and payload size must be positive")
 	}
-	// Bounded: the caller may be the supervisor's scheduler goroutine, and a
-	// keeper that accepts the connection but never drains would otherwise wedge
-	// health checks and failover along with the probe.
-	client := &http.Client{Timeout: 20 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
 
 	var wg sync.WaitGroup
 	var errs int32
@@ -51,8 +53,11 @@ func BulkConcurrent(baseURL string, n, bytesPerStream int) (float64, error) {
 	if errs > 0 {
 		return 0, fmt.Errorf("%d/%d streams failed", errs, n)
 	}
-	if elapsed < 0.1 {
-		return 0, fmt.Errorf("elapsed <0.1s (rule not applied?)")
+	// Payload/status validation is the authority on success. A duration floor
+	// discarded valid 6 MiB governor samples above about 503 Mbps; pacing
+	// confirmation belongs to the keeper's separate control response.
+	if elapsed <= 0 {
+		return 0, fmt.Errorf("non-positive sample duration")
 	}
 	totalBytes := int64(n) * int64(bytesPerStream)
 	return float64(totalBytes*8) / elapsed / 1e6, nil

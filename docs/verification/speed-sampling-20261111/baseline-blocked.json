@@ -1,0 +1,98 @@
+{
+  "started_at": "2026-11-11T09:39:24+0800",
+  "before": {
+    "bandwidth_down_mbps": 600,
+    "reality_rate_mbps": 133,
+    "balance": {
+      "supported": true,
+      "enabled": false,
+      "reality_lanes": 0,
+      "hy2_lanes": 0,
+      "reality_healthy": false,
+      "hy2_healthy": false,
+      "last_sample_at": "0001-01-01T00:00:00Z",
+      "last_checked_at": "0001-01-01T00:00:00Z",
+      "udp_cooldown_until": "0001-01-01T00:00:00Z"
+    }
+  },
+  "phases": [
+    {
+      "phase": "Reality",
+      "elapsed_seconds": 0.10458504199050367,
+      "legs": {
+        "8098": {
+          "bytes": 0,
+          "started": 4,
+          "completed": 0,
+          "aborted": 0,
+          "timed_out": 0,
+          "failed": 4,
+          "errors": [
+            "<urlopen error [Errno 1] Operation not permitted>",
+            "<urlopen error [Errno 1] Operation not permitted>",
+            "<urlopen error [Errno 1] Operation not permitted>",
+            "<urlopen error [Errno 1] Operation not permitted>"
+          ],
+          "mbps": 0.0
+        }
+      },
+      "total_connections": 8,
+      "connections_per_leg": 8,
+      "aggregate_mbps": 0.0,
+      "complete": false,
+      "stop_reason": "request_error",
+      "budget_bytes": 33554432,
+      "delivered_bytes": 0,
+      "budget_reserved_bytes": 33554432,
+      "budget_reserved_exhausted": true,
+      "budget_exhausted": false,
+      "new_enobufs_lines": 0,
+      "state_before": {
+        "bandwidth_down_mbps": 600,
+        "reality_rate_mbps": 133,
+        "balance": {
+          "supported": true,
+          "enabled": false,
+          "reality_lanes": 0,
+          "hy2_lanes": 0,
+          "reality_healthy": false,
+          "hy2_healthy": false,
+          "last_sample_at": "0001-01-01T00:00:00Z",
+          "last_checked_at": "0001-01-01T00:00:00Z",
+          "udp_cooldown_until": "0001-01-01T00:00:00Z"
+        }
+      },
+      "state_after": {
+        "bandwidth_down_mbps": 600,
+        "reality_rate_mbps": 133,
+        "balance": {
+          "supported": true,
+          "enabled": false,
+          "reality_lanes": 0,
+          "hy2_lanes": 0,
+          "reality_healthy": false,
+          "hy2_healthy": false,
+          "last_sample_at": "0001-01-01T00:00:00Z",
+          "last_checked_at": "0001-01-01T00:00:00Z",
+          "udp_cooldown_until": "0001-01-01T00:00:00Z"
+        }
+      }
+    }
+  ],
+  "note": "Actual received payload over wall time; owned-node download only. Not VPS port capacity or local upload speed.",
+  "after": {
+    "bandwidth_down_mbps": 600,
+    "reality_rate_mbps": 133,
+    "balance": {
+      "supported": true,
+      "enabled": false,
+      "reality_lanes": 0,
+      "hy2_lanes": 0,
+      "reality_healthy": false,
+      "hy2_healthy": false,
+      "last_sample_at": "0001-01-01T00:00:00Z",
+      "last_checked_at": "0001-01-01T00:00:00Z",
+      "udp_cooldown_until": "0001-01-01T00:00:00Z"
+    }
+  }
+}
