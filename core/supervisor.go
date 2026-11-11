@@ -1541,6 +1541,7 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 	if s.realityRateAuto && s.realityRateMbps > 0 {
 		govRate = s.realityRateMbps
 		gov = NewRateGovernor(govRate, 3, s.governorCeiling(govRate))
+		govRate = gov.Rate()
 	}
 	apply := func() {
 		generation := s.probeGeneration.Load()
@@ -1756,7 +1757,7 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 // is the operator's statement about what the path can carry at its best, so it
 // wins when configured; otherwise the seed gets four rungs of headroom.
 func (s *Supervisor) governorCeiling(seed int) int {
-	if s.schedule.PeakDown > seed {
+	if s.schedule.PeakDown > 0 {
 		return s.schedule.PeakDown
 	}
 	return seed * 4

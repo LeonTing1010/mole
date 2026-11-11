@@ -219,7 +219,11 @@ func ExitError() error {
 func KillOrphanedSingboxes(configPath string) {
 	killed := map[int]bool{}
 
-	if st, err := utils.ReadState(); err == nil && st.SingboxPID > 0 {
+	identified := map[int]bool{}
+	for _, pid := range FindAllSingboxesByConfig(configPath) {
+		identified[pid] = true
+	}
+	if st, err := utils.ReadState(); err == nil && identified[st.SingboxPID] {
 		if killSingboxPID(st.SingboxPID) {
 			killed[st.SingboxPID] = true
 		}
@@ -236,7 +240,7 @@ func KillOrphanedSingboxes(configPath string) {
 // killSingboxPID best-effort terminates pid: SIGTERM, wait up to 3s, then
 // SIGKILL. Returns true if a live process was found at the start.
 func killSingboxPID(pid int) bool {
-	if !utils.IsAlive(pid) {
+	if !utils.IsAlive(pid) || !isSingboxProcess(pid) {
 		return false
 	}
 	p, err := os.FindProcess(pid)
@@ -247,10 +251,16 @@ func killSingboxPID(pid int) bool {
 	for i := 0; i < 30 && utils.IsAlive(pid); i++ {
 		time.Sleep(100 * time.Millisecond)
 	}
-	if utils.IsAlive(pid) {
+	if utils.IsAlive(pid) && isSingboxProcess(pid) {
 		_ = p.Signal(syscall.SIGKILL)
 	}
 	return true
+}
+
+// isSingboxProcess fails closed when the process identity cannot be read.
+func isSingboxProcess(pid int) bool {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	return err == nil && filepath.Base(strings.TrimSpace(string(out))) == "sing-box"
 }
 
 // findOrphanSingboxesByPS returns pids of sing-box processes that match our
@@ -298,12 +308,29 @@ func scanSingboxByPS(configPath string, orphansOnly bool) []int {
 		if !strings.Contains(cmd, "sing-box") {
 			continue
 		}
-		if !strings.Contains(cmd, configPath) {
+		if !commandUsesConfig(cmd, configPath) {
 			continue
 		}
 		pids = append(pids, pid)
 	}
 	return pids
+}
+
+// commandUsesConfig checks a complete configuration argument.
+func commandUsesConfig(command, configPath string) bool {
+	for _, flag := range []string{" -c ", " --config ", " -c=", " --config="} {
+		_, rest, found := strings.Cut(command, flag)
+		if !found {
+			continue
+		}
+		rest = strings.TrimSpace(rest)
+		for _, path := range []string{configPath, "\"" + configPath + "\"", "'" + configPath + "'"} {
+			if rest == path || strings.HasPrefix(rest, path+" ") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // KillSingboxPID is the exported best-effort SIGTERM-then-SIGKILL helper used

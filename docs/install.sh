@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
-# Redirect — actual script lives in scripts/mole-server.sh
 set -euo pipefail
-exec bash <(curl -fsSL https://raw.githubusercontent.com/LeonTing1010/mole/master/scripts/mole-server.sh) "$@"
+task_script=$(mktemp)
+trap 'rm -f "$task_script"' EXIT
+curl -fsSL --connect-timeout 10 --max-time 60 "https://raw.githubusercontent.com/LeonTing1010/mole/${MOLE_REVISION:-master}/scripts/mole-server.sh" -o "$task_script"
+bash "$task_script" "$@"

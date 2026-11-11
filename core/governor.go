@@ -183,7 +183,7 @@ func (g *RateGovernor) move(next int, reason string) (int, bool, string) {
 
 func (g *RateGovernor) clamp(n int) int {
 	if n < g.minRate {
-		return g.minRate
+		n = g.minRate
 	}
 	if g.maxRate > 0 && n > g.maxRate {
 		return g.maxRate

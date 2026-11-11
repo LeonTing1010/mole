@@ -1307,11 +1307,13 @@ func bulkConcurrent(baseURL string, n, bytesPerStream int) (float64, error) {
 
 // scanAndPickGain probes four Brutal cwnd_gain candidates on the live tunnel
 // and returns the highest-concurrent-throughput one. Runs 8 parallel GETs to
-// keeper's /bulk at each gain (matching mole's smux workload). Pure — does
+// keeper's /bulk at each gain (matching mole's smux workload). It does
 // not write servers.json or touch any file; callers decide what to do with
 // the result. Returns the best gain, its Mbps, the full results map, and
 // an error only if ALL candidates failed (partial failure is reported as
 // best-effort: we pick the best of what we got).
+var gainTuneClient = &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
+
 func scanAndPickGain(keeperURL string) (int, float64, map[int]float64, error) {
 	candidates := []int{10, 15, 20, 25}
 	results := make(map[int]float64, len(candidates))
@@ -1322,12 +1324,9 @@ func scanAndPickGain(keeperURL string) (int, float64, map[int]float64, error) {
 	for _, g := range candidates {
 		// Set gain via keeper's /gain endpoint (keeper applies synchronously,
 		// so /proc has the rule before we send bulk bytes).
-		gainURL := fmt.Sprintf("%s/gain?g=%d", keeperURL, g)
-		resp, err := http.Get(gainURL)
-		if err != nil {
+		if err := pushKeeperGain(keeperURL, g); err != nil {
 			continue
 		}
-		resp.Body.Close()
 		// Allow a moment for the pacing rule to settle on the kernel side.
 		time.Sleep(500 * time.Millisecond)
 
@@ -1346,6 +1345,38 @@ func scanAndPickGain(keeperURL string) (int, float64, map[int]float64, error) {
 	// reorder is the best.
 	sort.Slice(candidates, func(i, j int) bool { return results[candidates[i]] > results[candidates[j]] })
 	return candidates[0], results[candidates[0]], results, nil
+}
+
+func pushKeeperGain(baseURL string, gain int) error {
+	resp, err := gainTuneClient.Get(fmt.Sprintf("%s/gain?g=%d", baseURL, gain))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8193))
+	if err != nil {
+		return err
+	}
+	confirmed := false
+	for _, line := range strings.Split(string(body), "\n") {
+		if line == fmt.Sprintf("gain=%d", gain) {
+			confirmed = true
+		}
+	}
+	if resp.StatusCode != http.StatusOK || len(body) > 8192 || !confirmed || !keeperApplied(string(body)) {
+		return fmt.Errorf("keeper did not confirm gain=%d (HTTP %d)", gain, resp.StatusCode)
+	}
+	return nil
+}
+
+func keeperApplied(body string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		if value, ok := strings.CutPrefix(line, "applied="); ok {
+			n, err := strconv.Atoi(value)
+			return err == nil && n > 0
+		}
+	}
+	return false
 }
 
 func runGainTune(_ *cobra.Command, args []string) error {
@@ -1368,13 +1399,20 @@ func runGainTune(_ *cobra.Command, args []string) error {
 		}
 	}
 
+	st, stateErr := utils.ReadState()
+	if stateErr != nil || st.PID <= 0 || !utils.IsRunning(st.PID) || st.Server != srv.Name {
+		return fmt.Errorf("gain-tune: requested node %q must match the running daemon; use it and run mole up first", srv.Name)
+	}
 	keeperURL := fmt.Sprintf("http://127.0.0.1:%d", core.BrutalKeeperPort)
 
-	probe, err := http.Get(keeperURL + "/health")
+	probe, err := gainTuneClient.Get(keeperURL + "/health")
 	if err != nil {
 		return fmt.Errorf("gain-tune: tunnel not reachable — `mole up` first (%w)", err)
 	}
 	probe.Body.Close()
+	if probe.StatusCode != http.StatusOK {
+		return fmt.Errorf("gain-tune: keeper not ready (HTTP %d)", probe.StatusCode)
+	}
 
 	fmt.Printf("📊 Scanning Brutal cwnd_gain on %s (%s)...\n", srv.Name, srv.IP)
 	fmt.Println("   gain   Mbps")
@@ -1411,17 +1449,16 @@ func runGainTune(_ *cobra.Command, args []string) error {
 	// said "takes effect on next mole up". In practice the user leaves mole
 	// running after tuning, so the wrong gain stays active until the next
 	// supervisor re-push (≤3 min) or restart.
-	applyURL := fmt.Sprintf("%s/gain?g=%d", keeperURL, bestGain)
-	if resp, err := http.Get(applyURL); err != nil {
-		fmt.Printf("⚠️  Could not apply gain=%d to keeper live: %v (supervisor will fix on next push)\n", bestGain, err)
-	} else {
-		resp.Body.Close()
-		time.Sleep(500 * time.Millisecond)
-		verification, err := bulkConcurrent(keeperURL, streams, bytesPerStream)
-		if err == nil {
-			fmt.Printf("🔎 Verified live: gain=%d → %.1f Mbps\n", bestGain, verification)
-		}
+	if err := pushKeeperGain(keeperURL, bestGain); err != nil {
+		return fmt.Errorf("best gain saved but live application unconfirmed: %w", err)
 	}
+	time.Sleep(500 * time.Millisecond)
+	verification, err := bulkConcurrent(keeperURL, streams, bytesPerStream)
+	if err != nil {
+		return fmt.Errorf("best gain applied but verification failed: %w", err)
+	}
+	fmt.Printf("🔎 Verified live: gain=%d → %.1f Mbps\n", bestGain, verification)
+
 	return nil
 }
 

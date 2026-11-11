@@ -57,11 +57,16 @@ After boot (~3 min):
 ssh root@<ip>
 cat /etc/mole/config.json   # contains reality_uri and hy2_uri
 
-# Import into mole CLI:
-mole server adopt "$(jq -r .reality_uri /etc/mole/config.json)" \
-                  "$(jq -r .hy2_uri /etc/mole/config.json)"
+# On your laptop, paste the reality_uri printed above:
+mole server import 'vless://...' --name mole-reality
+# Alternatively import hy2_uri as a separate profile:
+# mole server import 'hysteria2://...' --name mole-hy2
 mole up
 ```
+
+Cloud-init and Docker share their config generator. All three deployment paths
+share the same keeper and verified engine installers. After editing deployment assets, regenerate it with
+`python3 scripts/render-cloud-init.py > deploy/cloud-init.yaml`.
 
 Everything — sing-box, hy2, Brutal DKMS, Brutal keeper, self-signed cert,
 REALITY keys, UUID, hy2 password — is generated on first boot. **No hardcoded
@@ -76,17 +81,25 @@ blocks REALITY.
 docker build -t mole-server deploy/
 
 docker run -d --name mole-server --net host --privileged \
-  -e REALITY_PRIV=<32 bytes base64url> \
-  -e REALITY_SHORT=<8 bytes hex> \
-  -e USER_UUID=<uuid4> \
-  -e HY2_PASSWORD=<random> \
+  -e MOLE_SERVER_IP=<public-server-ip> \
   -v /etc/mole:/etc/mole \
   -v /proc:/proc \
   mole-server
 
 # Brutal DKMS still needs to be installed on the HOST (kernel module, not container):
-bash deploy/mole-brutal-install   # from any mole-deployed VPS
+sudo install -m 644 deploy/install-functions.sh /usr/local/lib/mole-install-functions.sh
+sudo bash deploy/install-brutal.sh
 ```
+
+Secrets are generated on first start and retained in the mounted `/etc/mole`.
+Existing `REALITY_PRIV`, `REALITY_SHORT`, `USER_UUID`, and `HY2_PASSWORD` environment
+values are supported; a conflicting value on restart is rejected. Client links are
+in `/etc/mole/config.json`, mode 0600. The keeper listens only on loopback.
+Docker requires host-installed TCP Brutal for pacing; both transports work without it.
+
+For manual installation on Debian/Ubuntu, run `sudo bash scripts/mole-server.sh`
+from this checkout. `MOLE_REVISION` selects the source revision to download;
+`MOLE_SERVER_IP` supplies the public IP when automatic discovery is unavailable.
 
 ### Path 3: mole CLI (full lifecycle)
 
@@ -96,8 +109,8 @@ mole server ls                  # list deployed (alias: list)
 mole server verify <name>       # re-check without repairing
 mole server destroy <name>      # delete VPS + local record
 mole server sync                # diff local list vs Vultr API (alias: reconcile)
-mole server adopt <uri> [<hy2>] # import an existing node into mole
-mole server import <file.json>  # import from a config file
+mole server adopt <instance-id> --password <hy2> # adopt a Vultr instance
+mole server import <uri>        # import a hysteria2:// or REALITY vless:// link
 mole server link [name]         # print vless:// link for other clients
 mole server tune [name]         # auto-scan Brutal cwnd_gain (alias: gain-tune)
                                 # 8-concurrent 8MB bulk — picks best for REAL workload
@@ -173,8 +186,8 @@ rate, capped at 6 MB) and moves the declaration:
 | Measured vs declared | Action |
 |---|---|
 | < 50% | cut to 25% of the declaration, floored at 1.5× measured |
-| 50–88%, two samples in a row | cut 15% |
-| 88–95% | hold |
+| 50–80%, two samples in a row | cut 15% |
+| 80–95% | hold |
 | ≥ 95%, one sample, below 75% of the ceiling | climb 35% |
 | ≥ 95%, two samples in a row | climb 12% |
 
