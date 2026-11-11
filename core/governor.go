@@ -51,8 +51,12 @@ const (
 	// declared down to nothing, while a declaration that is orders of magnitude
 	// above reality (the 600-on-Wi-Fi case) still collapses fast.
 	govCollapseScale = 0.25
-	// govLowRatio is the milder shortfall threshold.
-	govLowRatio = 0.88
+	// govLowRatio is the milder shortfall threshold. A healthy Brutal path
+	// delivers ~82-88% of its declaration (measured 2026-11-11: 330-357 of
+	// 380-420 on the ICN REALITY leg), so 0.88 treated a saturated path as a
+	// shortfall and cut it repeatedly; 0.80 leaves that natural gap neutral
+	// while still acting on a real collapse.
+	govLowRatio = 0.80
 	// govLowScale is the cut applied once govLowStreak samples agree.
 	govLowScale = 0.85
 	// govHighRatio is the "we are saturating what we declared" threshold.

@@ -17,10 +17,12 @@ func TestRateGovernorCollapsesWhenDeclarationIsFarAbovePath(t *testing.T) {
 		t.Fatalf("second sample: got %d changed=%v, want 37 true", r, changed)
 	}
 	// One mild shortfall is not enough — jitter produces single bad samples.
-	if r, changed, _ = g.Observe(30); changed {
+	// 29 of 37 is 78%, below the 80% band; 30 (81%) now counts as healthy
+	// Brutal under-delivery rather than a shortfall.
+	if r, changed, _ = g.Observe(29); changed {
 		t.Fatalf("single mild shortfall moved rate to %d, want no change", r)
 	}
-	if r, changed, _ = g.Observe(30); !changed || r != 31 {
+	if r, changed, _ = g.Observe(29); !changed || r != 31 {
 		t.Fatalf("second mild shortfall: got %d changed=%v, want 31 true", r, changed)
 	}
 }
