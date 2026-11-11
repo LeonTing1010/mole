@@ -539,6 +539,14 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 	if deployTimeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
+	// Probes to the candidate node follow the OS route table. With the tunnel
+	// up, that table sends them into utun and they hairpin through the active
+	// node — every leg reads silent and the address-vetting probe answers from
+	// one datacenter away in under a millisecond, so a healthy node fails
+	// verification and vetting both. Refuse up front.
+	if tunnelDaemonRunning() {
+		return fmt.Errorf("the tunnel is running; deploy-time probes to a new node would route through it and always fail — run mole down first")
+	}
 
 	region, _ := cmd.Flags().GetString("region")
 	plan, _ := cmd.Flags().GetString("plan")
@@ -555,114 +563,127 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 	default:
 		return fmt.Errorf("deploy: unknown --proto %q (want %q or %q)", proto, protoHysteria2, protoReality)
 	}
-	if name == "" {
-		name = fmt.Sprintf("%s-%d", region, time.Now().Unix())
-	}
-
-	fmt.Printf("🚀 Deploying %s in %s (%s, %s on port %d)\n", name, region, plan, proto, port)
-
-	if port < 1 || port > 65535 {
-		return fmt.Errorf("port must be in 1..65535")
-	}
-	servers, err := loadServers()
-	if err != nil {
-		return err
-	}
-	if indexByName(servers, name) >= 0 {
-		return fmt.Errorf("server %q already exists; verify that instance instead", name)
-	}
-	deployID, err := randomHexString(16)
-	if err != nil {
-		return err
-	}
-	srv := Server{Name: name, Region: region, Port: uint16(port), Proto: proto, DeployID: deployID}
-	configureDeployCeiling(&srv)
-	var script string
-
-	// Identity material is minted here, not on the VPS, for both protocols: the
-	// client needs its half in order to connect at all, and anything generated
-	// on the far side could only be read back over the very channel it is meant
-	// to secure. The secret half does transit the provisioning API — which
-	// already mints and carries the tunnel password, so this adds no new trust
-	// boundary.
-	if proto == protoReality {
-		id, err := newRealityIdentity(dest)
-		if err != nil {
-			return fmt.Errorf("deploy: generate reality identity: %w", err)
+	nameAuto := name == ""
+	// maxDeployAttempts bounds the redraw loop: an intercepted address is
+	// destroyed and the lottery starts over with a fresh instance, name and
+	// receipt. Region is deliberately NOT switched for the operator — picking
+	// a different geography is a decision, not a retry.
+	const maxDeployAttempts = 3
+	for attempt := 1; ; attempt++ {
+		if nameAuto {
+			name = fmt.Sprintf("%s-%d", region, time.Now().Unix())
 		}
-		script = realityBootScript(port, srv.DownMbps, id)
-		configureDeployedReality(&srv, id)
-	} else {
-		id, err := newServerIdentity()
-		if err != nil {
-			return fmt.Errorf("deploy: generate server identity: %w", err)
-		}
-		password, err := tunnelPassword()
-		if err != nil {
-			return fmt.Errorf("deploy: generate tunnel password: %w", err)
-		}
-		script = hy2BootScript(password, port, id)
-		srv.Password = password
-		srv.TLSCertPEM = id.CertPEM
-		srv.SNI = id.SNI
-		srv.Obfs = "salamander"
-		srv.ObfsPassword = id.ObfsPassword
 
-		// Every hysteria2 node also gets the REALITY leg, on TCP/443 beside it.
-		// Not a flag: the failure it answers — UDP/443 throttled per-flow while
-		// the link tests clean — is a property of the PATH, so it will be just
-		// as true of the node that replaces this one, and with
-		// destroy-on-lid-close that is most mornings. A standby leg you have to
-		// remember to ask for is one that is missing on the morning it matters.
-		//
-		// It costs nothing until used: sing-box sits idle on a port the firewall
-		// group already opens, and the client's selector only routes to it once
-		// the supervisor has measured hy2 carrying nothing.
-		//
-		// --no-reality skips it to save ~100MB RAM on small plans (0.5gb).
-		if !deployNoReality {
-			if rid, err := newRealityIdentity(dest); err != nil {
-				// Not fatal. A node with one working leg is worth having; a deploy
-				// that aborted over the spare would leave none.
-				fmt.Printf("⚠️  Standby REALITY leg skipped: %v (the hysteria2 leg is unaffected)\n", err)
-			} else {
-				script = dualBootScript(password, port, srv.DownMbps, id, rid)
-				configureDeployedReality(&srv, rid)
+		fmt.Printf("🚀 Deploying %s in %s (%s, %s on port %d)\n", name, region, plan, proto, port)
+
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("port must be in 1..65535")
+		}
+		servers, err := loadServers()
+		if err != nil {
+			return err
+		}
+		if indexByName(servers, name) >= 0 {
+			return fmt.Errorf("server %q already exists; verify that instance instead", name)
+		}
+		deployID, err := randomHexString(16)
+		if err != nil {
+			return err
+		}
+		srv := Server{Name: name, Region: region, Port: uint16(port), Proto: proto, DeployID: deployID}
+		configureDeployCeiling(&srv)
+		var script string
+
+		// Identity material is minted here, not on the VPS, for both protocols: the
+		// client needs its half in order to connect at all, and anything generated
+		// on the far side could only be read back over the very channel it is meant
+		// to secure. The secret half does transit the provisioning API — which
+		// already mints and carries the tunnel password, so this adds no new trust
+		// boundary.
+		if proto == protoReality {
+			id, err := newRealityIdentity(dest)
+			if err != nil {
+				return fmt.Errorf("deploy: generate reality identity: %w", err)
 			}
+			script = realityBootScript(port, srv.DownMbps, id)
+			configureDeployedReality(&srv, id)
 		} else {
-			fmt.Println("   🎭 REALITY standby leg skipped (--no-reality)")
-		}
-	}
+			id, err := newServerIdentity()
+			if err != nil {
+				return fmt.Errorf("deploy: generate server identity: %w", err)
+			}
+			password, err := tunnelPassword()
+			if err != nil {
+				return fmt.Errorf("deploy: generate tunnel password: %w", err)
+			}
+			script = hy2BootScript(password, port, id)
+			srv.Password = password
+			srv.TLSCertPEM = id.CertPEM
+			srv.SNI = id.SNI
+			srv.Obfs = "salamander"
+			srv.ObfsPassword = id.ObfsPassword
 
-	// Provisioning talks to Vultr from this machine, and only from here. The
-	// Worker that used to offer a second route could never actually provision:
-	// Vultr's API access control allowlists source addresses and a Cloudflare
-	// Worker has no stable egress to allowlist, so every call from it came back
-	// 403. Keeping it as an alternative meant every deploy could fail in two
-	// different ways, one of them silently.
-	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(script)))
-	session, err := newDeploySession(srv, digest)
-	if err != nil {
-		return err
-	}
-	defer session.log.Close()
-	fmt.Printf("Deployment receipt: %s\n", filepath.Join(session.dir, "receipt.json"))
-	return runDeployLifecycle(ctx, func() error {
-		if err := ctx.Err(); err != nil {
-			return err
+			// Every hysteria2 node also gets the REALITY leg, on TCP/443 beside it.
+			// Not a flag: the failure it answers — UDP/443 throttled per-flow while
+			// the link tests clean — is a property of the PATH, so it will be just
+			// as true of the node that replaces this one, and with
+			// destroy-on-lid-close that is most mornings. A standby leg you have to
+			// remember to ask for is one that is missing on the morning it matters.
+			//
+			// It costs nothing until used: sing-box sits idle on a port the firewall
+			// group already opens, and the client's selector only routes to it once
+			// the supervisor has measured hy2 carrying nothing.
+			//
+			// --no-reality skips it to save ~100MB RAM on small plans (0.5gb).
+			if !deployNoReality {
+				if rid, err := newRealityIdentity(dest); err != nil {
+					// Not fatal. A node with one working leg is worth having; a deploy
+					// that aborted over the spare would leave none.
+					fmt.Printf("⚠️  Standby REALITY leg skipped: %v (the hysteria2 leg is unaffected)\n", err)
+				} else {
+					script = dualBootScript(password, port, srv.DownMbps, id, rid)
+					configureDeployedReality(&srv, rid)
+				}
+			} else {
+				fmt.Println("   🎭 REALITY standby leg skipped (--no-reality)")
+			}
 		}
-		instanceID, err := deployViaVultr(name, region, plan, script, session, ctx)
+
+		// Provisioning talks to Vultr from this machine, and only from here. The
+		// Worker that used to offer a second route could never actually provision:
+		// Vultr's API access control allowlists source addresses and a Cloudflare
+		// Worker has no stable egress to allowlist, so every call from it came back
+		// 403. Keeping it as an alternative meant every deploy could fail in two
+		// different ways, one of them silently.
+		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(script)))
+		session, err := newDeploySession(srv, digest)
 		if err != nil {
 			return err
 		}
-		srv.InstanceID = instanceID
-		session.record.InstanceID = instanceID
-		if err = session.stage("created", nil); err != nil {
-			return fmt.Errorf("instance %s created but receipt write failed: %w", instanceID, err)
+		defer session.log.Close()
+		fmt.Printf("Deployment receipt: %s\n", filepath.Join(session.dir, "receipt.json"))
+		err = runDeployLifecycle(ctx, func() error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			instanceID, err := deployViaVultr(name, region, plan, script, session, ctx)
+			if err != nil {
+				return err
+			}
+			srv.InstanceID = instanceID
+			session.record.InstanceID = instanceID
+			if err = session.stage("created", nil); err != nil {
+				return fmt.Errorf("instance %s created but receipt write failed: %w", instanceID, err)
+			}
+			_ = stashVultrKey()
+			return finishDeploy(ctx, srv, session)
+		}, func() error { return session.cleanupInstance(srv) })
+		if errors.Is(err, errAddressIntercepted) && attempt < maxDeployAttempts {
+			fmt.Printf("🔁 attempt %d: %v — redrawing\n", attempt, err)
+			continue
 		}
-		_ = stashVultrKey()
-		return finishDeploy(ctx, srv, session)
-	}, func() error { return session.cleanupInstance(srv) })
+		return err
+	}
 }
 
 // finishDeploy records a freshly created instance locally, waits for its IP and
@@ -717,6 +738,18 @@ func finishDeploy(parent context.Context, srv Server, session *deploySession) er
 		return err
 	}
 	fmt.Fprintf(session.writer(), "Address assigned: %s; waiting for server installation.\n", serverHost(srv))
+	// Vet the address before spending the boot wait on it: on a network that
+	// impersonates foreign prefixes, an intercepted address means this instance
+	// can never be reached — destroy it at once (it is billing) and let the
+	// caller redraw. ~20s here replaces a 6–10 minute verification timeout.
+	if intercepted, detail := vetAssignedIP(ctx, ip); intercepted {
+		vetErr := fmt.Errorf("%w: %s (%s)", errAddressIntercepted, ip, detail)
+		_ = session.stage("ip_intercepted", vetErr)
+		if derr := destroyServerWithin(srv.Name, false, apiBudget); derr != nil {
+			return fmt.Errorf("%v; automatic destroy failed — run mole server destroy %s: %v", vetErr, srv.Name, derr)
+		}
+		return vetErr
+	}
 	if deployNoVerify {
 		return session.stage("unverified", nil)
 	}
@@ -879,6 +912,15 @@ func destroyServerWithin(name string, forceLocal bool, budget time.Duration) err
 
 	if target.InstanceID != "" {
 		_, err := serverAPIWithin(budget, "DELETE", "/instances/"+target.InstanceID, nil)
+		// A freshly created instance stays locked while it installs. Anyone
+		// destroying one (the address-vetting redraw does, minutes in) used to
+		// hit a 409 and keep billing; retry once past the lock. The lid-close
+		// path's tiny budget skips this: a 2-second wake cannot spare 20.
+		if isInstanceLocked(err) && budget >= 30*time.Second {
+			fmt.Printf("⏳ %s is locked (still installing); retrying in 20s\n", target.InstanceID)
+			time.Sleep(20 * time.Second)
+			_, err = serverAPIWithin(budget, "DELETE", "/instances/"+target.InstanceID, nil)
+		}
 		switch {
 		case err == nil:
 			// Remote delete succeeded — fall through and remove local entry.
@@ -1767,6 +1809,13 @@ func (e *ServerError) Error() string {
 func IsServerNotFound(err error) bool {
 	var se *ServerError
 	return errors.As(err, &se) && se.Status == 404
+}
+
+// isInstanceLocked reports whether err is Vultr's 409 "Server is currently
+// locked" — the state a fresh instance sits in while it installs.
+func isInstanceLocked(err error) bool {
+	var se *ServerError
+	return errors.As(err, &se) && se.Status == 409
 }
 
 // vultrKey returns the account API key every management call authenticates

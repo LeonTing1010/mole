@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/LeonTing1010/mole/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -48,6 +49,12 @@ func init() {
 func verifyRecordedNode(parent context.Context, srv Server, budget time.Duration) error {
 	if srv.Stopped {
 		return fmt.Errorf("server is stopped; verification does not start it")
+	}
+	// Probes to a node that is not carrying the tunnel route through utun and
+	// hairpin — the direct-UDP probe in particular can never pass that way.
+	// The active server is exempt: its address is the one the tunnel excludes.
+	if st, err := utils.ReadState(); err == nil && st != nil && st.PID > 0 && st.Server != srv.Name && processAlive(st.PID) {
+		return fmt.Errorf("the tunnel is running on %s; probes to %s would hairpin through it — run mole down first", st.Server, srv.Name)
 	}
 	if srv.DeployID == "" {
 		id, err := randomHexString(16)
