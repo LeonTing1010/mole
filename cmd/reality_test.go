@@ -277,7 +277,7 @@ func TestBrutalKeeperShipsWithTheRealityLeg(t *testing.T) {
 	} {
 		// The port is asserted through its default so the check still proves
 		// the constant was interpolated, not merely that the word PORT appears.
-		for _, want := range []string{"echo 80 > /etc/mole-brutal-rate", "mole-brutal-keeper.service", "tcp.hy2.sh", `MOLE_BRUTAL_PORT", 8098`} {
+		for _, want := range []string{"echo 80 > /etc/mole-brutal-rate", "mole-brutal-keeper.service", "tcp.hy2.sh", `MOLE_BRUTAL_PORT", 8098`, `"congctl", "lock", "brutal", "proto", "233"`} {
 			if !strings.Contains(script, want) {
 				t.Errorf("%s script missing %q", name, want)
 			}

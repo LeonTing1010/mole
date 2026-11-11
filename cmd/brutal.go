@@ -214,6 +214,12 @@ def apply(force=False):
     cwnd_gain alongside rate — brutcalctl's 'add' syntax takes only Mbps
     while the /proc writer accepts 'rate=<bytes/s> gain=<tenths>'. This also
     eliminates a subprocess fork per peer per sweep.
+
+    A rule alone paces nothing: the module engages only when a route marks
+    the destination for the brutal congestion control, which brutcalctl used
+    to install alongside the rule and the direct /proc write does not. So
+    each sweep also reconciles the proto-233 route — without it the rule
+    lists but carries zero bytes (brutalctl list shows ROUTE=no, SENT=0.0).
     """
     rate = read_rate()
     gain = read_gain()
@@ -238,9 +244,47 @@ def apply(force=False):
             except OSError as e:
                 applied.pop(ip, None)
                 detail = "/proc write failed: %s" % str(e)[:200]
+        ensure_routes(ips)
     if n == 0 and not detail:
         detail = "no peer established on TCP/%d" % LEG_PORT
     return n, len(ips), detail
+
+def ensure_routes(ips):
+    """Reconcile the proto-233 routes that mark each peer for the brutal CC.
+
+    Never raises: routing failure must not take the rate endpoint down with
+    it, and the next sweep retries. The default gateway is re-read every
+    sweep because the node can in principle be re-addressed.
+    """
+    if not ips:
+        return
+    try:
+        have = set()
+        out = subprocess.run(["ip", "route", "show", "proto", "233"],
+                             capture_output=True, text=True).stdout
+        for line in out.splitlines():
+            cols = line.split()
+            if cols:
+                have.add(cols[0])
+        dflt = subprocess.run(["ip", "route", "show", "default"],
+                              capture_output=True, text=True).stdout.split()
+        gw = dflt[dflt.index("via") + 1]
+        dev = dflt[dflt.index("dev") + 1]
+    except Exception:
+        return
+    for ip in ips:
+        try:
+            prefix = str(ipaddress.ip_network(ip))
+        except ValueError:
+            continue
+        if prefix in have:
+            continue
+        try:
+            subprocess.run(["ip", "route", "replace", prefix, "via", gw, "dev", dev,
+                            "congctl", "lock", "brutal", "proto", "233"],
+                           capture_output=True)
+        except Exception:
+            pass
 
 def loop():
     while True:

@@ -9,7 +9,7 @@ Loopback-only HTTP on :8098; endpoints:
   GET /bulk?bytes=N          — throughput sample
   GET /health                — module + peer + rate status
 """
-import http.server, json, os, threading, time, urllib.parse
+import http.server, json, os, subprocess, threading, time, urllib.parse
 
 BRUTAL_DIR = "/proc/net/tcp_brutal"
 DEFAULT_MBPS = int(os.environ.get("MOLE_DEFAULT_MBPS", "100"))
@@ -25,7 +25,7 @@ def _read_first(path, default):
 def _brutal_supported(): return os.path.isdir(BRUTAL_DIR)
 
 def _build_rules(mbps, gain):
-    rules = []
+    rules, peers_found = [], []
     try:
         with open("/proc/net/tcp") as f: lines = f.readlines()[1:]
         peers = set()
@@ -42,8 +42,26 @@ def _build_rules(mbps, gain):
             except (ValueError, IndexError): pass
         for ip in peers:
             rules.append(f"add {ip}/32 rate={mbps*125000} gain={gain}")
+            peers_found.append(ip)
     except OSError: pass
-    return rules
+    return rules, peers_found
+
+def _ensure_route(ip):
+    # A rule alone paces nothing: the module engages only via a route that
+    # marks the destination for the brutal CC (brutalctl installs one with
+    # 'congctl lock brutal proto 233'; writing /proc directly does not).
+    try:
+        out = subprocess.run(["ip", "route", "show", "proto", "233"],
+                             capture_output=True, text=True).stdout
+        if any(line.split() and line.split()[0] == ip + "/32" for line in out.splitlines()):
+            return
+        dflt = subprocess.run(["ip", "route", "show", "default"],
+                              capture_output=True, text=True).stdout.split()
+        gw, dev = dflt[dflt.index("via") + 1], dflt[dflt.index("dev") + 1]
+        subprocess.run(["ip", "route", "replace", ip + "/32", "via", gw, "dev", dev,
+                        "congctl", "lock", "brutal", "proto", "233"], capture_output=True)
+    except Exception:
+        pass
 
 def _apply_rules(mbps=None, gain=None):
     if not _brutal_supported(): return False
@@ -51,10 +69,13 @@ def _apply_rules(mbps=None, gain=None):
     gain = gain if gain is not None else int(_read_first(GAIN_FILE, str(DEFAULT_GAIN)))
     try:
         with open(f"{BRUTAL_DIR}/rules", "w") as f: f.write("flush\n")
-        for rule in _build_rules(mbps, gain):
+        rules, peers = _build_rules(mbps, gain)
+        for rule in rules:
             try:
                 with open(f"{BRUTAL_DIR}/rules", "w") as f: f.write(rule + "\n")
             except OSError: pass
+        for ip in peers:
+            _ensure_route(ip)
     except OSError: return False
     return True
 
