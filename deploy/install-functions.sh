@@ -54,8 +54,16 @@ WantedBy=multi-user.target
 HY2_UNIT
 }
 mole_wait_dpkg() {
-  while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; do
-    mole_run sleep 2
+  while :; do
+    if command -v fuser >/dev/null 2>&1; then
+      fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1 || return 0
+    else
+      # fuser (psmisc) not installed yet: probe the lock with a read-only dpkg
+      # call. dpkg --audit needs the frontend lock, so it succeeds only once
+      # apt-daily/unattended-upgrades have released it.
+      dpkg --audit >/dev/null 2>&1 && return 0
+    fi
+    mole_run sleep 3
   done
 }
 mole_install_singbox() {
@@ -69,6 +77,10 @@ mole_install_singbox() {
   mole_download "https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box_1.14.4_linux_$arch.deb" "$digest" "$tmp"
   for attempt in 1 2 3; do
     mole_wait_dpkg
+    # A previous attempt killed by the deadline (or apt-daily grabbing the lock
+    # between mole_wait_dpkg and dpkg -i) leaves the package half-configured;
+    # dpkg --configure -a finishes it so the next dpkg -i can succeed.
+    dpkg --configure -a >/dev/null 2>&1 || true
     if mole_run flock /run/mole-userdb.lock dpkg --force-confold -i "$tmp"; then
       if test "$(dpkg-query -W -f='${Status}' sing-box)" = 'install ok installed' && id sing-box >/dev/null 2>&1 && test -s /usr/lib/systemd/system/sing-box.service; then
         rm -f "$tmp"

@@ -83,6 +83,18 @@ func runRepair(_ *cobra.Command, args []string) error {
 		return verifyRecordedNode(ctx, *srv, 20*time.Second)
 	}
 
+	return repairNode(srv, os.Stdout)
+}
+
+// repairNode opens a temporary SSH path to the node, reinstalls sing-box and
+// re-enables both units, then verifies both legs. It is shared by `mole server
+// repair` and the deploy-time auto-repair fallback, so a deploy that ends with
+// one leg up and one refusing heals itself instead of leaving a billing
+// instance for the operator to repair by hand.
+//
+// Output goes to w; runRepair passes os.Stdout, finishDeploy passes the
+// deployment log writer so the repair trail lands in the receipt.
+func repairNode(srv *Server, w io.Writer) error {
 	keyPath, err := localSSHKeyPath()
 	if err != nil {
 		return err
@@ -92,7 +104,7 @@ func runRepair(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("no physical uplink to reach the node from: %w", err)
 	}
 
-	fmt.Printf("🔧 Repairing %s (%s)\n", srv.Name, srv.IP)
+	fmt.Fprintf(w, "🔧 Repairing %s (%s)\n", srv.Name, srv.IP)
 	myIP, err := directPublicIP()
 	if err != nil {
 		return fmt.Errorf("could not learn this machine's public address (needed for the firewall rule): %w", err)
@@ -105,12 +117,12 @@ func runRepair(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open tcp/22 for %s: %w", myIP, err)
 	}
-	fmt.Printf("   opened tcp/22 for %s (rule %d) — closed again when this finishes\n", myIP, ruleID)
+	fmt.Fprintf(w, "   opened tcp/22 for %s (rule %d) — closed again when this finishes\n", myIP, ruleID)
 	defer func() {
 		if derr := deleteFirewallRule(groupID, ruleID); derr != nil {
-			fmt.Printf("⚠️  could not close tcp/22 (rule %d): %v — delete it in the Vultr console\n", ruleID, derr)
+			fmt.Fprintf(w, "⚠️  could not close tcp/22 (rule %d): %v — delete it in the Vultr console\n", ruleID, derr)
 		} else {
-			fmt.Println("   closed tcp/22 again")
+			fmt.Fprintln(w, "   closed tcp/22 again")
 		}
 	}()
 	_ = utils.AllowDirectHost(srv.IP)
@@ -118,16 +130,16 @@ func runRepair(_ *cobra.Command, args []string) error {
 	ssh := func(script string) (string, error) {
 		return sshRun(keyPath, ifi.Name, srv.IP, script, 3*time.Minute)
 	}
-	fmt.Print("   waiting for SSH")
+	fmt.Fprint(w, "   waiting for SSH")
 	var lastErr error
 	for i := 0; i < 24; i++ {
 		if _, lastErr = ssh("true"); lastErr == nil {
 			break
 		}
-		fmt.Print(".")
+		fmt.Fprint(w, ".")
 		time.Sleep(5 * time.Second)
 	}
-	fmt.Println()
+	fmt.Fprintln(w)
 	if lastErr != nil {
 		return fmt.Errorf("SSH never connected: %v (the rule can take a minute or two to propagate; try again)", lastErr)
 	}
@@ -159,14 +171,14 @@ func runRepair(_ *cobra.Command, args []string) error {
 			return err
 		}
 
-		fmt.Println("   REALITY config was missing on the node — minted a new identity (servers.json updated; restart mole afterwards)")
+		fmt.Fprintln(w, "   REALITY config was missing on the node — minted a new identity (servers.json updated; restart mole afterwards)")
 	}
 
-	fmt.Println("   reinstalling sing-box and re-enabling both units...")
+	fmt.Fprintln(w, "   reinstalling sing-box and re-enabling both units...")
 	out, err = ssh(repairScript(configBlock, srv.DownMbps))
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		if line != "" {
-			fmt.Println("   | " + line)
+			fmt.Fprintln(w, "   | "+line)
 		}
 	}
 	if err != nil {
@@ -181,7 +193,7 @@ func runRepair(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("hysteria2 still %s after the repair — see the script output above", hy2.Verdict)
 	}
 	if configBlock != "" {
-		fmt.Println("↻  The client now needs the new REALITY key: run `mole down && mole up`.")
+		fmt.Fprintln(w, "↻  The client now needs the new REALITY key: run `mole down && mole up`.")
 	}
 	return nil
 }

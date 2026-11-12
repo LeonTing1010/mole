@@ -760,6 +760,33 @@ func finishDeploy(parent context.Context, srv Server, session *deploySession) er
 	session.record.Verification = &result
 	storeErr := changeServer(srv.InstanceID, srv.Name, func(s *Server) { s.Verification = &result })
 	recordErr := session.stage(result.Status, verifyErr)
+
+	// One leg is up, the other never answered. The boot script lost a race
+	// (the dpkg lock, usually) and the dead unit will not recover on its own;
+	// left here the operator gets a half-working node plus a bill and has to
+	// run `mole server repair` by hand. Repair it over SSH before giving up.
+	// The verify context is exhausted by now, so the repair and its re-check
+	// draw a fresh budget from parent — which still answers to Ctrl-C.
+	if verifyErr != nil && result.Status == "degraded" {
+		fmt.Fprintln(session.writer(), "🩹 one leg up, one never answered — repairing the dead leg over SSH before giving up...")
+		if rerr := repairNode(&srv, session.writer()); rerr == nil {
+			recheckCtx, rcancel := context.WithTimeout(parent, 2*time.Minute)
+			rresult, rverr := verifyNode(recheckCtx, srv, session.writer())
+			rcancel()
+			session.record.Verification = &rresult
+			_ = changeServer(srv.InstanceID, srv.Name, func(s *Server) { s.Verification = &rresult })
+			_ = session.stage(rresult.Status, rverr)
+			result = rresult
+			if rverr != nil {
+				verifyErr = fmt.Errorf("repair succeeded but the node is still %s: %w", rresult.Status, rverr)
+			} else {
+				verifyErr = nil
+			}
+		} else {
+			verifyErr = fmt.Errorf("node degraded and automatic repair failed: %w", rerr)
+		}
+	}
+
 	if err = errors.Join(verifyErr, storeErr, recordErr); err != nil {
 		return fmt.Errorf("instance %s retained and potentially billing; verify with mole server verify %s or destroy with mole server destroy %s; receipt %s: %w", srv.InstanceID, srv.Name, srv.Name, session.dir, err)
 	}

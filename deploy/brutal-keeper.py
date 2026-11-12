@@ -185,20 +185,26 @@ class H(http.server.BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query)
         if u.path == "/rate":
-            try:
-                n = max(1, min(10000, int(q.get("mbps", ["0"])[0])))
-            except ValueError:
-                n = 0
-            if n:
-                write_rate(n)
+            # Only write the rate when the caller actually passed mbps=.
+            # Previously the default ["0"] fed max(1, ...) → 1, so every
+            # status poll (GET /rate with no query) clobbered the declared
+            # rate back to 1 Mbps.
+            mbps_vals = q.get("mbps")
+            if mbps_vals:
+                try:
+                    n = max(1, min(10000, int(mbps_vals[0])))
+                    write_rate(n)
+                except ValueError:
+                    pass
             # Allow callers to set gain together with rate so a single request
             # configures both knobs — saves one round-trip and one apply().
-            try:
-                g = max(5, min(80, int(q.get("gain", [str(read_gain())])[0])))
-                if g:
+            gain_vals = q.get("gain")
+            if gain_vals:
+                try:
+                    g = max(5, min(80, int(gain_vals[0])))
                     write_gain(g)
-            except ValueError:
-                pass
+                except ValueError:
+                    pass
             # Applied synchronously, not in a thread: the caller is asking
             # whether the rate is in effect, and an answer sent before the
             # work is done cannot say.

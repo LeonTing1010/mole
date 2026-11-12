@@ -389,7 +389,7 @@ const hopIntervalSeconds = 120
 // Both children inherit one absolute deadline and are joined before script exit.
 // Deployment readiness is still determined by external authenticated HTTPS.
 func dualBootScript(password string, port, downMbps int, id *serverIdentity, rid *realityIdentity) string {
-	return "#!/bin/bash\n" + nodeBootPrelude + sshHardeningScript(id.SSHPubKey) + nodeNetworkTuning +
+	return "#!/bin/bash\n" + nodeBootPrelude + nodeBootPrereq + sshHardeningScript(id.SSHPubKey) + nodeNetworkTuning +
 		"\n(\n" + hy2ServerSnippet(password, port, id) + "\n) &\nhy2_pid=$!\n" +
 		"(\n" + realityServerSnippet(port, downMbps, rid) + "\n) &\nreality_pid=$!\n" +
 		"wait \"$hy2_pid\" || true\nwait \"$reality_pid\" || true\n"
@@ -424,7 +424,7 @@ func dualBootScript(password string, port, downMbps int, id *serverIdentity, rid
 // Installing the key before disabling passwords keeps the order safe; the Vultr
 // web console remains the backstop either way.
 func hy2BootScript(password string, port int, id *serverIdentity) string {
-	return "#!/bin/bash\n" + nodeBootPrelude + sshHardeningScript(id.SSHPubKey) + nodeNetworkTuning + hy2ServerSnippet(password, port, id)
+	return "#!/bin/bash\n" + nodeBootPrelude + nodeBootPrereq + sshHardeningScript(id.SSHPubKey) + nodeNetworkTuning + hy2ServerSnippet(password, port, id)
 }
 
 // hy2ServerSnippet keeps the required leg independent from the optional cleanup.
@@ -575,7 +575,7 @@ func realityBootScript(port, downMbps int, id *realityIdentity) string {
 	// install that fails must not also cost the ability to log in and fix it.
 	// The snippet carries its own subshell and "set -e", so this script needs no
 	// top-level one.
-	return "#!/bin/bash\n" + nodeBootPrelude + sshHardeningScript(id.SSHPubKey) + nodeNetworkTuning + "\n" + realityServerSnippet(port, downMbps, id)
+	return "#!/bin/bash\n" + nodeBootPrelude + nodeBootPrereq + sshHardeningScript(id.SSHPubKey) + nodeNetworkTuning + "\n" + realityServerSnippet(port, downMbps, id)
 }
 
 // realityServerSnippet installs and starts the REALITY server, with no shebang

@@ -22,6 +22,12 @@ const (
 	nodeVerifyBudget = 6 * time.Minute
 	nodeVerifyEvery  = 5 * time.Second
 	nodeProbeTimeout = 3 * time.Second
+	// degradedGrace is how long one leg may be up while the other stays down
+	// before we stop waiting for the full budget. A leg that is still silent
+	// or refused after this long while its sibling answers almost certainly
+	// lost the boot-script race (the dpkg lock) and will not recover on its
+	// own — hand off to repair instead of burning the rest of the budget.
+	degradedGrace = 90 * time.Second
 )
 
 // legReport is what one leg looked like at the end of the wait.
@@ -73,6 +79,19 @@ func verificationStatus(srv Server, hy2, reality legReport) string {
 	return "unverified"
 }
 
+// stuckLegVerdict returns the verdict of the wanted leg that is not alive, for
+// the degraded-state progress message.
+func stuckLegVerdict(srv Server, hy2, reality legReport) string {
+	h, r := wantsLegs(srv)
+	if h && !hy2.ok() {
+		return string(hy2.Verdict)
+	}
+	if r && !reality.ok() {
+		return string(reality.Verdict)
+	}
+	return "unknown"
+}
+
 // verifyNodeWith owns the deadline and output. Probes represent completed
 // authenticated requests; transport-only reachability cannot produce ready.
 func verifyNodeWith(ctx context.Context, srv Server, opts nodeVerifyOptions) (nodeVerification, error) {
@@ -106,6 +125,7 @@ func verifyNodeWith(ctx context.Context, srv Server, opts nodeVerifyOptions) (no
 		report legReport
 	}
 	h, r := wantsLegs(srv)
+	var degradedSince time.Time
 	for {
 		if ctx.Err() != nil {
 			update()
@@ -145,6 +165,20 @@ func verifyNodeWith(ctx context.Context, srv Server, opts nodeVerifyOptions) (no
 		if result.Status == "ready" {
 			fmt.Fprintln(opts.Writer, "All requested protocols authenticated and delivered HTTPS payloads.")
 			return result, nil
+		}
+		// One leg is up, the other is not. Track how long it has been this
+		// way; once it exceeds degradedGrace the dead leg is not going to
+		// come up on its own, so stop early and let the caller repair it
+		// rather than wait out the whole budget.
+		if result.Status == "degraded" {
+			if degradedSince.IsZero() {
+				degradedSince = time.Now()
+			} else if time.Since(degradedSince) >= degradedGrace {
+				fmt.Fprintf(opts.Writer, "   one leg up, the other stuck at %s for %s — stopping early for repair\n", stuckLegVerdict(srv, result.HY2, result.Reality), degradedGrace)
+				return result, fmt.Errorf("node %s: %s: one leg has been up while the other stayed down for %s", srv.Name, result.Status, degradedGrace)
+			}
+		} else {
+			degradedSince = time.Time{}
 		}
 		timer := time.NewTimer(opts.Every)
 	waiting:
