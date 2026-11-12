@@ -120,6 +120,7 @@ exec /bin/date "$@"
 	id := &serverIdentity{CertPEM: "test certificate", KeyPEM: "test key", SSHPubKey: "ssh-ed25519 test", ObfsPassword: "test-obfs"}
 	rid := &realityIdentity{UUID: "test-user", PrivateKey: "test-key", ShortID: "aabb", Dest: "www.apple.com"}
 	script := dualBootScript("test-password", 443, 80, id, rid)
+	script = sandboxBootPrerequisites(script)
 	script = strings.ReplaceAll(script, nodeInstallFunctions, `
 set -euo pipefail
 mole_run(){ "$@"; }
@@ -150,4 +151,11 @@ func TestTuningFailurePreservesProtocolReadiness(t *testing.T) {
 	if err != nil || strings.TrimSpace(string(data)) != "degraded" {
 		t.Fatalf("apply failure lost: %s %v", data, err)
 	}
+}
+
+// These sandboxes exercise independent protocol startup after prerequisites.
+// Prerequisite failure, lock exclusion and deadline behavior have separate tests.
+func sandboxBootPrerequisites(script string) string {
+	script = strings.ReplaceAll(script, nodeBootPrereq, "\nexport MOLE_INSTALL_DEADLINE=$(($(date +%s)+300))\n")
+	return strings.ReplaceAll(script, nodeInstallLock, "\n")
 }

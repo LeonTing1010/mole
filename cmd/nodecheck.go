@@ -22,11 +22,8 @@ const (
 	nodeVerifyBudget = 6 * time.Minute
 	nodeVerifyEvery  = 5 * time.Second
 	nodeProbeTimeout = 3 * time.Second
-	// degradedGrace is how long one leg may be up while the other stays down
-	// before we stop waiting for the full budget. A leg that is still silent
-	// or refused after this long while its sibling answers almost certainly
-	// lost the boot-script race (the dpkg lock) and will not recover on its
-	// own — hand off to repair instead of burning the rest of the budget.
+	// A partial node may hand off to recovery early. Recovery must wait for the
+	// boot/repair lock; elapsed time alone never proves boot installation ended.
 	degradedGrace = 90 * time.Second
 )
 
@@ -166,10 +163,8 @@ func verifyNodeWith(ctx context.Context, srv Server, opts nodeVerifyOptions) (no
 			fmt.Fprintln(opts.Writer, "All requested protocols authenticated and delivered HTTPS payloads.")
 			return result, nil
 		}
-		// One leg is up, the other is not. Track how long it has been this
-		// way; once it exceeds degradedGrace the dead leg is not going to
-		// come up on its own, so stop early and let the caller repair it
-		// rather than wait out the whole budget.
+		// Recovery can investigate a partial node, while its shared node lock
+		// prevents writes until the boot installer has finished.
 		if result.Status == "degraded" {
 			if degradedSince.IsZero() {
 				degradedSince = time.Now()

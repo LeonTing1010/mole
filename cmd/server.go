@@ -564,12 +564,7 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("deploy: unknown --proto %q (want %q or %q)", proto, protoHysteria2, protoReality)
 	}
 	nameAuto := name == ""
-	// maxDeployAttempts bounds the redraw loop: an intercepted address is
-	// destroyed and the lottery starts over with a fresh instance, name and
-	// receipt. Region is deliberately NOT switched for the operator — picking
-	// a different geography is a decision, not a retry.
-	const maxDeployAttempts = 3
-	for attempt := 1; ; attempt++ {
+	{
 		if nameAuto {
 			name = fmt.Sprintf("%s-%d", region, time.Now().Unix())
 		}
@@ -678,10 +673,6 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 			_ = stashVultrKey()
 			return finishDeploy(ctx, srv, session)
 		}, func() error { return session.cleanupInstance(srv) })
-		if errors.Is(err, errAddressIntercepted) && attempt < maxDeployAttempts {
-			fmt.Printf("🔁 attempt %d: %v — redrawing\n", attempt, err)
-			continue
-		}
 		return err
 	}
 }
@@ -738,18 +729,9 @@ func finishDeploy(parent context.Context, srv Server, session *deploySession) er
 		return err
 	}
 	fmt.Fprintf(session.writer(), "Address assigned: %s; waiting for server installation.\n", serverHost(srv))
-	// Vet the address before spending the boot wait on it: on a network that
-	// impersonates foreign prefixes, an intercepted address means this instance
-	// can never be reached — destroy it at once (it is billing) and let the
-	// caller redraw. ~20s here replaces a 6–10 minute verification timeout.
-	if intercepted, detail := vetAssignedIP(ctx, ip); intercepted {
-		vetErr := fmt.Errorf("%w: %s (%s)", errAddressIntercepted, ip, detail)
-		_ = session.stage("ip_intercepted", vetErr)
-		if derr := destroyServerWithin(srv.Name, false, apiBudget); derr != nil {
-			return fmt.Errorf("%v; automatic destroy failed — run mole server destroy %s: %v", vetErr, srv.Name, derr)
-		}
-		return vetErr
-	}
+	// RTT alone cannot distinguish interception from a healthy nearby node.
+	// Only authenticated protocol verification qualifies this address; no ping
+	// heuristic may delete a potentially healthy billing instance.
 	if deployNoVerify {
 		return session.stage("unverified", nil)
 	}
@@ -757,25 +739,18 @@ func finishDeploy(parent context.Context, srv Server, session *deploySession) er
 		return err
 	}
 	result, verifyErr := verifyNode(ctx, srv, session.writer())
-	session.record.Verification = &result
-	storeErr := changeServer(srv.InstanceID, srv.Name, func(s *Server) { s.Verification = &result })
-	recordErr := session.stage(result.Status, verifyErr)
+	recordErr := recordNodeVerification(srv, session, result, verifyErr)
 
-	// One leg is up, the other never answered. The boot script lost a race
-	// (the dpkg lock, usually) and the dead unit will not recover on its own;
-	// left here the operator gets a half-working node plus a bill and has to
-	// run `mole server repair` by hand. Repair it over SSH before giving up.
-	// The verify context is exhausted by now, so the repair and its re-check
-	// draw a fresh budget from parent — which still answers to Ctrl-C.
-	if verifyErr != nil && result.Status == "degraded" {
+	// A partial node may still be installing. Recovery takes the same remote
+	// lock before checking or changing identities, and uses a fresh bounded
+	// budget derived from the signal context.
+	if verifyErr != nil && result.Status == "degraded" && parent.Err() == nil {
 		fmt.Fprintln(session.writer(), "🩹 one leg up, one never answered — repairing the dead leg over SSH before giving up...")
-		if rerr := repairNode(&srv, session.writer()); rerr == nil {
+		if rerr := repairNode(parent, &srv, session.writer()); rerr == nil {
 			recheckCtx, rcancel := context.WithTimeout(parent, 2*time.Minute)
 			rresult, rverr := verifyNode(recheckCtx, srv, session.writer())
 			rcancel()
-			session.record.Verification = &rresult
-			_ = changeServer(srv.InstanceID, srv.Name, func(s *Server) { s.Verification = &rresult })
-			_ = session.stage(rresult.Status, rverr)
+			recordErr = errors.Join(recordErr, recordNodeVerification(srv, session, rresult, rverr))
 			result = rresult
 			if rverr != nil {
 				verifyErr = fmt.Errorf("repair succeeded but the node is still %s: %w", rresult.Status, rverr)
@@ -787,7 +762,7 @@ func finishDeploy(parent context.Context, srv Server, session *deploySession) er
 		}
 	}
 
-	if err = errors.Join(verifyErr, storeErr, recordErr); err != nil {
+	if err = errors.Join(verifyErr, recordErr); err != nil {
 		return fmt.Errorf("instance %s retained and potentially billing; verify with mole server verify %s or destroy with mole server destroy %s; receipt %s: %w", srv.InstanceID, srv.Name, srv.Name, session.dir, err)
 	}
 	fmt.Fprintln(session.writer(), "Requested tunnels ready. Optional Brutal capability is checked separately by the client.")

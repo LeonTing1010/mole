@@ -3,8 +3,10 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -56,7 +58,9 @@ func init() {
 	serverRepairCmd.Flags().BoolVar(&repairCheckOnly, "check", false, "only probe both legs from outside the tunnel; change nothing")
 }
 
-func runRepair(_ *cobra.Command, args []string) error {
+func runRepair(cmd *cobra.Command, args []string) error {
+	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	servers, err := loadServers()
 	if err != nil {
 		return err
@@ -78,23 +82,40 @@ func runRepair(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("%s has no address yet", srv.Name)
 	}
 	if repairCheckOnly {
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
 		return verifyRecordedNode(ctx, *srv, 20*time.Second)
 	}
 
-	return repairNode(srv, os.Stdout)
+	return repairNode(ctx, srv, os.Stdout)
 }
 
-// repairNode opens a temporary SSH path to the node, reinstalls sing-box and
-// re-enables both units, then verifies both legs. It is shared by `mole server
+// repairNode opens a temporary SSH path, waits for boot installation, repairs
+// the failed requested protocols, and verifies both legs. It is shared by `mole server
 // repair` and the deploy-time auto-repair fallback, so a deploy that ends with
 // one leg up and one refusing heals itself instead of leaving a billing
 // instance for the operator to repair by hand.
 //
 // Output goes to w; runRepair passes os.Stdout, finishDeploy passes the
 // deployment log writer so the repair trail lands in the receipt.
-func repairNode(srv *Server, w io.Writer) error {
+func repairNode(parent context.Context, srv *Server, w io.Writer) error {
+	if err := parent.Err(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(parent, 12*time.Minute)
+	defer cancel()
+	probeCtx, probeCancel := context.WithTimeout(ctx, 15*time.Second)
+	before, _ := verifyNode(probeCtx, *srv, w)
+	probeCancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if before.Status == "ready" {
+		return nil
+	}
+	plan, err := prepareNodeRepair(*srv, before)
+	if err != nil {
+		return err
+	}
+
 	keyPath, err := localSSHKeyPath()
 	if err != nil {
 		return err
@@ -105,30 +126,39 @@ func repairNode(srv *Server, w io.Writer) error {
 	}
 
 	fmt.Fprintf(w, "🔧 Repairing %s (%s)\n", srv.Name, srv.IP)
-	myIP, err := directPublicIP()
+	myIP, err := directPublicIP(ctx)
 	if err != nil {
 		return fmt.Errorf("could not learn this machine's public address (needed for the firewall rule): %w", err)
 	}
-	groupID, err := ensureFirewallGroup()
+	groupID, err := ensureFirewallGroupContext(ctx)
 	if err != nil {
 		return fmt.Errorf("firewall group: %w", err)
 	}
-	ruleID, err := addFirewallRule(groupID, "tcp", "22", myIP, "mole repair (temporary)")
+	ruleID, owned, err := addFirewallRule(ctx, groupID, "tcp", "22", myIP, "mole repair (temporary)")
 	if err != nil {
 		return fmt.Errorf("open tcp/22 for %s: %w", myIP, err)
 	}
-	fmt.Fprintf(w, "   opened tcp/22 for %s (rule %d) — closed again when this finishes\n", myIP, ruleID)
+	if owned {
+		fmt.Fprintf(w, "   opened tcp/22 for %s (rule %d) — closed again when this finishes\n", myIP, ruleID)
+	} else {
+		fmt.Fprintln(w, "   using existing tcp/22 access; leaving its rule unchanged")
+	}
 	defer func() {
+		if !owned {
+			return
+		}
 		if derr := deleteFirewallRule(groupID, ruleID); derr != nil {
 			fmt.Fprintf(w, "⚠️  could not close tcp/22 (rule %d): %v — delete it in the Vultr console\n", ruleID, derr)
 		} else {
 			fmt.Fprintln(w, "   closed tcp/22 again")
 		}
 	}()
-	_ = utils.AllowDirectHost(srv.IP)
+	if err := utils.AllowDirectHostContext(ctx, srv.IP); err != nil {
+		return err
+	}
 
 	ssh := func(script string) (string, error) {
-		return sshRun(keyPath, ifi.Name, srv.IP, script, 3*time.Minute)
+		return sshRun(ctx, keyPath, ifi.Name, srv.IP, script, 11*time.Minute)
 	}
 	fmt.Fprint(w, "   waiting for SSH")
 	var lastErr error
@@ -137,92 +167,125 @@ func repairNode(srv *Server, w io.Writer) error {
 			break
 		}
 		fmt.Fprint(w, ".")
-		time.Sleep(5 * time.Second)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+		}
 	}
 	fmt.Fprintln(w)
 	if lastErr != nil {
 		return fmt.Errorf("SSH never connected: %v (the rule can take a minute or two to propagate; try again)", lastErr)
 	}
 
-	// Whether the REALITY config survived decides whether the identity does.
-	// The private key lives only on the node, so a missing config means a new
-	// identity, a new public key for the client, and a restart to pick it up.
-	out, _ := ssh("test -s /etc/sing-box/config.json && echo present || echo missing")
-	configMissing := strings.TrimSpace(out) == "missing"
-	var configBlock string
-	if configMissing && !srv.isReality() && srv.hasStandbyLeg() || configMissing && srv.isReality() {
-		rid, err := newRealityIdentity(srv.RealityDest)
-		if err != nil {
-			return fmt.Errorf("mint a new REALITY identity: %w", err)
+	fmt.Fprintln(w, "   waiting for first boot to finish, then repairing failed protocols...")
+	out, repairErr := ssh(plan.script)
+	// Identity replacement is acknowledged under the node lock. Persist it even
+	// if a later service start failed, so retries use the identity actually written.
+	changed := false
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		switch line {
+		case "MOLE_HY2_IDENTITY_REPLACED":
+			srv.TLSCertPEM, srv.SNI = plan.hy2.CertPEM, plan.hy2.SNI
+			srv.Obfs, srv.ObfsPassword = "salamander", plan.hy2.ObfsPassword
+			changed = true
+		case "MOLE_REALITY_IDENTITY_REPLACED":
+			srv.UUID, srv.RealityPubKey = plan.reality.UUID, plan.reality.PublicKey
+			srv.RealityShortID, srv.RealityDest = plan.reality.ShortID, plan.reality.Dest
+			changed = true
+		default:
+			if line != "" {
+				fmt.Fprintln(w, "   | "+line)
+			}
 		}
+	}
+	if changed {
+		srv.Verification = nil
+		if err := changeServer(srv.InstanceID, srv.Name, func(current *Server) {
+			current.TLSCertPEM, current.SNI = srv.TLSCertPEM, srv.SNI
+			current.Obfs, current.ObfsPassword = srv.Obfs, srv.ObfsPassword
+			current.UUID, current.RealityPubKey = srv.UUID, srv.RealityPubKey
+			current.RealityShortID, current.RealityDest = srv.RealityShortID, srv.RealityDest
+			current.Verification = nil
+		}); err != nil {
+			return errors.Join(repairErr, err)
+		}
+		fmt.Fprintln(w, "   restored missing identity; restart the client if it was running")
+	}
+	if repairErr != nil {
+		return fmt.Errorf("repair script failed: %w", repairErr)
+	}
+	checkCtx, checkCancel := context.WithTimeout(ctx, 45*time.Second)
+	defer checkCancel()
+	result, verifyErr := verifyNode(checkCtx, *srv, w)
+	storeErr := changeServer(srv.InstanceID, srv.Name, func(current *Server) { current.Verification = &result })
+	return errors.Join(verifyErr, storeErr)
+}
+
+// A plan contains candidate identities, used only when configuration is still
+// missing after the shared boot/repair lock has been acquired. Existing keys
+// are never rotated just because protocol verification was slow.
+type nodeRepairPlan struct {
+	script  string
+	hy2     *serverIdentity
+	reality *realityIdentity
+}
+
+func prepareNodeRepair(srv Server, result nodeVerification) (nodeRepairPlan, error) {
+	plan := nodeRepairPlan{script: "set -euo pipefail\n" + nodeInstallLock + nodeInstallFunctions + nodeNetworkTuning + "\n"}
+	h, r := wantsLegs(srv)
+	if h && !result.HY2.ok() {
+		id, err := newServerIdentity()
+		if err != nil {
+			return plan, err
+		}
+		plan.hy2 = id
+		if srv.Obfs == "salamander" && srv.ObfsPassword != "" {
+			id.ObfsPassword = srv.ObfsPassword
+		}
+		full := hy2ServerSnippet(srv.Password, int(srv.Port), id)
+		start := strings.Index(full, "install -d -m 755 /etc/hysteria")
+		network := strings.Index(full, "if command -v ufw")
+		end := strings.Index(full, "mole_run systemctl enable --now hysteria-server")
+		if start < 0 || network < start || end < network {
+			return plan, fmt.Errorf("HY2 recovery template is incomplete")
+		}
+		plan.script += `
+mole_install_hy2
+if ! test -s /etc/hysteria/config.yaml || ! test -s /etc/hysteria/server.key || ! test -s /etc/hysteria/server.crt; then
+` + full[start:network] + `
+echo MOLE_HY2_IDENTITY_REPLACED
+fi
+` + full[network:end] + `
+mole_run systemctl enable --now hysteria-server
+mole_run systemctl restart hysteria-server
+mole_run systemctl is-active --quiet hysteria-server
+`
+	}
+	if r && !result.Reality.ok() {
+		id, err := newRealityIdentity(srv.RealityDest)
+		if err != nil {
+			return plan, err
+		}
+		plan.reality = id
 		port := int(srv.RealityPort)
 		if port == 0 {
 			port = int(srv.Port)
 		}
-		configBlock = realityConfigSnippet(port, rid)
-		srv.UUID, srv.RealityPubKey, srv.RealityShortID, srv.RealityDest = rid.UUID, rid.PublicKey, rid.ShortID, rid.Dest
-		if err := changeServer(srv.InstanceID, srv.Name, func(current *Server) {
-			current.UUID = srv.UUID
-			current.RealityPubKey = srv.RealityPubKey
-			current.RealityShortID = srv.RealityShortID
-			current.RealityDest = srv.RealityDest
-			current.Verification = nil
-		}); err != nil {
-			return err
-		}
-
-		fmt.Fprintln(w, "   REALITY config was missing on the node — minted a new identity (servers.json updated; restart mole afterwards)")
-	}
-
-	fmt.Fprintln(w, "   reinstalling sing-box and re-enabling both units...")
-	out, err = ssh(repairScript(configBlock, srv.DownMbps))
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if line != "" {
-			fmt.Fprintln(w, "   | "+line)
-		}
-	}
-	if err != nil {
-		return fmt.Errorf("repair script failed: %w", err)
-	}
-
-	hy2, reality := verifyNodeLegs(*srv, 45*time.Second)
-	if !reality.ok() && srv.realityAddr() != "" {
-		return fmt.Errorf("REALITY still %s after the repair — see the script output above", reality.Verdict)
-	}
-	if !hy2.ok() && !srv.isReality() {
-		return fmt.Errorf("hysteria2 still %s after the repair — see the script output above", hy2.Verdict)
-	}
-	if configBlock != "" {
-		fmt.Fprintln(w, "↻  The client now needs the new REALITY key: run `mole down && mole up`.")
-	}
-	return nil
-}
-
-// repairScript is the node-side half. It is the install part of the boot
-// script with its failure modes handled explicitly: the dpkg lock waited for,
-// the install retried, the package's conffile prompt suppressed (dpkg asks
-// interactively when /etc/sing-box/config.json already exists, and a
-// non-interactive stdin leaves the package half-configured with no service
-// user — the 217/USER failure seen 2026-09-05), and the postinst finished
-// before the unit is started.
-func repairScript(configBlock string, downMbps int) string {
-	return nodeInstallFunctions + nodeNetworkTuning + `
+		plan.script += `
 mole_install_singbox
-` + configBlock + `
-test -s /etc/sing-box/config.json || { echo "no /etc/sing-box/config.json"; exit 4; }
+if ! test -s /etc/sing-box/config.json; then
+` + realityConfigSnippet(port, id) + `
+echo MOLE_REALITY_IDENTITY_REPLACED
+fi
 sing-box check -c /etc/sing-box/config.json
-PORT=$(grep -o '"listen_port": *[0-9]*' /etc/sing-box/config.json | grep -o '[0-9]*$')
-iptables -C INPUT -p tcp --dport "$PORT" -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport "$PORT" -j ACCEPT 2>/dev/null || true
-systemctl enable --now sing-box >/dev/null 2>&1 || true
-systemctl restart sing-box
-systemctl enable --now hysteria-server >/dev/null 2>&1 || true
-sleep 2
-echo "sing-box: $(systemctl is-active sing-box)   hysteria-server: $(systemctl is-active hysteria-server)"
-ss -lntup 2>/dev/null | grep -E ':443 ' | awk '{print $1, $5, $7}'
-set +e
-` + brutalKeeperSnippet(downMbps) + `
-echo "brutal: module $(lsmod | grep -q '^brutal' && echo loaded || echo MISSING)   keeper: $(systemctl is-active mole-brutal-keeper)"
-`
+` + fmt.Sprintf("iptables -C INPUT -p tcp --dport %d -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport %d -j ACCEPT\n", port, port) + `
+mole_run systemctl enable --now sing-box
+mole_run systemctl restart sing-box
+mole_run systemctl is-active --quiet sing-box
+` + brutalKeeperSnippet(srv.DownMbps)
+	}
+	return plan, nil
 }
 
 // realityConfigSnippet renders just the config-file part of the REALITY
@@ -238,8 +301,8 @@ func realityConfigSnippet(port int, id *realityIdentity) string {
 }
 
 // sshRun executes script on the node as root, bound to ifname.
-func sshRun(keyPath, ifname, ip, script string, budget time.Duration) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), budget)
+func sshRun(parent context.Context, keyPath, ifname, ip, script string, budget time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, budget)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "ssh",
 		"-i", keyPath,
@@ -252,7 +315,7 @@ func sshRun(keyPath, ifname, ip, script string, budget time.Duration) (string, e
 		"root@"+ip, "bash", "-s")
 	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.CombinedOutput()
-	return string(out), err
+	return string(out), errors.Join(ctx.Err(), err)
 }
 
 // localSSHKeyPath is the private half of localSSHPubKey.
@@ -276,7 +339,7 @@ func localSSHKeyPath() (string, error) {
 // what address this machine appears from. Domestic on purpose: the kill switch
 // fails foreign egress closed on that interface, and a fake-IP answer from
 // inside the tunnel would name the VPS.
-func directPublicIP() (string, error) {
+func directPublicIP(ctx context.Context) (string, error) {
 	c, err := utils.NewBoundHTTPClient(8 * time.Second)
 	if err != nil {
 		return "", err
@@ -284,7 +347,11 @@ func directPublicIP() (string, error) {
 	ipv4 := regexp.MustCompile(`\b(\d{1,3}\.){3}\d{1,3}\b`)
 	var lastErr error
 	for _, u := range []string{"http://members.3322.org/dyndns/getip", "https://myip.ipip.net"} {
-		resp, err := c.Get(u)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return "", err
+		}
+		resp, err := c.Do(req)
 		if err != nil {
 			lastErr = err
 			continue
@@ -301,20 +368,21 @@ func directPublicIP() (string, error) {
 
 // addFirewallRule adds one inbound accept rule to the group and returns its id.
 // If the rule already exists (same protocol+port+subnet), it returns the existing id instead of failing.
-func addFirewallRule(groupID, protocol, port, ipv4, notes string) (int, error) {
+func addFirewallRule(ctx context.Context, groupID, protocol, port, ipv4, notes string) (int, bool, error) {
 	body := map[string]any{
 		"ip_type": "v4", "protocol": protocol, "port": port,
 		"subnet": ipv4, "subnet_size": 32, "notes": notes,
 	}
-	resp, err := serverAPIWithin(30*time.Second, "POST", "/firewalls/"+groupID+"/rules", body)
+	resp, err := serverAPIContext(ctx, 30*time.Second, "POST", "/firewalls/"+groupID+"/rules", body)
 	if err != nil {
 		// Vultr returns 400 {"error":"This rule is already defined"} for duplicates.
 		// In that case, find the existing rule id and return it so the rest of
-		// repair can proceed (the defer still closes it — no harm re-deleting).
+		// repair can proceed without claiming ownership or deleting that rule.
 		if strings.Contains(err.Error(), "already defined") {
-			return findExistingFirewallRule(groupID, protocol, port, ipv4)
+			id, err := findExistingFirewallRule(ctx, groupID, protocol, port, ipv4)
+			return id, false, err
 		}
-		return 0, err
+		return 0, false, err
 	}
 	var parsed struct {
 		Rule struct {
@@ -322,15 +390,15 @@ func addFirewallRule(groupID, protocol, port, ipv4, notes string) (int, error) {
 		} `json:"firewall_rule"`
 	}
 	if err := json.Unmarshal(resp, &parsed); err != nil || parsed.Rule.ID == 0 {
-		return 0, fmt.Errorf("unexpected reply: %s", strings.TrimSpace(string(resp)))
+		return 0, false, fmt.Errorf("unexpected reply: %s", strings.TrimSpace(string(resp)))
 	}
-	return parsed.Rule.ID, nil
+	return parsed.Rule.ID, true, nil
 }
 
 // findExistingFirewallRule GETs all rules on the group and returns the id of the
 // first inbound accept rule matching protocol+port+subnet, or 0 if none matches.
-func findExistingFirewallRule(groupID, protocol, port, ipv4 string) (int, error) {
-	resp, err := serverAPIWithin(30*time.Second, "GET", "/firewalls/"+groupID+"/rules?per_page=100", nil)
+func findExistingFirewallRule(ctx context.Context, groupID, protocol, port, ipv4 string) (int, error) {
+	resp, err := serverAPIContext(ctx, 30*time.Second, "GET", "/firewalls/"+groupID+"/rules?per_page=100", nil)
 	if err != nil {
 		return 0, err
 	}

@@ -104,6 +104,13 @@ func (s *deploySession) stage(stage string, err error) error {
 	return writePrivateJSON(filepath.Join(s.dir, "receipt.json"), s.record)
 }
 
+// Both copies are required evidence; do not discard a write error after repair.
+func recordNodeVerification(srv Server, session *deploySession, result nodeVerification, verifyErr error) error {
+	session.record.Verification = &result
+	storeErr := changeServer(srv.InstanceID, srv.Name, func(current *Server) { current.Verification = &result })
+	return errors.Join(storeErr, session.stage(result.Status, verifyErr))
+}
+
 func (s *deploySession) cleanupInstance(srv Server) error {
 	if srv.InstanceID == "" {
 		return nil

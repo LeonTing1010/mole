@@ -7,14 +7,14 @@ import (
 	"time"
 )
 
-func TestInterceptionVerdictFlagsPersistentLocalAnswers(t *testing.T) {
+func TestInterceptionVerdictRetainsPersistentLocalAnswers(t *testing.T) {
 	var replies []time.Duration
 	for i := 0; i < vetProbes; i++ {
 		replies = append(replies, 400*time.Microsecond)
 	}
 	bad, why := interceptionVerdict(replies)
-	if !bad {
-		t.Fatalf("all-local answers should be intercepted, got clean: %s", why)
+	if bad {
+		t.Fatalf("low RTT cannot authorize deletion: %s", why)
 	}
 }
 

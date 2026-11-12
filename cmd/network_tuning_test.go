@@ -48,9 +48,13 @@ func TestNetworkTuningReportsEffectiveQueue(t *testing.T) {
 
 // Quality/what-x-what: the same tuning stage is present for every provisioning path.
 func TestAllBootProfilesIncludeNetworkObservation(t *testing.T) {
+	plan, err := prepareNodeRepair(Server{Proto: protoReality, Port: 443, DownMbps: 80}, nodeVerification{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	id := &serverIdentity{}
 	rid := &realityIdentity{}
-	for name, script := range map[string]string{"hy2": hy2BootScript("test", 443, id), "reality": realityBootScript(443, 400, rid), "dual": dualBootScript("test", 443, 400, id, rid), "repair": repairScript("", 400)} {
+	for name, script := range map[string]string{"hy2": hy2BootScript("test", 443, id), "reality": realityBootScript(443, 400, rid), "dual": dualBootScript("test", 443, 400, id, rid), "repair": plan.script} {
 		if strings.Count(script, "MOLE_NETWORK_STATE_EOF") != 2 {
 			t.Fatalf("%s lacks one shared observation stage", name)
 		}

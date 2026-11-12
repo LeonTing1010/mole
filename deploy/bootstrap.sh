@@ -2,6 +2,8 @@
 # Shared first-boot path for cloud-init and the manual installer.
 set -euo pipefail
 umask 077
+exec 9>/run/mole-install.lock
+flock -w 300 9 || { echo "another mole installer is still running" >&2; exit 124; }
 export DEBIAN_FRONTEND=noninteractive
 timeout --kill-after=5 180 apt-get -qq update
 timeout --kill-after=5 180 apt-get -qqy -o DPkg::Lock::Timeout=60 install curl ca-certificates openssl iproute2 python3 psmisc

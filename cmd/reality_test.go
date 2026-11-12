@@ -270,10 +270,14 @@ func TestRealityServerSnippetComposesOntoAHy2Script(t *testing.T) {
 // repair script; and the config-only snippet the repair extracts must not
 // carry it (it is appended separately there).
 func TestBrutalKeeperShipsWithTheRealityLeg(t *testing.T) {
+	plan, err := prepareNodeRepair(Server{Proto: protoReality, Port: 443, DownMbps: 80}, nodeVerification{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	rid := &realityIdentity{UUID: "u", PrivateKey: "priv", PublicKey: "pub", ShortID: "aabbccdd", Dest: "www.apple.com"}
 	for name, script := range map[string]string{
 		"boot":   realityServerSnippet(443, 80, rid),
-		"repair": repairScript("", 80),
+		"repair": plan.script,
 	} {
 		// The port is asserted through its default so the check still proves
 		// the constant was interpolated, not merely that the word PORT appears.

@@ -275,8 +275,10 @@ var moleFirewallRules = []map[string]any{
 // REALITY node attached to it would boot listening on a port the cloud firewall
 // silently drops — a node that looks deployed, answers ping, and refuses every
 // connection. Reconciling is additive: rules added by hand are never removed.
-func ensureFirewallGroup() (string, error) {
-	listed, err := serverAPIWithin(30*time.Second, "GET", "/firewalls", nil)
+func ensureFirewallGroup() (string, error) { return ensureFirewallGroupContext(context.Background()) }
+
+func ensureFirewallGroupContext(ctx context.Context) (string, error) {
+	listed, err := serverAPIContext(ctx, 30*time.Second, "GET", "/firewalls", nil)
 	if err != nil {
 		return "", err
 	}
@@ -291,11 +293,11 @@ func ensureFirewallGroup() (string, error) {
 	}
 	for _, g := range groups.FirewallGroups {
 		if g.Description == moleFirewallGroup {
-			return g.ID, ensureFirewallRules(g.ID)
+			return g.ID, ensureFirewallRulesContext(ctx, g.ID)
 		}
 	}
 
-	createdResp, err := serverAPIWithin(30*time.Second, "POST", "/firewalls",
+	createdResp, err := serverAPIContext(ctx, 30*time.Second, "POST", "/firewalls",
 		map[string]any{"description": moleFirewallGroup})
 	if err != nil {
 		return "", err
@@ -312,7 +314,7 @@ func ensureFirewallGroup() (string, error) {
 	if id == "" {
 		return "", fmt.Errorf("Vultr returned no firewall-group id")
 	}
-	return id, ensureFirewallRules(id)
+	return id, ensureFirewallRulesContext(ctx, id)
 }
 
 // ensureFirewallRules adds every missing rule to an existing group. Matching is
@@ -320,7 +322,11 @@ func ensureFirewallGroup() (string, error) {
 // rather than on the note, so a rule someone added by hand with a different
 // description is recognised instead of being duplicated.
 func ensureFirewallRules(groupID string) error {
-	listed, err := serverAPIWithin(30*time.Second, "GET", "/firewalls/"+groupID+"/rules", nil)
+	return ensureFirewallRulesContext(context.Background(), groupID)
+}
+
+func ensureFirewallRulesContext(ctx context.Context, groupID string) error {
+	listed, err := serverAPIContext(ctx, 30*time.Second, "GET", "/firewalls/"+groupID+"/rules", nil)
 	if err != nil {
 		return err
 	}
@@ -345,7 +351,7 @@ func ensureFirewallRules(groupID string) error {
 		if have[key] {
 			continue
 		}
-		if _, err := serverAPIWithin(30*time.Second, "POST", "/firewalls/"+groupID+"/rules", rule); err != nil {
+		if _, err := serverAPIContext(ctx, 30*time.Second, "POST", "/firewalls/"+groupID+"/rules", rule); err != nil {
 			return fmt.Errorf("add firewall rule %v: %w", rule["notes"], err)
 		}
 	}
@@ -389,7 +395,7 @@ const hopIntervalSeconds = 120
 // Both children inherit one absolute deadline and are joined before script exit.
 // Deployment readiness is still determined by external authenticated HTTPS.
 func dualBootScript(password string, port, downMbps int, id *serverIdentity, rid *realityIdentity) string {
-	return "#!/bin/bash\n" + nodeBootPrelude + nodeBootPrereq + sshHardeningScript(id.SSHPubKey) + nodeNetworkTuning +
+	return "#!/bin/bash\n" + nodeBootPrelude + sshHardeningScript(id.SSHPubKey) + nodeInstallLock + nodeBootPrereq + nodeNetworkTuning +
 		"\n(\n" + hy2ServerSnippet(password, port, id) + "\n) &\nhy2_pid=$!\n" +
 		"(\n" + realityServerSnippet(port, downMbps, rid) + "\n) &\nreality_pid=$!\n" +
 		"wait \"$hy2_pid\" || true\nwait \"$reality_pid\" || true\n"
@@ -424,7 +430,7 @@ func dualBootScript(password string, port, downMbps int, id *serverIdentity, rid
 // Installing the key before disabling passwords keeps the order safe; the Vultr
 // web console remains the backstop either way.
 func hy2BootScript(password string, port int, id *serverIdentity) string {
-	return "#!/bin/bash\n" + nodeBootPrelude + nodeBootPrereq + sshHardeningScript(id.SSHPubKey) + nodeNetworkTuning + hy2ServerSnippet(password, port, id)
+	return "#!/bin/bash\n" + nodeBootPrelude + sshHardeningScript(id.SSHPubKey) + nodeInstallLock + nodeBootPrereq + nodeNetworkTuning + hy2ServerSnippet(password, port, id)
 }
 
 // hy2ServerSnippet keeps the required leg independent from the optional cleanup.
@@ -455,11 +461,11 @@ tls:
   key: /etc/hysteria/server.key
 auth:
   type: password
-  password: "%s"
+  password: %q
 obfs:
   type: salamander
   salamander:
-    password: "%s"
+    password: %q
 EOF
 chown root:hysteria /etc/hysteria/config.yaml
 chmod 640 /etc/hysteria/config.yaml
@@ -575,7 +581,7 @@ func realityBootScript(port, downMbps int, id *realityIdentity) string {
 	// install that fails must not also cost the ability to log in and fix it.
 	// The snippet carries its own subshell and "set -e", so this script needs no
 	// top-level one.
-	return "#!/bin/bash\n" + nodeBootPrelude + nodeBootPrereq + sshHardeningScript(id.SSHPubKey) + nodeNetworkTuning + "\n" + realityServerSnippet(port, downMbps, id)
+	return "#!/bin/bash\n" + nodeBootPrelude + sshHardeningScript(id.SSHPubKey) + nodeInstallLock + nodeBootPrereq + nodeNetworkTuning + "\n" + realityServerSnippet(port, downMbps, id)
 }
 
 // realityServerSnippet installs and starts the REALITY server, with no shebang

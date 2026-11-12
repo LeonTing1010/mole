@@ -12,16 +12,8 @@ import (
 	"github.com/LeonTing1010/mole/utils"
 )
 
-// errAddressIntercepted marks a freshly assigned address that this network
-// answers for locally — the address is unusable no matter how healthy the
-// instance behind it is, because the answerer shadows the real host.
-var errAddressIntercepted = errors.New("assigned address is intercepted on this network")
-
-// vetRTTBound is the largest round trip that can still be a local forgery.
-// Shanghai→Seoul cannot go below ~25ms (light alone wants 15 each way), and
-// the forger measured on 2026-11-11 answered in 0.1–0.7ms. Same-city users
-// are protected by fabricationNearby: a network that does not fabricate never
-// reaches this comparison.
+// Historical local-interception samples were below this threshold. A nearby
+// real node can be equally fast, so this threshold is advisory only.
 const vetRTTBound = 5 * time.Millisecond
 
 // vetProbes is how many echoes vetAssignedIP sends, one per second.
@@ -32,14 +24,8 @@ const vetProbes = 15
 // the verdict is silence, and silence is handled by the normal boot wait.
 const vetMinReplies = 10
 
-// vetAssignedIP decides whether a just-assigned address is worth waiting for.
-//
-// The forger gives itself away only by being impossibly fast, and only when
-// this network fabricates at all — which fabricationNearby establishes first
-// by probing two almost-certainly-unassigned neighbours of the target: a live
-// neighbour answers at real international RTT, a fabricated one answers
-// locally. When nothing nearby fabricates, a sub-5ms answer from the target
-// is genuine (the operator is in the datacenter's city) and vetting passes.
+// vetAssignedIP retains an advisory diagnostic for low-latency addresses.
+// It is not called by deployment and cannot authorize deletion.
 func vetAssignedIP(ctx context.Context, ip string) (bool, string) {
 	fab, detail := fabricationNearby(ip)
 	if !fab {
@@ -75,14 +61,13 @@ func interceptionVerdict(replies []time.Duration) (bool, string) {
 		}
 	}
 	if slowest < vetRTTBound {
-		return true, fmt.Sprintf("%d/%d echoes answered locally (slowest %s) — physically impossible for the region, the address is shadowed", len(replies), vetProbes, slowest.Round(time.Millisecond))
+		return false, fmt.Sprintf("%d/%d low-latency echoes (slowest %s): nearby node or interception; inconclusive, retaining instance", len(replies), vetProbes, slowest.Round(time.Millisecond))
 	}
 	return false, fmt.Sprintf("echoes take %s at worst — real distance, address looks clean", slowest.Round(time.Millisecond))
 }
 
-// fabricationNearby probes two same-/24 neighbours of ip, offset far enough to
-// be unassigned on any realistic allocation. An answer faster than vetRTTBound
-// can only come from something local impersonating the address.
+// fabricationNearby samples two same-/24 neighbours. Neither their allocation
+// nor their physical distance is known, so a fast reply is inconclusive.
 func fabricationNearby(ip string) (bool, string) {
 	v4 := net.ParseIP(ip).To4()
 	if v4 == nil {
@@ -93,7 +78,7 @@ func fabricationNearby(ip string) (bool, string) {
 		copy(nb, v4)
 		nb[3] = byte((int(v4[3]) + delta) % 256)
 		if rtt, err := icmpEchoRTT(nb.String(), 1500*time.Millisecond); err == nil && rtt < vetRTTBound {
-			return true, fmt.Sprintf("neighbour %s answered in %s — this network fabricates foreign addresses", nb, rtt.Round(time.Millisecond))
+			return true, fmt.Sprintf("neighbour %s answered in %s — nearby node or interception; inconclusive", nb, rtt.Round(time.Millisecond))
 		}
 	}
 	return false, "no local fabrication detected near the assigned address"

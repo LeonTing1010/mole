@@ -58,13 +58,37 @@ mole_wait_dpkg() {
     if command -v fuser >/dev/null 2>&1; then
       fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1 || return 0
     else
-      # fuser (psmisc) not installed yet: probe the lock with a read-only dpkg
-      # call. dpkg --audit needs the frontend lock, so it succeeds only once
-      # apt-daily/unattended-upgrades have released it.
-      dpkg --audit >/dev/null 2>&1 && return 0
+      # dpkg --audit is read-only and succeeds even while apt owns the lock.
+      # Probe the same POSIX record locks dpkg uses, without changing packages.
+      command -v python3 >/dev/null 2>&1 || { echo "lock probing requires fuser or python3" >&2; return 1; }
+      if mole_run python3 -c '
+import fcntl, os, sys
+files = []
+try:
+    for path in sys.argv[1:]:
+        if not os.path.exists(path):
+            continue
+        f = open(path, "r+")
+        files.append(f)
+        fcntl.lockf(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit(1)
+' /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock; then return 0; fi
     fi
     mole_run sleep 3
   done
+}
+# Package maintainer scripts may touch the same accounts as the HY2 installer.
+# Ordinary broken-package errors can be retried by dpkg -i, but never run or
+# continue package recovery after the shared deadline expires.
+mole_configure_pending() {
+  local status
+  if mole_run flock /run/mole-userdb.lock dpkg --force-confold --configure -a; then
+    return 0
+  else
+    status=$?
+    case "$status" in 124|137) return "$status" ;; esac
+  fi
 }
 mole_install_singbox() {
   local arch digest tmp attempt
@@ -77,10 +101,7 @@ mole_install_singbox() {
   mole_download "https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box_1.14.4_linux_$arch.deb" "$digest" "$tmp"
   for attempt in 1 2 3; do
     mole_wait_dpkg
-    # A previous attempt killed by the deadline (or apt-daily grabbing the lock
-    # between mole_wait_dpkg and dpkg -i) leaves the package half-configured;
-    # dpkg --configure -a finishes it so the next dpkg -i can succeed.
-    dpkg --configure -a >/dev/null 2>&1 || true
+    mole_configure_pending
     if mole_run flock /run/mole-userdb.lock dpkg --force-confold -i "$tmp"; then
       if test "$(dpkg-query -W -f='${Status}' sing-box)" = 'install ok installed' && id sing-box >/dev/null 2>&1 && test -s /usr/lib/systemd/system/sing-box.service; then
         rm -f "$tmp"
