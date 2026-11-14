@@ -569,7 +569,11 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 			name = fmt.Sprintf("%s-%d", region, time.Now().Unix())
 		}
 
-		fmt.Printf("🚀 Deploying %s in %s (%s, %s on port %d)\n", name, region, plan, proto, port)
+		extra := ""
+		if proto == protoHysteria2 && !deployNoReality {
+			extra = " + standby REALITY"
+		}
+		fmt.Printf("🚀 Deploying %s in %s (%s, %s%s on port %d)\n", name, region, plan, proto, extra, port)
 
 		if port < 1 || port > 65535 {
 			return fmt.Errorf("port must be in 1..65535")
@@ -728,7 +732,7 @@ func finishDeploy(parent context.Context, srv Server, session *deploySession) er
 	if err = changeServer(srv.InstanceID, srv.Name, func(current *Server) { current.IP = ip; current.IPv6 = ipv6; srv = *current }); err != nil {
 		return err
 	}
-	fmt.Fprintf(session.writer(), "Address assigned: %s; waiting for server installation.\n", serverHost(srv))
+	fmt.Fprintf(session.writer(), "Address assigned: %s — installing protocols now (usually 1–3 minutes).\n", serverHost(srv))
 	// RTT alone cannot distinguish interception from a healthy nearby node.
 	// Only authenticated protocol verification qualifies this address; no ping
 	// heuristic may delete a potentially healthy billing instance.
@@ -745,7 +749,7 @@ func finishDeploy(parent context.Context, srv Server, session *deploySession) er
 	// lock before checking or changing identities, and uses a fresh bounded
 	// budget derived from the signal context.
 	if verifyErr != nil && result.Status == "degraded" && parent.Err() == nil {
-		fmt.Fprintln(session.writer(), "🩹 one leg up, one never answered — repairing the dead leg over SSH before giving up...")
+		fmt.Fprintln(session.writer(), "🩹 One protocol answered and the other did not — reinstalling it over SSH before giving up…")
 		if rerr := repairNode(parent, &srv, session.writer()); rerr == nil {
 			recheckCtx, rcancel := context.WithTimeout(parent, 2*time.Minute)
 			rresult, rverr := verifyNode(recheckCtx, srv, session.writer())
@@ -765,7 +769,7 @@ func finishDeploy(parent context.Context, srv Server, session *deploySession) er
 	if err = errors.Join(verifyErr, recordErr); err != nil {
 		return fmt.Errorf("instance %s retained and potentially billing; verify with mole server verify %s or destroy with mole server destroy %s; receipt %s: %w", srv.InstanceID, srv.Name, srv.Name, session.dir, err)
 	}
-	fmt.Fprintln(session.writer(), "Requested tunnels ready. Optional Brutal capability is checked separately by the client.")
+	fmt.Fprintln(session.writer(), "✅ Node ready — the protocols you asked for answer from outside the tunnel. Run `mole up` to use it.")
 	return nil
 }
 

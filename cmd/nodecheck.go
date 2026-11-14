@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/LeonTing1010/mole/utils"
@@ -76,17 +77,17 @@ func verificationStatus(srv Server, hy2, reality legReport) string {
 	return "unverified"
 }
 
-// stuckLegVerdict returns the verdict of the wanted leg that is not alive, for
-// the degraded-state progress message.
-func stuckLegVerdict(srv Server, hy2, reality legReport) string {
+// stuckLeg names the wanted leg that is not answering, in plain words, for the
+// degraded-handoff line.
+func stuckLeg(srv Server, result nodeVerification) string {
 	h, r := wantsLegs(srv)
-	if h && !hy2.ok() {
-		return string(hy2.Verdict)
+	if h && !result.HY2.ok() {
+		return "hysteria2 (" + plainVerdict(result.HY2) + ")"
 	}
-	if r && !reality.ok() {
-		return string(reality.Verdict)
+	if r && !result.Reality.ok() {
+		return "REALITY (" + plainVerdict(result.Reality) + ")"
 	}
-	return "unknown"
+	return "one leg"
 }
 
 // verifyNodeWith owns the deadline and output. Probes represent completed
@@ -99,7 +100,7 @@ func verifyNodeWith(ctx context.Context, srv Server, opts nodeVerifyOptions) (no
 		opts.Every = nodeVerifyEvery
 	}
 	if opts.Heartbeat <= 0 {
-		opts.Heartbeat = 15 * time.Second
+		opts.Heartbeat = 30 * time.Second
 	}
 	started := time.Now()
 	result := nodeVerification{Status: "unverified"}
@@ -108,13 +109,9 @@ func verifyNodeWith(ctx context.Context, srv Server, opts nodeVerifyOptions) (no
 		result.CheckedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	progress := func() {
-		remaining := "unbounded"
-		if d, ok := ctx.Deadline(); ok {
-			remaining = max(time.Duration(0), time.Until(d)).Round(time.Second).String()
-		}
-		fmt.Fprintf(opts.Writer, "elapsed=%s remaining=%s HY2=%s REALITY=%s (remote installation stage unobserved)\n", time.Since(started).Round(time.Second), remaining, result.HY2.Verdict, result.Reality.Verdict)
+		fmt.Fprintf(opts.Writer, "   … %s elapsed — still installing (%s)\n", time.Since(started).Round(time.Second), legSummary(srv, result))
 	}
-	fmt.Fprintln(opts.Writer, "Verifying authenticated protocol requests from outside the tunnel...")
+	fmt.Fprintln(opts.Writer, "Checking each protocol from outside the tunnel…")
 	heartbeat := time.NewTicker(opts.Heartbeat)
 	defer heartbeat.Stop()
 	type probeResult struct {
@@ -160,7 +157,7 @@ func verifyNodeWith(ctx context.Context, srv Server, opts nodeVerifyOptions) (no
 		}
 		update()
 		if result.Status == "ready" {
-			fmt.Fprintln(opts.Writer, "All requested protocols authenticated and delivered HTTPS payloads.")
+			fmt.Fprintf(opts.Writer, "✅ All requested protocols answered and delivered real HTTPS traffic in %s.\n", time.Since(started).Round(time.Second))
 			return result, nil
 		}
 		// Recovery can investigate a partial node, while its shared node lock
@@ -169,7 +166,7 @@ func verifyNodeWith(ctx context.Context, srv Server, opts nodeVerifyOptions) (no
 			if degradedSince.IsZero() {
 				degradedSince = time.Now()
 			} else if time.Since(degradedSince) >= degradedGrace {
-				fmt.Fprintf(opts.Writer, "   one leg up, the other stuck at %s for %s — stopping early for repair\n", stuckLegVerdict(srv, result.HY2, result.Reality), degradedGrace)
+				fmt.Fprintf(opts.Writer, "   one protocol answered, but %s has been down for %s — not waiting further\n", stuckLeg(srv, result), degradedGrace.Round(time.Second))
 				return result, fmt.Errorf("node %s: %s: one leg has been up while the other stayed down for %s", srv.Name, result.Status, degradedGrace)
 			}
 		} else {
@@ -204,8 +201,15 @@ func verifyNode(ctx context.Context, srv Server, w io.Writer) (nodeVerification,
 	result, verifyErr := verifyNodeWith(ctx, srv, nodeVerifyOptions{Writer: w, Probe: helper.Probe})
 	tuning := helper.Tuning(ctx)
 	result.Tuning = &tuning
-	if w != nil {
-		fmt.Fprintf(w, "Network tuning: %s (protocol readiness: %s)\n", tuning.Status, result.Status)
+	if w != nil && tuning.Status != "unobserved" {
+		switch tuning.Status {
+		case "ready":
+			fmt.Fprintln(w, "Network tuning: applied.")
+		case "degraded":
+			fmt.Fprintln(w, "Network tuning: only partly applied — see /var/log/mole/boot.log on the node.")
+		default:
+			fmt.Fprintf(w, "Network tuning: %s\n", tuning.Status)
+		}
 	}
 	return result, verifyErr
 }
@@ -213,17 +217,49 @@ func verifyNode(ctx context.Context, srv Server, w io.Writer) (nodeVerification,
 func describeLeg(r legReport) string {
 	switch r.Verdict {
 	case utils.ProbeAlive:
-		return fmt.Sprintf("answers (%dms)", int(r.RTT/time.Millisecond))
+		return fmt.Sprintf("answers in %dms", int(r.RTT/time.Millisecond))
 	case utils.ProbeRefused:
-		return "refused — the box is up, nothing is listening yet"
+		return "port open, protocol not ready yet"
 	case utils.ProbeSilent:
-		return "silent — no answer yet"
+		return "no answer yet"
+	case utils.ProbeNoLink:
+		return "no uplink on this Mac"
 	default:
 		if r.Err != nil {
 			return fmt.Sprintf("%s (%v)", r.Verdict, r.Err)
 		}
 		return string(r.Verdict)
 	}
+}
+
+// plainVerdict is describeLeg without the timing, for one-line summaries.
+func plainVerdict(r legReport) string {
+	switch r.Verdict {
+	case utils.ProbeAlive:
+		return "answered"
+	case utils.ProbeRefused:
+		return "port open, not ready"
+	case utils.ProbeSilent:
+		return "no answer"
+	case utils.ProbeNoLink:
+		return "no uplink"
+	default:
+		return string(r.Verdict)
+	}
+}
+
+// legSummary names only the legs this deploy actually asked for, so a
+// hysteria2-only node does not report on a standby it never requested.
+func legSummary(srv Server, result nodeVerification) string {
+	h, r := wantsLegs(srv)
+	var parts []string
+	if h {
+		parts = append(parts, "hy2 "+plainVerdict(result.HY2))
+	}
+	if r {
+		parts = append(parts, "reality "+plainVerdict(result.Reality))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // adviseLeg turns the final verdict into the one thing to do next.

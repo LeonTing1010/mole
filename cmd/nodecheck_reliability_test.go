@@ -55,7 +55,7 @@ func TestVerificationDeadlineAndProgress(t *testing.T) {
 	if time.Since(start) > time.Second {
 		t.Fatal("verification exceeded cancellation budget")
 	}
-	if strings.Count(out.String(), "elapsed=") < 3 {
+	if strings.Count(out.String(), "still installing") < 3 {
 		t.Fatalf("no ongoing progress: %s", out.String())
 	}
 }

@@ -85,6 +85,16 @@ func newDeploySession(srv Server, hash string) (*deploySession, error) {
 	return s, nil
 }
 
+// stageProgress maps the stages worth showing to the one sentence a person
+// needs. Everything else (prepared, created, waiting_for_address, verifying,
+// ready) already has a dedicated human line in the deploy flow, so printing it
+// again here would only add noise.
+var stageProgress = map[string]string{
+	"creating_instance":          "Creating the server on Vultr…",
+	"destroying_after_interrupt": "↻ Interrupted — destroying the half-built server…",
+	"destroyed":                  "Server destroyed.",
+}
+
 func (s *deploySession) writer() io.Writer { return io.MultiWriter(os.Stdout, s.log) }
 func (s *deploySession) stage(stage string, err error) error {
 	s.record.Stage = stage
@@ -100,7 +110,15 @@ func (s *deploySession) stage(stage string, err error) error {
 			s.record.Error = "operation failed; see phase and verification verdicts"
 		}
 	}
-	fmt.Fprintf(s.writer(), "[%s] deployment %s: %s\n", s.record.UpdatedAt, s.record.ID, stage)
+	// The timestamped stage line is the machine-readable audit trail: it goes to
+	// the log and the receipt, not the operator's terminal, where a repeated
+	// 32-character deployment ID and internal stage names (creating_startup_script,
+	// preparing_firewall) say nothing a person can act on. The few milestones a
+	// person does care about get one plain sentence each.
+	fmt.Fprintf(s.log, "[%s] deployment %s: %s\n", s.record.UpdatedAt, s.record.ID, stage)
+	if line, ok := stageProgress[stage]; ok {
+		fmt.Fprintln(s.writer(), line)
+	}
 	return writePrivateJSON(filepath.Join(s.dir, "receipt.json"), s.record)
 }
 
