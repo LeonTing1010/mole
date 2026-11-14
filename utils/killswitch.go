@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -81,26 +82,30 @@ func pfRulesPath() string { return filepath.Join(MoleDir(), "pf-killswitch.conf"
 // our enable reference (-X) instead of force-disabling PF for everyone.
 func pfTokenPath() string { return filepath.Join(MoleDir(), "pf-token") }
 
-// EnsureCNCIDRs makes sure a valid China CIDR list exists on disk, mirroring
-// EnsureRuleSets: fetch when missing or stale, validate before replacing,
-// fall back to the cached then the embedded copy. Never blocks startup.
+// EnsureCNCIDRs makes sure a China CIDR list exists on disk, mirroring
+// EnsureRuleSets: fetch only when MISSING, validate before replacing, fall back
+// to the embedded copy. Never blocks startup.
+//
+// A stale-but-present list is left alone here and refreshed after the tunnel is
+// up (RefreshStaleCaches): the cold-start path cannot reach the upstream on
+// networks that block it directly, so attempting it only costs time and emits a
+// warning that can never be acted on.
 func EnsureCNCIDRs() {
 	path := CNCIDRPath()
-	if st, err := os.Stat(path); err == nil && st.Size() > 0 && time.Since(st.ModTime()) < cnCIDRMaxAge {
+	if st, err := os.Stat(path); err == nil && st.Size() > 0 {
 		return
 	}
 	if err := fetchCNCIDRs(path); err != nil {
-		if st, statErr := os.Stat(path); statErr == nil && st.Size() > 0 {
-			fmt.Printf("⚠️  CN CIDR list refresh failed: %v (using cached copy)\n", err)
-			return
-		}
-		fmt.Printf("⚠️  CN CIDR list fetch failed: %v (using embedded copy)\n", err)
+		WarnOncePerDay("cn-cidr", "⚠️  CN CIDR list could not be fetched (%s); using the built-in copy.\n", briefFetchError(err))
 		_ = os.WriteFile(path, []byte(embeddedCNCIDRs), 0644)
 	}
 }
 
 func fetchCNCIDRs(dst string) error {
-	client := newDirectHTTPClient(30 * time.Second)
+	return fetchCNCIDRsWith(newDirectHTTPClient(30*time.Second), dst)
+}
+
+func fetchCNCIDRsWith(client *http.Client, dst string) error {
 	resp, err := client.Get(cnCIDRURL)
 	if err != nil {
 		return err

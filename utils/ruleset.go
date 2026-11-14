@@ -3,8 +3,10 @@ package utils
 import (
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -57,7 +59,7 @@ const builtinRulesURL = "https://raw.githubusercontent.com/LeonTing1010/mole/mas
 // offline-safe and avoiding a network hit on every startup.
 const builtinRulesMaxAge = 7 * 24 * time.Hour
 
-// EnsureRuleSets pre-downloads any missing .srs file into ~/.mole/ so that
+// EnsureRuleSets pre-downloads any MISSING .srs file into ~/.mole/ so that
 // sing-box can start without depending on the hy2 outbound for its own boot
 // resources. The previous design routed rule-set fetches through the
 // "proxy" outbound, which made startup a chicken-and-egg deadlock: when the
@@ -65,24 +67,114 @@ const builtinRulesMaxAge = 7 * 24 * time.Hour
 // stuck restarting it in a loop, so the user just saw an opaque restart loop
 // in mole.log instead of sing-box coming up cleanly.
 //
-// Best-effort: a failed download prints a warning but does not block startup.
-// In that case the config builder falls back to remote-with-direct-detour so
-// sing-box still tries (and at worst fails with a clearer error than the
-// proxy-deadlock we have today).
+// A cached-but-stale copy is deliberately NOT refreshed here. The cold-start
+// path has no tunnel yet, so the fetch has to leave the physical interface —
+// and on networks that block raw.githubusercontent.com directly (IPv4 SYN
+// dropped, IPv6 reset after the TLS ClientHello) that fetch fails every single
+// time. Warming the cache is best-effort and must not block startup; stale
+// freshness is handled by RefreshStaleCaches once the tunnel is carrying
+// traffic. Measured 2026-11-14: geosite-cn.srs sat 25 days past its 7-day
+// MaxAge because every cold-start refresh was failing on this exact path.
 func EnsureRuleSets() {
 	for _, s := range ruleSetSources {
 		path := filepath.Join(MoleDir(), s.Tag+".srs")
 		if st, err := os.Stat(path); err == nil && st.Size() > 0 {
-			if s.MaxAge == 0 || time.Since(st.ModTime()) < s.MaxAge {
-				continue
-			}
+			continue
 		}
 		if err := downloadRuleSet(s.URL, path); err != nil {
-			// A stale-but-present copy is still worth using, so only warn — the
-			// config builder decides what to reference based on what's on disk.
-			fmt.Printf("⚠️  rule-set %s prefetch failed: %v (using cached copy if present)\n", s.Tag, err)
+			WarnOncePerDay("ruleset-"+s.Tag, "⚠️  Rule set %s could not be downloaded (%s); sing-box will start without it.\n", s.Tag, briefFetchError(err))
 		}
 	}
+}
+
+// RefreshStaleCaches re-fetches every stale cache through client, which the
+// caller must point at the live tunnel (a plain http.Client is enough: once
+// the TUN owns the default route, it leaves that way). Returns how many files
+// it refreshed so the caller knows whether anything changed.
+//
+// The new files take effect on the next `mole up` — sing-box has already read
+// the previous copies — which is why this runs as a background nicety rather
+// than a blocking step.
+func RefreshStaleCaches(client *http.Client) int {
+	refreshed := 0
+
+	for _, s := range ruleSetSources {
+		if s.MaxAge == 0 {
+			continue
+		}
+		path := filepath.Join(MoleDir(), s.Tag+".srs")
+		if st, err := os.Stat(path); err == nil && time.Since(st.ModTime()) < s.MaxAge {
+			continue
+		}
+		if err := downloadRuleSetWith(client, s.URL, path); err != nil {
+			WarnOncePerDay("ruleset-"+s.Tag, "⚠️  Rule set %s is out of date and could not be refreshed (%s); still using the cached copy.\n", s.Tag, briefFetchError(err))
+			continue
+		}
+		refreshed++
+	}
+
+	builtinPath := filepath.Join(MoleDir(), "builtin-rules.json")
+	if st, err := os.Stat(builtinPath); err != nil || time.Since(st.ModTime()) >= builtinRulesMaxAge {
+		if err := downloadRuleSetWith(client, builtinRulesURL, builtinPath); err != nil {
+			WarnOncePerDay("builtin-rules", "⚠️  Built-in rules could not be refreshed (%s); using the embedded copy.\n", briefFetchError(err))
+		} else {
+			refreshed++
+		}
+	}
+
+	if st, err := os.Stat(CNCIDRPath()); err != nil || time.Since(st.ModTime()) >= cnCIDRMaxAge {
+		if err := fetchCNCIDRsWith(client, CNCIDRPath()); err != nil {
+			WarnOncePerDay("cn-cidr", "⚠️  CN CIDR list could not be refreshed (%s); using the cached copy.\n", briefFetchError(err))
+		} else {
+			refreshed++
+		}
+	}
+
+	if refreshed > 0 {
+		fmt.Printf("🔄 Refreshed %d cached list(s) through the tunnel; they take effect on the next `mole up`.\n", refreshed)
+	}
+	return refreshed
+}
+
+// HasStaleCaches reports whether any cache is past its MaxAge, so the
+// post-tunnel refresher can skip its wait entirely when nothing needs fetching.
+func HasStaleCaches() bool {
+	for _, s := range ruleSetSources {
+		if s.MaxAge == 0 {
+			continue
+		}
+		st, err := os.Stat(filepath.Join(MoleDir(), s.Tag+".srs"))
+		if err != nil || time.Since(st.ModTime()) >= s.MaxAge {
+			return true
+		}
+	}
+	if st, err := os.Stat(filepath.Join(MoleDir(), "builtin-rules.json")); err != nil || time.Since(st.ModTime()) >= builtinRulesMaxAge {
+		return true
+	}
+	if st, err := os.Stat(CNCIDRPath()); err != nil || time.Since(st.ModTime()) >= cnCIDRMaxAge {
+		return true
+	}
+	return false
+}
+
+// briefFetchError reduces a Go network error to the one part a person can act
+// on. The raw error repeats the URL that was already named and carries
+// bracketed IPv6 addresses, which push the cause off the end of the line.
+func briefFetchError(err error) string {
+	s := err.Error()
+	switch {
+	case strings.Contains(s, "connection reset by peer"):
+		return "connection reset"
+	case strings.Contains(s, "no such host"):
+		return "DNS lookup failed"
+	case strings.Contains(s, "i/o timeout"), strings.Contains(s, "deadline exceeded"):
+		return "timed out"
+	case strings.Contains(s, "connection refused"):
+		return "connection refused"
+	case strings.Contains(s, "certificate"):
+		return "TLS certificate rejected"
+	}
+	return s
 }
 
 func downloadRuleSet(url, dst string) error {
@@ -90,7 +182,10 @@ func downloadRuleSet(url, dst string) error {
 	// point is to remove the proxy from the cold-start critical path.
 	// Use direct HTTP client to avoid DNS takeover issues if called while
 	// the VPN is running.
-	client := newDirectHTTPClient(30 * time.Second)
+	return downloadRuleSetWith(newDirectHTTPClient(30*time.Second), url, dst)
+}
+
+func downloadRuleSetWith(client *http.Client, url, dst string) error {
 	resp, err := client.Get(url)
 	if err != nil {
 		return err
@@ -121,16 +216,16 @@ func downloadRuleSet(url, dst string) error {
 // services that should route direct" (oray, qq.com, …) changes over time, so
 // pulling it lets the list update WITHOUT recompiling the binary.
 //
-// Fetched only when the cache is missing or older than builtinRulesMaxAge, so a
-// dead network never blocks startup and we don't hit the source on every
-// `mole up`. Best-effort: a failed download prints a warning but does not block
-// startup — loadBuiltinRules() falls back to the embedded copy.
+// Only a missing file is fetched here; staleness is refreshed after the tunnel
+// is up (see RefreshStaleCaches) for the same reason as EnsureRuleSets. A
+// failed download never blocks startup — loadBuiltinRules() falls back to the
+// embedded copy.
 func EnsureBuiltinRules() {
 	path := filepath.Join(MoleDir(), "builtin-rules.json")
-	if st, err := os.Stat(path); err == nil && time.Since(st.ModTime()) < builtinRulesMaxAge {
+	if st, err := os.Stat(path); err == nil && st.Size() > 0 {
 		return
 	}
 	if err := downloadRuleSet(builtinRulesURL, path); err != nil {
-		fmt.Printf("⚠️  builtin-rules prefetch failed: %v (using embedded copy)\n", err)
+		WarnOncePerDay("builtin-rules", "⚠️  Built-in rules could not be downloaded (%s); using the embedded copy.\n", briefFetchError(err))
 	}
 }

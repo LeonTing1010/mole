@@ -410,6 +410,13 @@ func runDaemon() error {
 		runErr <- sup.Run(ctx)
 	}()
 
+	// Top up caches the cold-start path cannot reach. On networks that block
+	// raw.githubusercontent.com directly (IPv4 SYN dropped, IPv6 reset after the
+	// TLS ClientHello), the tunnel is the only working route, so the fetch waits
+	// until it carries traffic. The files land for the NEXT `mole up`; this run
+	// keeps the copies sing-box already loaded.
+	go refreshStaleCachesAfterTunnel(ctx)
+
 	// Optional: auto-tune Brutal cwnd_gain on fresh nodes.
 	// Only runs when --tune-on-start is set AND the node has no recorded gain
 	// (brutal_gain == 0). Best-effort — any failure (keeper still building,
@@ -464,6 +471,26 @@ func runDaemon() error {
 	case <-time.After(10 * time.Second):
 	}
 	return nil
+}
+
+// refreshStaleCachesAfterTunnel refreshes rule-sets, built-in rules and the CN
+// CIDR list once the tunnel is carrying traffic. It never blocks startup and
+// gives up after ~5 minutes; the cached copies keep working either way.
+func refreshStaleCachesAfterTunnel(ctx context.Context) {
+	if !utils.HasStaleCaches() {
+		return
+	}
+	client := &http.Client{Timeout: 12 * time.Second}
+	for attempt := 0; attempt < 10; attempt++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(30 * time.Second):
+		}
+		if utils.RefreshStaleCaches(client) > 0 {
+			return
+		}
+	}
 }
 
 // preflightPacing installs the REALITY pacing rule through a throwaway,
