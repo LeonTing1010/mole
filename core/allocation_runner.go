@@ -3,7 +3,10 @@ package core
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
+
+	"github.com/LeonTing1010/mole/utils"
 )
 
 const (
@@ -91,4 +94,50 @@ func (r allocationRunner) run(ctx context.Context, current, candidate int, edges
 		t.Samples[i] = obs
 	}
 	return t, nil
+}
+
+func (s *Supervisor) runAllocationTrial(ctx context.Context, current, candidate int, edges bool, stable func() error) (allocationTrial, error) {
+	var gateway, ifname string
+	ping := func(ctx context.Context) (time.Duration, error) {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		g, i, err := utils.DefaultGateway()
+		if err != nil || g == "" {
+			return 0, fmt.Errorf("gateway unavailable")
+		}
+		s.stateMu.Lock()
+		expectedGateway := s.state.LinkGateway
+		s.stateMu.Unlock()
+		if expectedGateway == "" || g != expectedGateway {
+			return 0, fmt.Errorf("gateway state changed")
+		}
+		if gateway != "" && (gateway != g || ifname != i) {
+			return 0, fmt.Errorf("gateway changed")
+		}
+		gateway, ifname = g, i
+		return echoGateway(gateway, ifname, 750*time.Millisecond)
+	}
+	wait := func(ctx context.Context, d time.Duration) error {
+		t := time.NewTimer(d)
+		defer t.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+			return nil
+		}
+	}
+	runner := allocationRunner{traffic: s.clash.allocationTotals, gateway: ping, wait: wait, stable: stable}
+	runner.measure = func(ctx context.Context, share int, idle time.Duration) (allocationObservation, error) {
+		return guardedAllocationMeasure(ctx, idle, time.Second, ping, stable, func(ctx context.Context) (allocationObservation, error) {
+			ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			transport := &http.Transport{DisableKeepAlives: true, Proxy: nil}
+			defer transport.CloseIdleConnections()
+			client := &http.Client{Timeout: 15 * time.Second, Transport: transport}
+			return measureAllocationURLs(ctx, client, allocationURLs(share), allocationBytesPerStream, allocationWarmup, allocationMinWindow)
+		})
+	}
+	return runner.run(ctx, current, candidate, edges)
 }

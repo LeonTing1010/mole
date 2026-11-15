@@ -24,19 +24,6 @@ func BulkConcurrent(baseURL string, n, bytesPerStream int) (float64, error) {
 }
 
 func bulkConcurrentWithClient(client *http.Client, baseURL string, n, bytesPerStream int) (float64, error) {
-	if n <= 0 {
-		return 0, fmt.Errorf("stream count must be positive")
-	}
-	urls := make([]string, n)
-	for i := range urls {
-		urls[i] = baseURL
-	}
-	return bulkURLsWithClient(client, urls, bytesPerStream)
-}
-
-// All streams share one start/end window, including mixed-route streams.
-func bulkURLsWithClient(client *http.Client, urls []string, bytesPerStream int) (float64, error) {
-	n := len(urls)
 	if n <= 0 || bytesPerStream <= 0 {
 		return 0, fmt.Errorf("stream count and payload size must be positive")
 	}
@@ -44,11 +31,11 @@ func bulkURLsWithClient(client *http.Client, urls []string, bytesPerStream int) 
 	var wg sync.WaitGroup
 	var errs int32
 	wg.Add(n)
+	bulkURL := fmt.Sprintf("%s/bulk?bytes=%d", baseURL, bytesPerStream)
 	start := time.Now()
-	for _, baseURL := range urls {
+	for range n {
 		go func() {
 			defer wg.Done()
-			bulkURL := fmt.Sprintf("%s/bulk?bytes=%d", baseURL, bytesPerStream)
 			resp, err := client.Get(bulkURL)
 			if err != nil {
 				atomic.AddInt32(&errs, 1)

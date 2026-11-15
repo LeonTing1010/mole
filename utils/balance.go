@@ -19,8 +19,6 @@ type BalanceStatus struct {
 	AllocationMbps     []float64           `json:"allocation_mbps,omitempty"` // legacy nine-way scans
 	AllocationEvidence *AllocationEvidence `json:"allocation_evidence,omitempty"`
 	SampleError        string              `json:"sample_error,omitempty"`
-	RealityMbps        float64             `json:"reality_mbps,omitempty"`
-	Hy2Mbps            float64             `json:"hy2_mbps,omitempty"`
 	LastCheckedAt      time.Time           `json:"last_checked_at,omitempty"`
 	RealityError       string              `json:"reality_error,omitempty"`
 	Hy2Error           string              `json:"hy2_error,omitempty"`

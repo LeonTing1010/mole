@@ -114,7 +114,7 @@ func TestAllocationLateCompletionWaitsForNextReconciliation(t *testing.T) {
 	defer p.cancelAllocation()
 	s.startAllocation(&p, time.Now())
 	p.sampleEnvironment, _ = s.allocationEnv()
-	p.search.pending, p.search.wins = p.candidate, 2
+	p.search.wins = 2
 	p.search.gains = [3]float64{1.4, 1.4}
 	var once sync.Once
 	s.clash.http.Transport = bulkSpeedTransport(func(r *http.Request) (*http.Response, error) {
@@ -168,7 +168,7 @@ func TestAllocationControllerRejectsChangedEnvironmentAndFailures(t *testing.T) 
 		t.Run(cause, func(t *testing.T) {
 			s, selected, mu := allocationTestSupervisor(t)
 			p := qualifiedAllocationPolicy()
-			p.search.pending = 1
+			p.search.candidate = 1
 			p.search.wins = 2
 			var seq atomic.Uint64
 			s.pressureSnapshotFn = func() floodSnapshot { return floodSnapshot{sequence: seq.Load()} }
@@ -343,7 +343,7 @@ func TestAllocationControlErrorCancelsSampling(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("trial did not start")
 			}
-			p.search.pending, p.search.wins = p.candidate, 2
+			p.search.wins = 2
 			mu.Lock()
 			selected["#fail"] = failedTag
 			mu.Unlock()
@@ -426,7 +426,7 @@ func TestAllocationRevertsPreferenceWhenMeasuredEnvironmentChanges(t *testing.T)
 func TestAllocationRechecksFlowDistributionBeforePromotion(t *testing.T) {
 	s, selected, mu := allocationTestSupervisor(t)
 	p := qualifiedAllocationPolicy()
-	p.search.pending = 1
+	p.search.candidate = 1
 	p.search.wins = 2
 	p.search.gains = [3]float64{1.4, 1.4, 0}
 	env, err := s.allocationEnv()
@@ -457,7 +457,7 @@ func TestAllocationAdvancesPastUnrepresentativeCandidate(t *testing.T) {
 	s.startAllocation(&p, now)
 	awaitAllocation(t, &p)
 	s.finishAllocation(&p, now.Add(time.Second))
-	if p.candidate != 2 || p.search.preferred != 0 || p.search.wins != 0 {
+	if p.search.candidate != 2 || p.search.preferred != 0 || p.search.wins != 0 {
 		t.Fatalf("bad candidate transition: %+v", p)
 	}
 }

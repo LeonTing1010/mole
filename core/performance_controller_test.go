@@ -76,7 +76,7 @@ func TestPerformanceControllerSlowProbeDegradesThenHardFailureWithdraws(t *testi
 	}
 	// Model three independently confirmed comparisons before reconciling the selectors.
 	for i := 0; i < 3; i++ {
-		p.search.recordTrial(2, 1.4, true)
+		p.search.recordTrial(2, 1.4)
 	}
 	s.balanceOnce(&p)
 	if s.state.Balance.Hy2Lanes != 2 {

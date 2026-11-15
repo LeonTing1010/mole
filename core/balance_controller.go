@@ -61,7 +61,6 @@ func (s *Supervisor) balanceOnce(p *balancePolicy) {
 		wasSampling := p.sampleJob != nil
 		p.cancelAllocation()
 		p.search = allocationSearch{}
-		p.candidate = 0
 		p.pressure.cleanSince = time.Time{}
 		if wasSampling {
 			p.sampleError = "local link became unhealthy; trial canceled"
@@ -128,7 +127,6 @@ func (s *Supervisor) balanceOnce(p *balancePolicy) {
 		if env, e := s.allocationEnv(); e == nil && env != p.sampleEnvironment {
 			p.cancelAllocation()
 			p.search = allocationSearch{}
-			p.candidate = 0
 			p.sampleError = "measured environment changed; preference reset"
 		}
 	}
@@ -164,7 +162,7 @@ func (s *Supervisor) balanceOnce(p *balancePolicy) {
 		Supported: true, Enabled: true, Sampling: p.sampleJob != nil, RealityLanes: BalanceLanes - lanes, Hy2Lanes: lanes,
 		RealityHealthy: p.reality.healthy, Hy2Healthy: p.hy2.healthy,
 		LastCheckedAt: time.Now(),
-		LastSampleAt:  p.timeLastSample, SampleError: p.sampleError,
+		LastSampleAt:  p.sampledAt, SampleError: p.sampleError,
 		AllocationEvidence: p.sampleEvidence,
 		RealityDegraded:    p.reality.healthy && p.reality.slow > 0, Hy2Degraded: p.hy2.healthy && p.hy2.slow > 0,
 		RealityLatencyMs: reality.delay.Milliseconds(), Hy2LatencyMs: hy2.delay.Milliseconds(),

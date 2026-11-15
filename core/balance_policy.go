@@ -66,7 +66,6 @@ func (l *balanceLeg) observe(m legMeasurement) {
 		l.good = 0 // Recovery requires consecutive clean probes, even before withdrawal.
 		l.slow = 0
 		if l.bad >= legErrorThreshold {
-			l.good = 0
 			l.healthy = false
 		}
 		return
@@ -90,17 +89,16 @@ func (l *balanceLeg) observe(m legMeasurement) {
 }
 
 type balancePolicy struct {
-	reality, hy2                  balanceLeg
-	pressure                      udpPressure
-	search                        allocationSearch
-	sampleAttempt, timeLastSample time.Time
-	sampleError                   string
-	sampleEnvironment             allocationEnvironment
-	candidate                     int
-	reverseScan                   bool
-	sampleCancel                  context.CancelFunc
-	sampleJob                     chan allocationScanResult
-	sampleEvidence                *utils.AllocationEvidence
+	reality, hy2             balanceLeg
+	pressure                 udpPressure
+	search                   allocationSearch
+	sampleAttempt, sampledAt time.Time
+	sampleError              string
+	sampleEnvironment        allocationEnvironment
+	candidateOnEdges         bool
+	sampleCancel             context.CancelFunc
+	sampleJob                chan allocationResult
+	sampleEvidence           *utils.AllocationEvidence
 }
 
 func (p *balancePolicy) observe(reality, hy2 legMeasurement) {
@@ -132,6 +130,6 @@ func (p *balancePolicy) cancelAllocation() {
 }
 
 func (p *balancePolicy) discardAllocation() {
-	p.search.recordTrial(p.candidate, 0, false)
+	p.search.wins = 0
 	p.cancelAllocation()
 }

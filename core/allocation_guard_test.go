@@ -28,7 +28,7 @@ func TestAllocationTrafficGuardRejectsBusyResetAndMissingPayload(t *testing.T) {
 		{"upload saturation", allocationTraffic{Down: 100, Up: 100}, allocationTraffic{Down: 100, Up: 4 * mib}, 0, 2 * time.Second, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if ok := allocationTrafficClean(tc.before, tc.after, tc.payload, tc.duration); ok != tc.valid {
+			if ok := allocationTrafficError(tc.before, tc.after, tc.payload, tc.duration) == nil; ok != tc.valid {
 				t.Fatalf("clean=%t", ok)
 			}
 		})

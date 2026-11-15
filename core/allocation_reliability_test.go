@@ -34,26 +34,52 @@ func TestAllocationPairedComparisonRejectsDriftAndShortNoise(t *testing.T) {
 // Quality/what: one candidate needs repeated wins before changing any lanes.
 func TestAllocationCandidateNeedsThreeCleanPairedWins(t *testing.T) {
 	// Why: repeated bracketed improvements reduce dependence on a fortunate sample.
-	var p allocationSearch
-	for i := 0; i < 2; i++ {
-		p.recordTrial(1, 1.3, true)
-		if p.preferred != 0 {
-			t.Fatal("switched without three wins")
+	for candidate := 0; candidate <= BalanceLanes; candidate++ {
+		initial := (candidate + 1) % (BalanceLanes + 1)
+		p := allocationSearch{preferred: initial}
+		for i := 0; i < 2; i++ {
+			p.recordTrial(candidate, 1.3)
+			if p.preferred != initial {
+				t.Fatal("switched without three wins")
+			}
+		}
+		p.recordTrial(candidate, 1.3)
+		if p.preferred != candidate {
+			t.Fatalf("repeated evidence did not select candidate %d: %d", candidate, p.preferred)
 		}
 	}
-	p.recordTrial(1, 1.3, true)
-	if p.preferred != 1 {
-		t.Fatalf("repeated evidence did not select candidate: %d", p.preferred)
+}
+
+// Quality/what: confirmation belongs to one candidate and its median gain.
+func TestAllocationConfirmationDoesNotCombineCandidatesOrIsolatedSpikes(t *testing.T) {
+	// Why: consolidating exploration and confirmation must preserve evidence boundaries.
+	var p allocationSearch
+	p.recordTrial(1, 1.4)
+	p.recordTrial(1, 1.4)
+	p.recordTrial(2, 1.4)
+	if p.preferred != 0 || p.wins != 1 {
+		t.Fatal("combined different candidates")
+	}
+	p.recordTrial(2, 1.16)
+	p.recordTrial(2, 1.16)
+	if p.preferred != 0 {
+		t.Fatal("one spike replaced the median gain threshold")
+	}
+	for i := 0; i < 3; i++ {
+		p.recordTrial(2, 1.3)
+	}
+	if p.preferred != 2 {
+		t.Fatal("rejected series prevented later clean confirmations")
 	}
 }
 
 // Safety/what: a rejected comparison breaks the confirmation streak.
 func TestAllocationCandidateRejectsInterveningBadMeasurement(t *testing.T) {
 	var p allocationSearch
-	p.recordTrial(1, 1.3, true)
-	p.recordTrial(1, 1.3, true)
-	p.recordTrial(1, 0, false)
-	p.recordTrial(1, 1.3, true)
+	p.recordTrial(1, 1.3)
+	p.recordTrial(1, 1.3)
+	p.recordTrial(1, 0)
+	p.recordTrial(1, 1.3)
 	if p.preferred != 0 {
 		t.Fatal("incomplete trial bridged a confirmation streak")
 	}
@@ -101,8 +127,8 @@ func TestAllocationDoesNotPromoteObservedNoisyMeasurements(t *testing.T) {
 		t1 := allocationTrial{Candidate: 1, Samples: [3]allocationObservation{
 			{Mbps: a, Duration: 3 * time.Second}, {Mbps: b, Duration: 3 * time.Second}, {Mbps: c, Duration: 3 * time.Second},
 		}}
-		gain, ok := assessAllocationTrial(t1)
-		p.recordTrial(1, gain, ok)
+		gain, _ := assessAllocationTrial(t1)
+		p.recordTrial(1, gain)
 	}
 	trial(113.8, 144.6, 125.3)
 	trial(125.3, 47.3, 114.1)

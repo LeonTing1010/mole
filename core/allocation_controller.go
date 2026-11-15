@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"time"
 
 	"github.com/LeonTing1010/mole/utils"
@@ -19,7 +18,7 @@ type allocationEnvironment struct {
 	rung, gateway, uplink string
 	overflow              uint64
 }
-type allocationScanResult struct {
+type allocationResult struct {
 	trial allocationTrial
 	env   allocationEnvironment
 	err   error
@@ -45,7 +44,7 @@ func (s *Supervisor) allocationEnv() (allocationEnvironment, error) {
 	if s.pressureSnapshotFn != nil {
 		event = s.pressureSnapshotFn()
 	}
-	return allocationEnvironment{down: down, rate: rate, rung: rung, gateway: gw, uplink: uplink, overflow: event.sequence}, err
+	return allocationEnvironment{down: down, rate: rate, rung: rung, gateway: gw, uplink: uplink, overflow: event.sequence}, nil
 }
 
 // Confirm that a trial still describes the active physical path and the exact
@@ -81,7 +80,7 @@ func (s *Supervisor) finishAllocation(p *balancePolicy, now time.Time) {
 		p.discardAllocation()
 		return
 	}
-	var res allocationScanResult
+	var res allocationResult
 	select {
 	case res = <-p.sampleJob:
 	default:
@@ -92,13 +91,13 @@ func (s *Supervisor) finishAllocation(p *balancePolicy, now time.Time) {
 		p.discardAllocation()
 		p.sampleError = err.Error()
 		if errors.Is(err, errAllocationFlowSkew) {
-			p.candidate = nextAllocationCandidate(p.candidate, p.search.preferred)
+			p.search.advanceCandidate(p.search.candidate)
 		}
 		return
 	}
 	gain, qualified := assessAllocationTrial(res.trial)
 	previous := p.search.preferred
-	p.search.recordTrial(p.candidate, gain, qualified)
+	p.search.recordTrial(p.search.candidate, gain)
 	evidence := &utils.AllocationEvidence{CurrentHy2Lanes: res.trial.Current, CandidateHy2Lanes: res.trial.Candidate, CandidateOnEdges: res.trial.CandidateOnEdges, GainPct: (gain - 1) * 100, Qualified: qualified, ConsecutiveWins: p.search.wins, ProbePayloadBytes: 3 * int64(BalanceLanes*allocationBytesPerStream)}
 	for _, x := range res.trial.Samples {
 		evidence.RatesMbps = append(evidence.RatesMbps, x.Mbps)
@@ -118,24 +117,24 @@ func (s *Supervisor) finishAllocation(p *balancePolicy, now time.Time) {
 		evidence.GainPct = 0
 	}
 	p.sampleEvidence = evidence
-	p.timeLastSample = now
+	p.sampledAt = now
 	p.sampleEnvironment = res.env
 	p.sampleError = ""
 	// A losing/invalid comparison or a completed three-win series advances to
 	// the next candidate; no noisy nine-way winner is chosen.
 	if !qualified || p.search.wins == 0 {
-		p.candidate = nextAllocationCandidate(res.trial.Candidate, p.search.preferred)
+		p.search.advanceCandidate(res.trial.Candidate)
 	}
 }
 
-func (s *Supervisor) allocationResultError(p *balancePolicy, res allocationScanResult) error {
+func (s *Supervisor) allocationResultError(p *balancePolicy, res allocationResult) error {
 	if res.err != nil {
 		return res.err
 	}
 	if err := s.stableAllocation(res.env, res.trial.Current); err != nil {
 		return err
 	}
-	if res.trial.Current != p.search.preferred || res.trial.Candidate != p.candidate {
+	if res.trial.Current != p.search.preferred || res.trial.Candidate != p.search.candidate {
 		return fmt.Errorf("allocation changed during trial")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -168,21 +167,21 @@ func (s *Supervisor) startAllocation(p *balancePolicy, now time.Time) {
 		err = s.stableAllocation(env, p.search.preferred)
 	}
 	if err != nil {
-		p.search.recordTrial(p.candidate, 0, false)
+		p.search.wins = 0
 		p.sampleError = err.Error()
 		return
 	}
 	if env != p.sampleEnvironment {
-		p.search.recordTrial(p.candidate, 0, false)
+		p.search.wins = 0
 	}
-	if p.candidate < 0 || p.candidate > BalanceLanes || p.candidate == p.search.preferred {
-		p.candidate = nextAllocationCandidate(p.search.preferred, p.search.preferred)
+	if p.search.candidate < 0 || p.search.candidate > BalanceLanes || p.search.candidate == p.search.preferred {
+		p.search.advanceCandidate(p.search.preferred)
 	}
-	current, candidate, edges := p.search.preferred, p.candidate, p.reverseScan
-	p.reverseScan = !p.reverseScan
+	current, candidate, edges := p.search.preferred, p.search.candidate, p.candidateOnEdges
+	p.candidateOnEdges = !p.candidateOnEdges
 	ctx, cancel := context.WithCancel(context.Background())
 	p.sampleCancel = cancel
-	job := make(chan allocationScanResult, 1)
+	job := make(chan allocationResult, 1)
 	p.sampleJob = job
 	go func() {
 		defer cancel()
@@ -200,62 +199,6 @@ func (s *Supervisor) startAllocation(p *balancePolicy, now time.Time) {
 			return s.stableAllocation(env, current)
 		}
 		trial, e := s.allocationRunFn(ctx, current, candidate, edges, stable)
-		job <- allocationScanResult{trial: trial, env: env, err: e}
+		job <- allocationResult{trial: trial, env: env, err: e}
 	}()
-}
-
-func nextAllocationCandidate(last, current int) int {
-	for i := 1; i <= BalanceLanes+1; i++ {
-		n := (last + i) % (BalanceLanes + 1)
-		if n != current {
-			return n
-		}
-	}
-	return current
-}
-
-func (s *Supervisor) runAllocationTrial(ctx context.Context, current, candidate int, edges bool, stable func() error) (allocationTrial, error) {
-	var gateway, ifname string
-	ping := func(ctx context.Context) (time.Duration, error) {
-		if err := ctx.Err(); err != nil {
-			return 0, err
-		}
-		g, i, err := utils.DefaultGateway()
-		if err != nil || g == "" {
-			return 0, fmt.Errorf("gateway unavailable")
-		}
-		s.stateMu.Lock()
-		expectedGateway := s.state.LinkGateway
-		s.stateMu.Unlock()
-		if expectedGateway == "" || g != expectedGateway {
-			return 0, fmt.Errorf("gateway state changed")
-		}
-		if gateway != "" && (gateway != g || ifname != i) {
-			return 0, fmt.Errorf("gateway changed")
-		}
-		gateway, ifname = g, i
-		return echoGateway(gateway, ifname, 750*time.Millisecond)
-	}
-	wait := func(ctx context.Context, d time.Duration) error {
-		t := time.NewTimer(d)
-		defer t.Stop()
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-t.C:
-			return nil
-		}
-	}
-	runner := allocationRunner{traffic: s.clash.allocationTotals, gateway: ping, wait: wait, stable: stable}
-	runner.measure = func(ctx context.Context, share int, idle time.Duration) (allocationObservation, error) {
-		return guardedAllocationMeasure(ctx, idle, time.Second, ping, stable, func(ctx context.Context) (allocationObservation, error) {
-			ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-			defer cancel()
-			transport := &http.Transport{DisableKeepAlives: true, Proxy: nil}
-			defer transport.CloseIdleConnections()
-			client := &http.Client{Timeout: 15 * time.Second, Transport: transport}
-			return measureAllocationURLs(ctx, client, allocationURLs(share), allocationBytesPerStream, allocationWarmup, allocationMinWindow)
-		})
-	}
-	return runner.run(ctx, current, candidate, edges)
 }

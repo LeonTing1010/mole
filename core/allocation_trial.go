@@ -9,10 +9,9 @@ import (
 // interrupted results must never become evidence.
 type allocationObservation struct {
 	Mbps                    float64
-	TotalMbps               float64
 	Duration                time.Duration
 	TotalBytes, SteadyBytes int64
-	HeaderMedian, HeaderMax time.Duration
+	HeaderMedian            time.Duration
 	Midpoint                time.Time
 	GatewayWorst            time.Duration
 }
@@ -51,39 +50,4 @@ func assessAllocationTrial(t allocationTrial) (float64, bool) {
 		gain = anchor / b
 	}
 	return gain, gain > 1.15
-}
-
-// recordTrial requires three same-candidate, individually material wins and a
-// median gain of at least 25%. These are conservative heuristics, not a formal
-// statistical confidence interval or proof of an application-level benefit.
-func (p *allocationSearch) recordTrial(candidate int, gain float64, valid bool) {
-	if candidate < 0 || candidate > BalanceLanes || candidate == p.preferred || !valid || gain <= 1.15 || math.IsNaN(gain) || math.IsInf(gain, 0) {
-		p.wins = 0
-		p.gains = [3]float64{}
-		return
-	}
-	if p.pending != candidate {
-		p.pending = candidate
-		p.wins = 0
-		p.gains = [3]float64{}
-	}
-	p.gains[p.wins] = gain
-	p.wins++
-	if p.wins == 3 {
-		gains := p.gains
-		if gains[0] > gains[1] {
-			gains[0], gains[1] = gains[1], gains[0]
-		}
-		if gains[1] > gains[2] {
-			gains[1], gains[2] = gains[2], gains[1]
-		}
-		if gains[0] > gains[1] {
-			gains[0], gains[1] = gains[1], gains[0]
-		}
-		if gains[1] >= 1.25 {
-			p.preferred = candidate
-		}
-		p.wins = 0
-		p.gains = [3]float64{}
-	}
 }

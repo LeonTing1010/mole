@@ -65,10 +65,6 @@ func (c *ClashClient) allocationTotals(ctx context.Context) (allocationTraffic, 
 
 // Observe only totals, never log or persist the user's connection metadata.
 // The payload is subtracted only if the counters accounted for it completely.
-func allocationTrafficClean(before, after allocationTraffic, payload int64, d time.Duration) bool {
-	return allocationTrafficError(before, after, payload, d) == nil
-}
-
 func allocationTrafficError(before, after allocationTraffic, payload int64, d time.Duration) error {
 	if d <= 0 || payload < 0 {
 		return fmt.Errorf("invalid traffic accounting interval")

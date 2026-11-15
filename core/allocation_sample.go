@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 )
@@ -130,10 +130,8 @@ func measureAllocationURLs(ctx context.Context, client *http.Client, urls []stri
 	if window < minWindow {
 		return out, fmt.Errorf("observation window too short: %s", window)
 	}
-	sort.Slice(headers, func(i, j int) bool { return headers[i] < headers[j] })
+	slices.Sort(headers)
 	out.HeaderMedian = headers[len(headers)/2]
-	out.HeaderMax = headers[len(headers)-1]
-	out.TotalMbps = float64(out.TotalBytes) * 8 / out.Duration.Seconds() / 1e6
 	out.Mbps = float64(out.SteadyBytes) * 8 / window.Seconds() / 1e6
 	return out, nil
 }
