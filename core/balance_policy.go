@@ -130,3 +130,8 @@ func (p *balancePolicy) cancelAllocation() {
 	}
 	p.sampleJob = nil
 }
+
+func (p *balancePolicy) discardAllocation() {
+	p.search.recordTrial(p.candidate, 0, false)
+	p.cancelAllocation()
+}

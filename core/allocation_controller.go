@@ -68,80 +68,95 @@ func (s *Supervisor) stableAllocation(env allocationEnvironment, current int) er
 	return nil
 }
 
-// sampleAllocation only starts or reaps background work. No download may block
-// the health loop; mode or health changes cancel the outstanding operation.
-func (s *Supervisor) sampleAllocation(p *balancePolicy, now time.Time, allowStart bool) {
-	eligible := s.allocationRunFn != nil && utils.ReadLeg() == utils.LegBoth && !s.linkBad() &&
+func (s *Supervisor) allocationReady(p *balancePolicy, now time.Time) bool {
+	return s.allocationRunFn != nil && utils.ReadLeg() == utils.LegBoth && !s.linkBad() &&
 		p.reality.healthy && p.hy2.healthy && p.reality.bad == 0 && p.hy2.bad == 0 &&
 		p.reality.slow == 0 && p.hy2.slow == 0 && !p.pressure.cooling(now)
-	if !eligible {
-		p.search.recordTrial(p.candidate, 0, false)
-		p.cancelAllocation()
+}
+
+// Finish before reconciling selectors. A later completion waits until the next
+// cycle, so a selected preference and its applied routes are published together.
+func (s *Supervisor) finishAllocation(p *balancePolicy, now time.Time) {
+	if !s.allocationReady(p, now) {
+		p.discardAllocation()
+		return
+	}
+	var res allocationScanResult
+	select {
+	case res = <-p.sampleJob:
+	default:
+		return
+	}
+	p.cancelAllocation()
+	if err := s.allocationResultError(p, res); err != nil {
+		p.discardAllocation()
+		p.sampleError = err.Error()
+		if errors.Is(err, errAllocationFlowSkew) {
+			p.candidate = nextAllocationCandidate(p.candidate, p.search.preferred)
+		}
+		return
+	}
+	gain, qualified := assessAllocationTrial(res.trial)
+	previous := p.search.preferred
+	p.search.recordTrial(p.candidate, gain, qualified)
+	evidence := &utils.AllocationEvidence{CurrentHy2Lanes: res.trial.Current, CandidateHy2Lanes: res.trial.Candidate, CandidateOnEdges: res.trial.CandidateOnEdges, GainPct: (gain - 1) * 100, Qualified: qualified, ConsecutiveWins: p.search.wins, ProbePayloadBytes: 3 * int64(BalanceLanes*allocationBytesPerStream)}
+	for _, x := range res.trial.Samples {
+		evidence.RatesMbps = append(evidence.RatesMbps, x.Mbps)
+		evidence.HeaderMedianMs = append(evidence.HeaderMedianMs, x.HeaderMedian.Milliseconds())
+		evidence.LoadedGatewayWorstMs = append(evidence.LoadedGatewayWorstMs, x.GatewayWorst.Milliseconds())
+	}
+	switch {
+	case p.search.preferred != previous:
+		evidence.Decision = "selected"
+	case qualified && p.search.wins > 0:
+		evidence.Decision = "confirming"
+	default:
+		evidence.Decision = "hold"
+	}
+	evidence.FlowConnections = append([]int(nil), res.trial.FlowCounts[:]...)
+	if gain <= 0 {
+		evidence.GainPct = 0
+	}
+	p.sampleEvidence = evidence
+	p.timeLastSample = now
+	p.sampleEnvironment = res.env
+	p.sampleError = ""
+	// A losing/invalid comparison or a completed three-win series advances to
+	// the next candidate; no noisy nine-way winner is chosen.
+	if !qualified || p.search.wins == 0 {
+		p.candidate = nextAllocationCandidate(res.trial.Candidate, p.search.preferred)
+	}
+}
+
+func (s *Supervisor) allocationResultError(p *balancePolicy, res allocationScanResult) error {
+	if res.err != nil {
+		return res.err
+	}
+	if err := s.stableAllocation(res.env, res.trial.Current); err != nil {
+		return err
+	}
+	if res.trial.Current != p.search.preferred || res.trial.Candidate != p.candidate {
+		return fmt.Errorf("allocation changed during trial")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	flows, err := s.clash.allocationTotals(ctx)
+	if err != nil {
+		return err
+	}
+	if !allocationFlowRepresentative(flows.Flows, res.trial.Current, res.trial.Candidate) {
+		return errAllocationFlowSkew
+	}
+	return nil
+}
+
+// Starting a trial never consumes completed evidence or changes preferences.
+func (s *Supervisor) startAllocation(p *balancePolicy, now time.Time) {
+	if !s.allocationReady(p, now) {
+		p.discardAllocation()
 		return
 	}
 	if p.sampleJob != nil {
-		select {
-		case res := <-p.sampleJob:
-			p.cancelAllocation()
-			if res.err == nil {
-				res.err = s.stableAllocation(res.env, res.trial.Current)
-			}
-			if res.err == nil && (res.trial.Current != p.search.preferred || res.trial.Candidate != p.candidate) {
-				res.err = fmt.Errorf("allocation changed during trial")
-			}
-			if res.err == nil {
-				checkCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-				currentFlows, e := s.clash.allocationTotals(checkCtx)
-				cancel()
-				if e != nil {
-					res.err = e
-				} else if !allocationFlowRepresentative(currentFlows.Flows, res.trial.Current, res.trial.Candidate) {
-					res.err = errAllocationFlowSkew
-				}
-			}
-			if res.err != nil {
-				p.search.recordTrial(p.candidate, 0, false)
-				p.sampleError = res.err.Error()
-				if errors.Is(res.err, errAllocationFlowSkew) {
-					p.candidate = nextAllocationCandidate(p.candidate, p.search.preferred)
-				}
-				return
-			}
-			gain, qualified := assessAllocationTrial(res.trial)
-			previous := p.search.preferred
-			p.search.recordTrial(p.candidate, gain, qualified)
-			evidence := &utils.AllocationEvidence{CurrentHy2Lanes: res.trial.Current, CandidateHy2Lanes: res.trial.Candidate, CandidateOnEdges: res.trial.CandidateOnEdges, GainPct: (gain - 1) * 100, Qualified: qualified, ConsecutiveWins: p.search.wins, ProbePayloadBytes: 3 * int64(BalanceLanes*allocationBytesPerStream)}
-			for _, x := range res.trial.Samples {
-				evidence.RatesMbps = append(evidence.RatesMbps, x.Mbps)
-				evidence.HeaderMedianMs = append(evidence.HeaderMedianMs, x.HeaderMedian.Milliseconds())
-				evidence.LoadedGatewayWorstMs = append(evidence.LoadedGatewayWorstMs, x.GatewayWorst.Milliseconds())
-			}
-			switch {
-			case p.search.preferred != previous:
-				evidence.Decision = "selected"
-			case qualified && p.search.wins > 0:
-				evidence.Decision = "confirming"
-			default:
-				evidence.Decision = "hold"
-			}
-			evidence.FlowConnections = append([]int(nil), res.trial.FlowCounts[:]...)
-			if gain <= 0 {
-				evidence.GainPct = 0
-			}
-			p.sampleEvidence = evidence
-			p.timeLastSample = now
-			p.sampleEnvironment = res.env
-			p.sampleError = ""
-			// A losing/invalid comparison or a completed three-win series advances to
-			// the next candidate; no noisy nine-way winner is chosen.
-			if !qualified || p.search.wins == 0 {
-				p.candidate = nextAllocationCandidate(res.trial.Candidate, p.search.preferred)
-			}
-		default:
-			return
-		}
-	}
-	if !allowStart {
 		return
 	}
 	if !p.sampleAttempt.IsZero() && now.Sub(p.sampleAttempt) < allocationSampleEvery {

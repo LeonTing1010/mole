@@ -65,18 +65,10 @@ func (s *Supervisor) balanceOnce(p *balancePolicy) {
 		p.pressure.cleanSince = time.Time{}
 		if wasSampling {
 			p.sampleError = "local link became unhealthy; trial canceled"
-			s.stateMu.Lock()
-			var status *utils.BalanceStatus
-			if s.state.Balance != nil {
-				copy := *s.state.Balance
-				status = &copy
-			}
-			s.stateMu.Unlock()
-			if status != nil {
-				status.Sampling = false
-				status.SampleError = p.sampleError
-				s.publishBalance(status)
-			}
+			status := s.balanceStatus()
+			status.Sampling = false
+			status.SampleError = p.sampleError
+			s.publishBalance(&status)
 		}
 		return
 	}
@@ -141,7 +133,7 @@ func (s *Supervisor) balanceOnce(p *balancePolicy) {
 		}
 	}
 	p.observe(reality, hy2)
-	s.sampleAllocation(p, time.Now(), false)
+	s.finishAllocation(p, time.Now())
 	if utils.ReadLeg() != utils.LegBoth || s.linkBad() {
 		p.pressure.cleanSince = time.Time{}
 		return
@@ -164,10 +156,9 @@ func (s *Supervisor) balanceOnce(p *balancePolicy) {
 	}
 	// Start only after all effective selectors have been reconciled.
 	if auxiliaryError != nil {
-		p.search.recordTrial(p.candidate, 0, false)
-		p.cancelAllocation()
+		p.discardAllocation()
 	} else {
-		s.sampleAllocation(p, time.Now(), true)
+		s.startAllocation(p, time.Now())
 	}
 	status := &utils.BalanceStatus{
 		Supported: true, Enabled: true, Sampling: p.sampleJob != nil, RealityLanes: BalanceLanes - lanes, Hy2Lanes: lanes,
@@ -203,15 +194,18 @@ func (s *Supervisor) publishBalance(status *utils.BalanceStatus) {
 	_ = utils.WriteState(s.snapshot())
 }
 
-func (s *Supervisor) balanceError(p *balancePolicy, err error) {
-	p.search.recordTrial(p.candidate, 0, false)
-	p.cancelAllocation()
+func (s *Supervisor) balanceStatus() utils.BalanceStatus {
 	s.stateMu.Lock()
-	status := utils.BalanceStatus{Supported: true}
+	defer s.stateMu.Unlock()
 	if s.state.Balance != nil {
-		status = *s.state.Balance
+		return *s.state.Balance
 	}
-	s.stateMu.Unlock()
+	return utils.BalanceStatus{Supported: true}
+}
+
+func (s *Supervisor) balanceError(p *balancePolicy, err error) {
+	p.discardAllocation()
+	status := s.balanceStatus()
 	status.Error = err.Error()
 	status.Sampling = false
 	s.publishBalance(&status)

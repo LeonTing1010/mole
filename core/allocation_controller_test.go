@@ -93,6 +93,50 @@ func awaitAllocation(t *testing.T, p *balancePolicy) {
 	}
 }
 
+// Quality/what-x-what: a selected result and live routes belong to one cycle.
+func TestAllocationLateCompletionWaitsForNextReconciliation(t *testing.T) {
+	// Why: publishing a selection after writing routes reports a decision that
+	// is not applied, and leaves evidence and traffic describing different shares.
+	s, _, _ := allocationTestSupervisor(t)
+	s.schedule = BandwidthSchedule{OffDown: 100}
+	s.state.Balance = &utils.BalanceStatus{Supported: true}
+	s.legProbeFn = func(int, int) (time.Duration, error) { return cleanLeg.delay, nil }
+	release := make(chan struct{})
+	s.allocationRunFn = func(ctx context.Context, current, candidate int, edges bool, _ func() error) (allocationTrial, error) {
+		select {
+		case <-release:
+			return allocationTestTrial(current, candidate, edges), nil
+		case <-ctx.Done():
+			return allocationTrial{}, ctx.Err()
+		}
+	}
+	p := qualifiedAllocationPolicy()
+	defer p.cancelAllocation()
+	s.startAllocation(&p, time.Now())
+	p.sampleEnvironment, _ = s.allocationEnv()
+	p.search.pending, p.search.wins = p.candidate, 2
+	p.search.gains = [3]float64{1.4, 1.4}
+	var once sync.Once
+	s.clash.http.Transport = bulkSpeedTransport(func(r *http.Request) (*http.Response, error) {
+		response, err := http.DefaultTransport.RoundTrip(r)
+		if r.URL.Path == "/proxies/"+ProxySelectorTag && r.Method == http.MethodGet {
+			once.Do(func() {
+				close(release)
+				awaitAllocation(t, &p)
+			})
+		}
+		return response, err
+	})
+	s.balanceOnce(&p)
+	if p.search.preferred != 0 || s.state.Balance.Hy2Lanes != 0 {
+		t.Fatal("late completion must wait until a cycle can apply its decision")
+	}
+	s.balanceOnce(&p)
+	if p.search.preferred != 1 || s.state.Balance.Hy2Lanes != 1 {
+		t.Fatalf("completed trial was not applied next cycle: %+v", s.state.Balance)
+	}
+}
+
 // Quality/what-x-what: only repeated paired wins may change an applied allocation.
 func TestAllocationControllerBoundsSamplingAndCommitsRepeatedWinner(t *testing.T) {
 	s, _, _ := allocationTestSupervisor(t)
@@ -100,14 +144,14 @@ func TestAllocationControllerBoundsSamplingAndCommitsRepeatedWinner(t *testing.T
 	now := time.Now()
 	for i := 0; i < 3; i++ {
 		at := now.Add(time.Duration(i) * allocationSampleEvery)
-		s.sampleAllocation(&p, at, true)
+		s.startAllocation(&p, at)
 		awaitAllocation(t, &p)
-		s.sampleAllocation(&p, at.Add(time.Second), false)
+		s.finishAllocation(&p, at.Add(time.Second))
 		if i < 2 && p.search.preferred != 0 {
 			t.Fatal("switched before three comparisons")
 		}
 		if i < 2 {
-			s.sampleAllocation(&p, at.Add(time.Minute), true)
+			s.startAllocation(&p, at.Add(time.Minute))
 			if p.sampleJob != nil {
 				t.Fatal("cooldown failed")
 			}
@@ -152,9 +196,9 @@ func TestAllocationControllerRejectsChangedEnvironmentAndFailures(t *testing.T) 
 				return allocationTestTrial(current, candidate, edges), nil
 			}
 			now := time.Now()
-			s.sampleAllocation(&p, now, true)
+			s.startAllocation(&p, now)
 			awaitAllocation(t, &p)
-			s.sampleAllocation(&p, now.Add(time.Second), false)
+			s.finishAllocation(&p, now.Add(time.Second))
 			if p.search.preferred != 0 || p.search.wins != 0 {
 				t.Fatalf("unsafe comparison accepted: %+v", p.search)
 			}
@@ -188,7 +232,7 @@ func TestAllocationControllerSkipsIneligibleSampling(t *testing.T) {
 				t.Fatal("ineligible sample")
 				return allocationTrial{}, nil
 			}
-			s.sampleAllocation(&p, time.Now(), true)
+			s.startAllocation(&p, time.Now())
 			if p.sampleJob != nil {
 				t.Fatal("ineligible trial started")
 			}
@@ -201,13 +245,13 @@ func TestAllocationControllerDoesNotCombineWinsAcrossRateProfiles(t *testing.T) 
 	s, _, _ := allocationTestSupervisor(t)
 	p := qualifiedAllocationPolicy()
 	now := time.Now()
-	s.sampleAllocation(&p, now, true)
+	s.startAllocation(&p, now)
 	awaitAllocation(t, &p)
-	s.sampleAllocation(&p, now.Add(time.Second), false)
+	s.finishAllocation(&p, now.Add(time.Second))
 	s.state.RealityRateMbps = 200
-	s.sampleAllocation(&p, now.Add(allocationSampleEvery), true)
+	s.startAllocation(&p, now.Add(allocationSampleEvery))
 	awaitAllocation(t, &p)
-	s.sampleAllocation(&p, now.Add(allocationSampleEvery+time.Second), false)
+	s.finishAllocation(&p, now.Add(allocationSampleEvery+time.Second))
 	if p.search.preferred != 0 || p.search.wins != 1 {
 		t.Fatalf("profile change combined votes: %+v", p.search)
 	}
@@ -391,12 +435,12 @@ func TestAllocationRechecksFlowDistributionBeforePromotion(t *testing.T) {
 	}
 	p.sampleEnvironment = env
 	now := time.Now()
-	s.sampleAllocation(&p, now, true)
+	s.startAllocation(&p, now)
 	awaitAllocation(t, &p)
 	mu.Lock()
 	selected["#skew"] = "1"
 	mu.Unlock()
-	s.sampleAllocation(&p, now.Add(time.Second), false)
+	s.finishAllocation(&p, now.Add(time.Second))
 	if p.search.preferred != 0 || p.search.wins != 0 {
 		t.Fatalf("skewed actual flow was accepted: %+v", p.search)
 	}
@@ -410,9 +454,9 @@ func TestAllocationAdvancesPastUnrepresentativeCandidate(t *testing.T) {
 	s.allocationRunFn = func(context.Context, int, int, bool, func() error) (allocationTrial, error) {
 		return allocationTrial{}, errAllocationFlowSkew
 	}
-	s.sampleAllocation(&p, now, true)
+	s.startAllocation(&p, now)
 	awaitAllocation(t, &p)
-	s.sampleAllocation(&p, now.Add(time.Second), false)
+	s.finishAllocation(&p, now.Add(time.Second))
 	if p.candidate != 2 || p.search.preferred != 0 || p.search.wins != 0 {
 		t.Fatalf("bad candidate transition: %+v", p)
 	}
