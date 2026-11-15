@@ -82,10 +82,6 @@ func BuildWithStandby(serverURI, standbyURI string) (*SingboxConfig, error) {
 	routeRules = append(routeRules, inlineRules...)
 	routeRules = append(routeRules, hotRefs...)
 	routeRules = append(routeRules, systemRules...)
-	if hasReality && hy2GateTarget != "" {
-		proxyOutbounds = append(proxyOutbounds, flowSelectors()...)
-		routeRules = flowRoutes(routeRules)
-	}
 
 	ruleSets := buildRuleSets(geositeCN, hotDecls)
 
@@ -236,7 +232,10 @@ func buildInbounds(hasReality bool, hy2GateTarget, standbyURI string, proxyOutbo
 			OverridePort:    core.BrutalKeeperPort,
 		})
 		for _, target := range core.LegEgressTargets() {
-			for _, probe := range []struct{ tag string; port int }{
+			for _, probe := range []struct {
+				tag  string
+				port int
+			}{
 				{target.RealityTag, target.RealityPort}, {target.Hy2Tag, target.Hy2Port},
 			} {
 				inbounds = append(inbounds, InboundConfig{

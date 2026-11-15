@@ -11,20 +11,13 @@ import (
 )
 
 var legCmd = &cobra.Command{
-	Use:   "leg [hy2|reality|both|auto]",
-	Short: "Choose one transport or adapt new-flow allocation",
+	Use:   "leg [hy2|reality|auto]",
+	Short: "Choose automatic failover or pin one transport",
 	Long: `Choose how new connections use the two protocols on the same node.
 
   reality   Hold VLESS+REALITY over TCP/443.
   hy2       Hold the hysteria2 bandwidth ladder over UDP/443.
   auto      Use REALITY as primary with measured fallback and recovery.
-  both      Adapt source-port buckets from pure TCP through mixed to pure UDP.
-            Start on TCP; compare one candidate using alternating ABA/BAB trials.
-            Require three clean gains >15%, with a median gain of at least 25%.
-            At most 192 MiB per 30 minutes; skip busy or unstable links.
-            Mixed candidates require compatible existing source-port buckets.
-            Health withdrawal overrides throughput; explicit pins stop scans.
-            Keeper samples are synthetic and do not prove application gains.
 
 Existing connections keep their original transport when the mode changes.
 A single connection uses one protocol. The two protocols share the same node
@@ -52,10 +45,7 @@ func runLeg(_ *cobra.Command, args []string) error {
 	var target, want string
 	switch arg {
 	case "both":
-		if srv.StandbyURI() == "" {
-			return fmt.Errorf("server %q does not have both transport legs", srv.Name)
-		}
-		want = utils.LegBoth
+		return fmt.Errorf("mixed routing has been removed; use \"mole leg auto\", \"mole leg reality\" or \"mole leg hy2\"")
 	case "auto":
 		want = utils.LegAuto
 	case "reality", "tcp":
@@ -67,22 +57,10 @@ func runLeg(_ *cobra.Command, args []string) error {
 		want = utils.LegHy2
 		target = core.BandwidthRungTag(currentRung(srv))
 	default:
-		return fmt.Errorf("expected \"hy2\", \"reality\", \"both\" or \"auto\", got %q", args[0])
+		return fmt.Errorf("expected \"hy2\", \"reality\" or \"auto\", got %q", args[0])
 	}
 	pid, perr := utils.ReadPID()
 	running := perr == nil && utils.IsRunning(pid)
-	supported := false
-	if st, err := utils.ReadState(); err == nil {
-		supported = st.Balance != nil && st.Balance.Supported
-	}
-	if want == utils.LegBoth && running {
-		if !supported {
-			return fmt.Errorf("the running daemon does not support dual routing; restart with this version using `mole down` then `mole up`, then run `mole leg both`")
-		}
-		if _, err := core.NewClashClient("127.0.0.1:9090").Selection(core.BalanceLaneTag(0)); err != nil {
-			return fmt.Errorf("dual flow selectors are not loaded: %w", err)
-		}
-	}
 
 	// Persist the intent first, for the same reason `mole ceiling` does: if the
 	// Clash call below fails because the daemon is down, the pin still applies
@@ -105,16 +83,6 @@ func runLeg(_ *cobra.Command, args []string) error {
 		return nil
 	}
 	clash := core.NewClashClient("127.0.0.1:9090")
-	if want == utils.LegBoth {
-		fmt.Println("✔ Adaptive allocation enabled — single and mixed transports share one allocation policy.")
-		fmt.Println("   Existing connections keep their transport. Check allocation with `mole leg` or `mole status`.")
-		return nil
-	}
-	if supported {
-		if _, err := core.ApplyBalancedLanes(clash, -1); err != nil {
-			return fmt.Errorf("single-mode intent saved; flow-selector reset is pending: %w", err)
-		}
-	}
 
 	// Clearing the pin deliberately does NOT select anything. The right leg
 	// under "auto" depends on failover state that lives in the daemon's memory
@@ -159,8 +127,6 @@ func currentRung(srv *Server) int {
 func printLeg(srv *Server) {
 	pin := utils.ReadLeg()
 	switch pin {
-	case utils.LegBoth:
-		fmt.Println("Leg:     both — measured allocation from pure TCP through mixed to pure UDP")
 	case utils.LegReality:
 		fmt.Println("Leg:     reality (pinned) — VLESS+REALITY over TCP/443; fallback to hy2 disarmed")
 	case utils.LegHy2:
@@ -175,9 +141,6 @@ func printLeg(srv *Server) {
 	clash := core.NewClashClient("127.0.0.1:9090")
 	if now, err := clash.Selection(core.ProxySelectorTag); err == nil {
 		label := "Live:"
-		if pin == utils.LegBoth {
-			label = "Auxiliary:"
-		}
 		if now == core.RealityLegTag {
 			fmt.Printf("%-10s VLESS+REALITY (TCP/443)\n", label)
 		} else {
@@ -189,7 +152,6 @@ func printLeg(srv *Server) {
 	// See utils.DialSamples: the fresh-dial arm is the only instrument that
 	// sees the failure REALITY answers.
 	if st, err := utils.ReadState(); err == nil {
-		printBalance(st)
 		fmt.Printf("Dials:   %s\n", dialStatus(st))
 	}
 
@@ -199,62 +161,4 @@ func printLeg(srv *Server) {
 	fmt.Println("         mole leg reality   hold TCP (the primary; disarms the fallback)")
 	fmt.Println("         mole leg hy2       hold UDP (Brutal ladder; bypasses the primary)")
 	fmt.Println("         mole leg auto      back to automatic")
-	fmt.Println("         mole leg both      adapt between single and mixed transports")
-}
-
-func printBalance(st *utils.State) {
-	if st.Balance == nil || !st.Balance.Enabled {
-		return
-	}
-	b := st.Balance
-	fmt.Printf("   Allocation: source-port buckets: Reality %.1f%%, Hysteria2 %.1f%%\n", float64(b.RealityLanes)*100/core.BalanceLanes, float64(b.Hy2Lanes)*100/core.BalanceLanes)
-	fmt.Println("            bucket shares are not measured byte or connection shares")
-	if b.Sampling {
-		fmt.Println("            paired keeper trial in progress")
-	}
-	if !b.LastSampleAt.IsZero() {
-		if e := b.AllocationEvidence; e != nil {
-			order := "current/candidate/current"
-			if e.CandidateOnEdges {
-				order = "candidate/current/candidate"
-			}
-			fmt.Printf("            last paired keeper trial: %s; UDP buckets %d vs %d; %s\n", b.LastSampleAt.Local().Format("15:04:05"), e.CurrentHy2Lanes, e.CandidateHy2Lanes, order)
-			fmt.Printf("            body Mbps %v; gain %.1f%%; decision %s (%d/3 wins)\n", e.RatesMbps, e.GainPct, e.Decision, e.ConsecutiveWins)
-			fmt.Printf("            median response headers ms %v; loaded gateway maximum ms %v\n", e.HeaderMedianMs, e.LoadedGatewayWorstMs)
-			fmt.Printf("            existing flow counts by bucket: %v (snapshot, not future byte shares)\n", e.FlowConnections)
-			fmt.Println("            keeper throughput is synthetic; it does not establish real app performance")
-		} else if len(b.AllocationMbps) > 0 {
-			fmt.Printf("            legacy allocation scan: %s; Mbps by UDP bucket count 0..8: %v\n", b.LastSampleAt.Local().Format("15:04:05"), b.AllocationMbps)
-		}
-	}
-	if b.SampleError != "" {
-		fmt.Printf("            allocation trial not used: %s\n", b.SampleError)
-	}
-	if !b.LastCheckedAt.IsZero() {
-		fmt.Printf("            probes checked: %s; Reality %dms, Hysteria2 %dms\n", b.LastCheckedAt.Local().Format("15:04:05"), b.RealityLatencyMs, b.Hy2LatencyMs)
-	}
-	if b.RealityError != "" {
-		fmt.Printf("            Reality probe error: %s\n", b.RealityError)
-	}
-	if b.Hy2Error != "" {
-		fmt.Printf("            Hysteria2 probe error: %s\n", b.Hy2Error)
-	}
-	if b.Hy2DownMbps > 0 {
-		fmt.Printf("            active HY2 ceiling: down %d / up %d Mbps\n", b.Hy2DownMbps, b.Hy2UpMbps)
-	}
-	if b.UDPPressureCapMbps > 0 {
-		fmt.Printf("            local UDP pressure cap: %d Mbps down; restores gradually after clean health\n", b.UDPPressureCapMbps)
-	}
-	if time.Now().Before(b.UDPCooldownUntil) {
-		fmt.Printf("            UDP cooldown until %s; new connections prefer qualified TCP\n", b.UDPCooldownUntil.Local().Format("15:04:05"))
-	}
-	if b.RealityDegraded || b.Hy2Degraded {
-		fmt.Printf("            temporarily slow: Reality=%t Hysteria2=%t; eligibility follows health hysteresis\n", b.RealityDegraded, b.Hy2Degraded)
-	}
-	if !b.RealityHealthy || !b.Hy2Healthy {
-		fmt.Printf("            qualified: Reality=%t Hysteria2=%t; failed/recovering legs wait for clean probes\n", b.RealityHealthy, b.Hy2Healthy)
-	}
-	if b.Error != "" {
-		fmt.Printf("            allocation reconciliation pending: %s\n", b.Error)
-	}
 }

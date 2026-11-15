@@ -124,12 +124,8 @@ type Supervisor struct {
 	// legProbeFn substitutes the network boundary in recovery tests. Nil uses
 	// fresh keeper and (when configured) external TLS/body requests.
 	legProbeFn func(port, timeoutMs int) (time.Duration, error)
-	// Initialized by runBalance; tests can substitute the guarded trial boundary.
-	allocationRunFn    func(context.Context, int, int, bool, func() error) (allocationTrial, error)
-	allocationUplinkFn func() (string, error)
 	// Enabled only with the transport-bound external forwarders in the config.
 	verifyLegEgress           bool
-	pressureSnapshotFn        func() floodSnapshot    // Nil uses the live sing-box log sensor.
 	applicationDialSnapshotFn func() nodeDialSnapshot // Nil observes this engine's node dials.
 
 	// dialsPaused records that fresh-dial sampling is suspended for a bad
@@ -280,7 +276,6 @@ func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervis
 		linkPoke:          make(chan struct{}, 1),
 		clash:             NewClashClient(opts.ClashAddr),
 		state: &utils.State{
-			Balance:   initialBalanceStatus(opts.HasRealityLeg && opts.VerifyLegEgress),
 			Mode:      utils.ModeProxy,
 			PID:       os.Getpid(),
 			Server:    serverName,
@@ -349,9 +344,6 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	// +1 = the gateway echo (runLinkProbe): the one instrument on this side of
 	// the Wi-Fi, which is where a third of the bad minutes turned out to be.
 	n := 6
-	if s.hasReality && s.verifyLegEgress {
-		n++
-	}
 	if s.directDomains != nil {
 		n++
 	}
@@ -362,9 +354,6 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		n++
 	}
 	wg.Add(n)
-	if s.hasReality && s.verifyLegEgress {
-		go func() { defer wg.Done(); defer recoverPanic("dual-routing"); s.runBalance(ctx) }()
-	}
 
 	// Goroutine A: keep sing-box alive.
 	go func() {
@@ -825,7 +814,7 @@ func (s *Supervisor) shouldSampleFreshDial(last time.Time) bool {
 		// vote or bypass the existing comparative handoff and local-link gates.
 		age := time.Since(snapshot.last)
 		pin := utils.ReadLeg()
-		if age >= 0 && age <= 30*time.Second && !s.onFallback() && pin != utils.LegHy2 && pin != utils.LegBoth {
+		if age >= 0 && age <= 30*time.Second && !s.onFallback() && pin != utils.LegHy2 {
 			interval = s.keepaliveEvery
 		}
 	}
@@ -1610,7 +1599,7 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 		// Above all of it sits `mole leg`. A leg pin is not evidence, it is
 		// instruction, so it is read last and wins. Also re-read every tick
 		// so `mole leg` takes on a running daemon without signalling it.
-		member, name = s.schedulerPickLeg(member, name, down)
+		member, name = s.schedulerPickLeg(member, name)
 		// `down` is kept whichever leg carries traffic: since 2026-09-06 the
 		// node paces its TCP toward this client at the same rung (TCP Brutal,
 		// see cmd/brutal.go), so the ceiling governs REALITY too. Push it
@@ -1861,25 +1850,9 @@ func (s *Supervisor) schedulerPushBrutal(tcpRate, pushedRate int, pushedAt time.
 // ultimate selector, overriding whatever the clock/backoff chose. A pin
 // also releases any active fallback since both cannot own the decision.
 // When no pin is set and a REALITY leg exists, it either returns to primary
-// or stays on fallback. In LegBoth mode, it additionally consults the
-// balance policy to decide whether to favour the HY2 probe selector.
-func (s *Supervisor) schedulerPickLeg(member, name string, down int) (string, string) {
+// or stays on fallback.
+func (s *Supervisor) schedulerPickLeg(member, name string) (string, string) {
 	switch utils.ReadLeg() {
-	case utils.LegBoth:
-		if s.onFallback() {
-			s.releaseFallback("dual routing enabled")
-		}
-		member, name = RealityLegTag, "both/"+name
-		s.stateMu.Lock()
-		preferHy2 := s.state.Balance != nil && s.state.Balance.Enabled && s.state.Balance.Hy2Lanes >= BalanceLanes/2
-		s.stateMu.Unlock()
-		if preferHy2 {
-			if live, e := s.clash.Selection(Hy2ProbeSelectorTag); e == nil {
-				member = live
-			} else {
-				member = BandwidthRungTag(down)
-			}
-		}
 	case utils.LegReality:
 		if s.onFallback() {
 			s.releaseFallback("pinned to reality by `mole leg`")

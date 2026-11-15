@@ -14,7 +14,7 @@ func TestReadLegUnpinnedByDefault(t *testing.T) {
 
 func TestWriteReadClearLeg(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	for _, leg := range []string{LegHy2, LegReality, "both"} {
+	for _, leg := range []string{LegHy2, LegReality} {
 		if err := WriteLeg(leg); err != nil {
 			t.Fatalf("WriteLeg(%q): %v", leg, err)
 		}
@@ -42,6 +42,24 @@ func TestWriteLegRejectsUnknown(t *testing.T) {
 	}
 	if got := ReadLeg(); got != LegAuto {
 		t.Fatalf("a rejected write must leave the pin untouched, got %q", got)
+	}
+}
+
+// Safety/what: retired mode intent returns to the supported automatic policy.
+func TestLegacyBothPinFallsBackToAutoAndCannotBeWritten(t *testing.T) {
+	// Why: upgrading must not leave traffic assigned to removed flow selectors.
+	t.Setenv("HOME", t.TempDir())
+	if err := os.WriteFile(LegPath(), []byte("both\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if ReadLeg() != LegAuto {
+		t.Fatal("legacy both pin did not migrate to automatic routing")
+	}
+	if err := WriteLeg(LegReality); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLeg("both"); err == nil || ReadLeg() != LegReality {
+		t.Fatal("retired mode overwrote a supported pin")
 	}
 }
 

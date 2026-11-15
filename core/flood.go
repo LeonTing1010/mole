@@ -3,7 +3,6 @@ package core
 import (
 	"bytes"
 	"sync"
-	"time"
 )
 
 // floodMarker is how Go renders syscall.ENOBUFS, which is what sing-box prints
@@ -30,10 +29,8 @@ const floodMarker = "write: no buffer space available"
 // io.Writer so it can be spliced into sing-box's own output rather than
 // re-reading the log file, which rotates under us.
 type floodSensor struct {
-	mu       sync.Mutex
-	seen     int
-	last     time.Time
-	sequence uint64
+	mu   sync.Mutex
+	seen int
 	// tail carries the bytes that could still be the head of a marker split
 	// across two writes. It is kept one byte shorter than the marker, so it can
 	// never contain a complete one on its own and nothing is counted twice.
@@ -51,8 +48,6 @@ func (f *floodSensor) Write(p []byte) (int, error) {
 	}
 	if n := bytes.Count(buf, []byte(floodMarker)); n > 0 {
 		f.seen += n
-		f.sequence += uint64(n)
-		f.last = time.Now()
 	}
 	if keep := len(floodMarker) - 1; len(buf) > keep {
 		f.tail = append(f.tail[:0], buf[len(buf)-keep:]...)
@@ -62,30 +57,18 @@ func (f *floodSensor) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-type floodSnapshot struct {
-	sequence uint64
-	last     time.Time
-}
-
-// snapshot is independent of the consuming minute-scale self-healing counter.
-func (f *floodSensor) snapshot() floodSnapshot {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return floodSnapshot{f.sequence, f.last}
-}
-
 // take reports the sightings since the last call and resets the count.
 //
 // Consuming rather than windowed on purpose: the caller ticks once a minute and
 // wants "did we flood during the minute that just passed", so that a single
 // short burst cannot be read as flooding by two consecutive ticks and descend a
 // rung on its own. Descending then requires flooding that actually persists.
-func (f *floodSensor) take() (int, time.Time) {
+func (f *floodSensor) take() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	n, last := f.seen, f.last
+	n := f.seen
 	f.seen = 0
-	return n, last
+	return n
 }
 
 // singboxFlood watches the live sing-box process; see Start.
@@ -94,6 +77,5 @@ var singboxFlood floodSensor
 // TakeFloodSightings reports how many ENOBUFS lines sing-box has emitted since
 // the last call, and resets the count.
 func TakeFloodSightings() int {
-	n, _ := singboxFlood.take()
-	return n
+	return singboxFlood.take()
 }

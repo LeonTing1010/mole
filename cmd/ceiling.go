@@ -89,10 +89,6 @@ func runCeiling(_ *cobra.Command, args []string) error {
 	// here keeps the first post-switch connection from eating it.
 	member := core.BandwidthRungTag(target)
 	clash := core.NewClashClient("127.0.0.1:9090")
-	if utils.ReadLeg() == utils.LegBoth {
-		fmt.Printf("✔ HY2 ceiling → %d Mbps; dual routing will reconcile the new ceiling without moving existing connections.\n", target)
-		return nil
-	}
 	// Don't yank traffic off REALITY. It is the primary, and the ceiling is a
 	// property of the hy2 ladder only; selecting a rung here would move live
 	// traffic across transports under the name of a ceiling change — which the

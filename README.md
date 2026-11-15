@@ -133,41 +133,19 @@ REALITY recovers it auto-switches back.
 mole leg auto        # REALITY primary, hy2 fallback (default)
 mole leg reality     # pin to REALITY only
 mole leg hy2         # pin to hy2 only
-mole leg both        # adapt new-flow allocation: pure REALITY, mixed, or pure hy2
 ```
 
-In `both` mode, single-leg routing is an endpoint of the same eight-bucket
-allocation space as mixed routing. The initial allocation is all REALITY.
-Once both legs qualify and the connection is idle, a background trial compares
-the current allocation with one candidate using alternating current/candidate/
-current and candidate/current/candidate samples. Each complete sample downloads
-64 MiB across eight streams. Body throughput starts only after all response
-headers and warm-up; incomplete, too-short or unbalanced streams are discarded.
+Automatic mode uses one transport for new connections: REALITY while it is
+healthy, Hysteria2 after confirmed primary failure, and REALITY again after
+confirmed recovery. Manual protocol pins override automatic selection. Local
+link failures do not count as transport failures; existing ENOBUFS self-healing,
+scheduled ceilings and TCP pacing remain active.
 
-For mixed allocations, a trial requires at least 16 currently open proxied
-connections and rejects a materially skewed source-port bucket distribution.
-The observed counts are checked again during the trial and before selection.
-This snapshot cannot predict future connection or byte shares; pure endpoint
-comparisons do not require a bucket-distribution check.
-
-The outer pair must have at most 20% drift. Three clean comparisons of the same
-candidate must each exceed 15% improvement and have a median improvement of at
-least 25%. These thresholds are conservative heuristics, not a statistical
-confidence interval. Candidates are explored over time; no nine-way single
-sample maximum is treated as evidence. A trial runs at most every 30 minutes,
-downloading at most 192 MiB per trial (about 384 MiB/hour in steady state).
-It skips a busy connection; traffic detected during a phase invalidates the
-trial and stops the remaining phases. Gateway delay, link, rate, route, UDP
-pressure or leg health changes cancel it. Each phase has a 15-second timeout;
-if a path is too slow to complete the budget, no decision is made. It runs
-separately from health reconciliation. Existing
-connections retain their transport; explicit pins stop trials. `mole leg`
-shows the most recent paired result or rejection reason.
-
-Keeper measurements are synthetic node-to-client downloads. Source-port
-buckets do not guarantee connection or byte shares, and a keeper win does not
-prove higher application throughput, upload speed or a faster full-TUN path.
-`auto` retains its fault-only primary/fallback behavior.
+There are no periodic mixture downloads or automatic source-port allocations.
+The optional REALITY rate governor is independent and remains opt-in. The old
+`both` mode has been removed; a saved `both` pin is treated as `auto` when this
+version starts. Existing connections retain their transport when the selector
+changes.
 
 ### TCP Brutal congestion control
 
@@ -250,8 +228,7 @@ Once `mole up` the daemon runs a scheduler that:
 
 | Tick | Checks | Action |
 |---|---|---|
-| 1 min | Link probe (UDP + ICMP) | ↓ rung if path dies, ↑ rung when clean (15-min uphill cooldown) |
-| 3 min | ENOBUFS flood counter | pause hy2 allocations, descend one rung |
+| 1 min | Health and ENOBUFS flood counter | descend after sustained flooding; raise one rung after 15 clean minutes; hold on local-link failure or a dark path |
 | 10 min | REALITY Brutal keeper still responding? | re-push rate; 3 unconfirmed → `brutalUnpaced` flag |
 | Continuous | REALITY leg health | 3 fails → auto failover to hy2; 3 succeeds → return to primary |
 
@@ -293,7 +270,7 @@ mole up          [--no-killswitch] [--no-destroy-on-lid-close]   # bring tunnel 
 mole down        [--destroy]                                      # tear down; optionally destroy VPS
 mole status                                                       # server, leg, rung, health, exit IP
 mole ceiling     [mbps|auto]                                      # show or pin bandwidth rung
-mole leg         [auto|reality|hy2|both]                          # show or pin leg mode
+mole leg         [auto|reality|hy2]                               # show or pin leg mode
 mole reload                                                       # reload custom-rules.json + hotrule-sets
 
 mole server deploy    [--name X --region Y --plan Z --no-reality --no-hy2]

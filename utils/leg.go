@@ -30,13 +30,11 @@ const (
 	// LegReality pins the VLESS+REALITY/TCP primary, with the automatic
 	// fallback disarmed.
 	LegReality = "reality"
-	// LegBoth enables independent, health-gated flow selectors.
-	LegBoth = "both"
 )
 
 // ReadLeg returns the pinned leg, or LegAuto when unpinned. A malformed file is
-// treated as unpinned rather than an error, for the same reason ReadCeiling
-// does: a corrupt pin must degrade to automatic, never wedge the tunnel onto a
+// treated as unpinned, including a retired "both" pin, for the same reason
+// ReadCeiling does: a corrupt pin must degrade to automatic, never wedge the tunnel onto a
 // leg nobody chose.
 func ReadLeg() string {
 	b, err := os.ReadFile(LegPath())
@@ -44,7 +42,7 @@ func ReadLeg() string {
 		return LegAuto
 	}
 	switch v := strings.ToLower(strings.TrimSpace(string(b))); v {
-	case LegHy2, LegReality, LegBoth:
+	case LegHy2, LegReality:
 		return v
 	default:
 		return LegAuto
@@ -54,10 +52,10 @@ func ReadLeg() string {
 // WriteLeg pins the transport leg.
 func WriteLeg(leg string) error {
 	switch leg {
-	case LegHy2, LegReality, LegBoth:
+	case LegHy2, LegReality:
 		return os.WriteFile(LegPath(), []byte(leg+"\n"), 0644)
 	default:
-		return fmt.Errorf("unknown leg %q (want %q, %q or %q)", leg, LegHy2, LegReality, LegBoth)
+		return fmt.Errorf("unknown leg %q (want %q or %q)", leg, LegHy2, LegReality)
 	}
 }
 

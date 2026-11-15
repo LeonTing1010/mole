@@ -16,7 +16,7 @@ func TestFloodSensorCountsEnobufsLines(t *testing.T) {
 	io.WriteString(&f, "INFO inbound/tun: started at utun4\n")
 	io.WriteString(&f, enobufsLine)
 	io.WriteString(&f, enobufsLine)
-	if n, _ := f.take(); n != 2 {
+	if n := f.take(); n != 2 {
 		t.Errorf("sightings = %d, want 2", n)
 	}
 }
@@ -30,7 +30,7 @@ func TestFloodSensorCountsAMarkerSplitAcrossWrites(t *testing.T) {
 		f = floodSensor{}
 		io.WriteString(&f, enobufsLine[:i])
 		io.WriteString(&f, enobufsLine[i:])
-		if n, _ := f.take(); n != 1 {
+		if n := f.take(); n != 1 {
 			t.Fatalf("marker split at byte %d counted %d times, want 1", i, n)
 		}
 	}
@@ -43,7 +43,7 @@ func TestFloodSensorDoesNotDoubleCountAcrossTheTail(t *testing.T) {
 	io.WriteString(&f, enobufsLine)
 	io.WriteString(&f, "INFO nothing to see here\n")
 	io.WriteString(&f, "INFO still nothing\n")
-	if n, _ := f.take(); n != 1 {
+	if n := f.take(); n != 1 {
 		t.Errorf("sightings = %d, want 1 — the tail re-counted a marker it had already seen", n)
 	}
 }
@@ -53,10 +53,10 @@ func TestFloodSensorDoesNotDoubleCountAcrossTheTail(t *testing.T) {
 func TestFloodSensorTakeResets(t *testing.T) {
 	var f floodSensor
 	io.WriteString(&f, enobufsLine)
-	if n, _ := f.take(); n != 1 {
+	if n := f.take(); n != 1 {
 		t.Fatalf("first take = %d, want 1", n)
 	}
-	if n, _ := f.take(); n != 0 {
+	if n := f.take(); n != 0 {
 		t.Errorf("second take = %d, want 0 — take must consume", n)
 	}
 }
@@ -77,7 +77,7 @@ func TestFloodSensorNeverBreaksTheLogWriter(t *testing.T) {
 	if log.String() != body {
 		t.Error("the log file did not receive the bytes verbatim")
 	}
-	if n, _ := f.take(); n != 3 {
+	if n := f.take(); n != 3 {
 		t.Errorf("sightings = %d, want 3", n)
 	}
 }

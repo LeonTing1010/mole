@@ -4,8 +4,10 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,3 +49,29 @@ func TestLegEgressVerifiesTLSAndReadsThroughTheLeg(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Quality/what: external status and payload contracts survive multi-origin retries.
+func TestPerformanceEgressValidatesStatusAndCompleteBody(t *testing.T) {
+	for _, tc := range []struct {
+		status, expected int
+		body             string
+		required, ok     bool
+	}{
+		{200, 200, "trace", true, true}, {200, 200, "", true, false}, {204, 204, "", false, true},
+		{200, 204, "", false, false}, {204, 204, "unexpected", false, false},
+	} {
+		resp := &http.Response{StatusCode: tc.status, Body: io.NopCloser(strings.NewReader(tc.body))}
+		err := validateEgressResponse(resp, LegEgressTarget{Status: tc.expected, RequireBody: tc.required})
+		if (err == nil) != tc.ok {
+			t.Fatalf("status=%d body=%q: %v", tc.status, tc.body, err)
+		}
+	}
+	resp := &http.Response{StatusCode: 200, Body: io.NopCloser(brokenEgressReader{})}
+	if err := validateEgressResponse(resp, LegEgressTarget{Status: 200, RequireBody: true}); err == nil {
+		t.Fatal("incomplete external body qualified")
+	}
+}
+
+type brokenEgressReader struct{}
+
+func (brokenEgressReader) Read([]byte) (int, error) { return 0, fmt.Errorf("truncated response") }

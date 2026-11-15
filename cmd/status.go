@@ -125,7 +125,6 @@ func printSupervisorState() {
 		fmt.Printf("   Mode:    %s\n", st.Mode)
 	}
 	fmt.Printf("   Dials:   %s\n", dialStatus(st))
-	printBalance(st)
 	// Time-of-day Brutal ceiling, when the active server has a peak profile.
 	//
 	// The recorded profile is the scheduler's belief, refreshed once a minute;
@@ -150,8 +149,6 @@ func printSupervisorState() {
 			onStandby = now == core.RealityLegTag
 		}
 		switch {
-		case utils.ReadLeg() == utils.LegBoth:
-			fmt.Printf("   Profile: dual routing — %s; HY2 ladder ↓%d Mbps\n", tcpProfile, st.BandwidthDownMbps)
 		// The REALITY leg uses node-side TCP Brutal. Its confirmed rate may
 		// differ from the hysteria2 ladder's selected ceiling.
 		// Why traffic is on REALITY matters more than that it is. One of these

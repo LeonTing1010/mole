@@ -44,18 +44,17 @@ const (
 // State is the supervisor's live view of the connection, persisted so that
 // `mole status` can read it without IPC.
 type State struct {
-	Balance          *BalanceStatus `json:"balance,omitempty"`
-	Mode             Mode           `json:"mode"`
-	PID              int            `json:"pid"`
-	SingboxPID       int            `json:"singbox_pid,omitempty"`
-	Server           string         `json:"server,omitempty"`
-	StartedAt        time.Time      `json:"started_at"`
-	LastProbeAt      time.Time      `json:"last_probe_at,omitempty"`
-	LastLatencyMs    int            `json:"last_latency_ms,omitempty"`
-	LastProbeError   string         `json:"last_probe_error,omitempty"`
-	LastProbeVerdict ProbeVerdict   `json:"last_probe_verdict,omitempty"`
-	ConsecutiveFails int            `json:"consecutive_fails"`
-	ConsecutiveOK    int            `json:"consecutive_ok"`
+	Mode             Mode         `json:"mode"`
+	PID              int          `json:"pid"`
+	SingboxPID       int          `json:"singbox_pid,omitempty"`
+	Server           string       `json:"server,omitempty"`
+	StartedAt        time.Time    `json:"started_at"`
+	LastProbeAt      time.Time    `json:"last_probe_at,omitempty"`
+	LastLatencyMs    int          `json:"last_latency_ms,omitempty"`
+	LastProbeError   string       `json:"last_probe_error,omitempty"`
+	LastProbeVerdict ProbeVerdict `json:"last_probe_verdict,omitempty"`
+	ConsecutiveFails int          `json:"consecutive_fails"`
+	ConsecutiveOK    int          `json:"consecutive_ok"`
 
 	// Keepalive fields track the in-tunnel keepalive that drives a tiny request
 	// through the proxy outbound to keep the hy2/QUIC session and its NAT
