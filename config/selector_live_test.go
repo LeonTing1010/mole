@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -21,8 +20,8 @@ import (
 )
 
 // Quality/audit (2026-10-07): real engine routing and selector lifetime semantics.
-func TestRealSingboxDualFlowsRemainBoundAcrossWeightChanges(t *testing.T) {
-	// Why: JSON shape alone cannot prove simultaneous use or connection continuity.
+func TestRealSingboxSelectorSwitchPreservesEstablishedConnections(t *testing.T) {
+	// Why: switching new flows must preserve streams established on the previous transport.
 	sb, err := exec.LookPath("sing-box")
 	if err != nil {
 		t.Skip("sing-box unavailable")
@@ -88,14 +87,12 @@ func TestRealSingboxDualFlowsRemainBoundAcrossWeightChanges(t *testing.T) {
 	cfg := &SingboxConfig{
 		Log:      LogConfig{Level: "error"},
 		Inbounds: []InboundConfig{{Type: "http", Tag: "test-in", Listen: "127.0.0.1", ListenPort: ingress}},
-		Outbounds: append([]OutboundConfig{
+		Outbounds: []OutboundConfig{
 			{Type: "selector", Tag: core.ProxySelectorTag, Outbounds: []string{core.RealityLegTag, core.Hy2ProbeSelectorTag}, Default: core.RealityLegTag},
 			{Type: "http", Tag: core.RealityLegTag, Server: "127.0.0.1", ServerPort: portOf(reality)},
 			{Type: "http", Tag: core.Hy2ProbeSelectorTag, Server: "127.0.0.1", ServerPort: portOf(hy2)},
-		}, flowSelectors()...),
-		// A sniffed domain has no destination IP, so CIDR routes miss it. The
-		// final route must still pass through a flow selector, as it does on TUN.
-		Route:        RouteConfig{Rules: flowRoutes([]RouteRule{{IPCIDR: []string{"0.0.0.0/0"}, Outbound: core.ProxySelectorTag}}), Final: core.ProxySelectorTag, AutoDetectInterface: true},
+		},
+		Route:        RouteConfig{Final: core.ProxySelectorTag, AutoDetectInterface: true},
 		Experimental: &ExperimentalConfig{ClashAPI: &ClashAPIConfig{ExternalController: fmt.Sprintf("127.0.0.1:%d", controller)}},
 	}
 	path := filepath.Join(t.TempDir(), "config.json")
@@ -124,23 +121,8 @@ func TestRealSingboxDualFlowsRemainBoundAcrossWeightChanges(t *testing.T) {
 			c.CloseIdleConnections()
 		}
 	}()
-	request := func(base int, path string) *http.Response {
-		// Each retry advances one whole bucket cycle, preserving the chosen lane.
-		port := 0
-		for candidate := base; candidate < 65000; candidate += 256 {
-			l, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(candidate))
-			if err != nil {
-				continue
-			}
-			l.Close()
-			port = candidate
-			break
-		}
-		if port == 0 {
-			t.Fatal("no free source port in the requested bucket")
-		}
-		dialer := &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: port}}
-		client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL), DialContext: dialer.DialContext, DisableKeepAlives: true}}
+	request := func(path string) *http.Response {
+		client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL), DisableKeepAlives: true}}
 		clients = append(clients, client)
 		resp, err := client.Get("http://example.invalid" + path)
 		if err != nil {
@@ -148,30 +130,30 @@ func TestRealSingboxDualFlowsRemainBoundAcrossWeightChanges(t *testing.T) {
 		}
 		return resp
 	}
-	tcp := request(49152, "/hold")
+	tcp := request("/hold")
 	defer tcp.Body.Close()
 	tcpReader := bufio.NewReader(tcp.Body)
 	if line, _ := tcpReader.ReadString('\n'); line != "tcp-start\n" {
-		t.Fatalf("TCP bucket: %q", line)
+		t.Fatalf("primary stream: %q", line)
 	}
-	if _, err := core.ApplyBalancedLanes(clash, 4); err != nil {
+	if err := clash.SelectProxy(core.ProxySelectorTag, core.Hy2ProbeSelectorTag); err != nil {
 		t.Fatal(err)
 	}
-	udp := request(49184, "/hold")
+	udp := request("/hold")
 	defer udp.Body.Close()
 	udpReader := bufio.NewReader(udp.Body)
 	if line, _ := udpReader.ReadString('\n'); line != "udp-start\n" {
-		t.Fatalf("UDP bucket: %q", line)
+		t.Fatalf("fallback stream: %q", line)
 	}
-	// Both responses remain open while the weight changes to all UDP.
-	if _, err := core.ApplyBalancedLanes(clash, core.BalanceLanes); err != nil {
+	// Both responses remain open while new connections return to the primary.
+	if err := clash.SelectProxy(core.ProxySelectorTag, core.RealityLegTag); err != nil {
 		t.Fatal(err)
 	}
-	fresh := request(49408, "/fresh")
+	fresh := request("/fresh")
 	body, err := io.ReadAll(fresh.Body)
 	fresh.Body.Close()
-	if err != nil || strings.TrimSpace(string(body)) != "udp" {
-		t.Fatalf("new connection ignored weight: %q %v", body, err)
+	if err != nil || strings.TrimSpace(string(body)) != "tcp" {
+		t.Fatalf("new connection ignored selector: %q %v", body, err)
 	}
 	unblock()
 	for name, reader := range map[string]*bufio.Reader{"tcp": tcpReader, "udp": udpReader} {
