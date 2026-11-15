@@ -17,13 +17,14 @@ func initialBalanceStatus(supported bool) *utils.BalanceStatus {
 }
 
 func (s *Supervisor) runBalance(ctx context.Context) {
-	if s.allocationSampleFn == nil {
-		s.allocationSampleFn = s.measureAllocation
+	if s.allocationRunFn == nil {
+		s.allocationRunFn = s.runAllocationTrial
 	}
 	if err := s.waitClashReady(ctx, 10*time.Second); err != nil {
 		log.Printf("dual routing: %v", err)
 	}
 	var policy balancePolicy
+	defer policy.cancelAllocation()
 	t := time.NewTicker(s.keepaliveEvery)
 	defer t.Stop()
 	for {
@@ -40,6 +41,7 @@ func (s *Supervisor) runBalance(ctx context.Context) {
 
 func (s *Supervisor) balanceOnce(p *balancePolicy) {
 	if utils.ReadLeg() != utils.LegBoth {
+		p.cancelAllocation()
 		s.stateMu.Lock()
 		enabled := s.state.Balance != nil && s.state.Balance.Enabled
 		s.stateMu.Unlock()
@@ -47,7 +49,7 @@ func (s *Supervisor) balanceOnce(p *balancePolicy) {
 			return
 		}
 		if _, err := ApplyBalancedLanes(s.clash, -1); err != nil {
-			s.balanceError(err)
+			s.balanceError(p, err)
 			return
 		}
 		*p = balancePolicy{}
@@ -56,8 +58,26 @@ func (s *Supervisor) balanceOnce(p *balancePolicy) {
 		return
 	}
 	if s.linkBad() {
-		p.search.wins = 0
+		wasSampling := p.sampleJob != nil
+		p.cancelAllocation()
+		p.search = allocationSearch{}
+		p.candidate = 0
 		p.pressure.cleanSince = time.Time{}
+		if wasSampling {
+			p.sampleError = "local link became unhealthy; trial canceled"
+			s.stateMu.Lock()
+			var status *utils.BalanceStatus
+			if s.state.Balance != nil {
+				copy := *s.state.Balance
+				status = &copy
+			}
+			s.stateMu.Unlock()
+			if status != nil {
+				status.Sampling = false
+				status.SampleError = p.sampleError
+				s.publishBalance(status)
+			}
+		}
 		return
 	}
 	target := s.ladderTarget()
@@ -69,7 +89,7 @@ func (s *Supervisor) balanceOnce(p *balancePolicy) {
 	}
 	live, err := s.clash.Selection(Hy2ProbeSelectorTag)
 	if err != nil {
-		s.balanceError(err)
+		s.balanceError(p, err)
 		return
 	}
 	now := time.Now()
@@ -88,7 +108,7 @@ func (s *Supervisor) balanceOnce(p *balancePolicy) {
 	}
 	if live != target {
 		if err := s.clash.SelectProxy(Hy2ProbeSelectorTag, target); err != nil {
-			s.balanceError(err)
+			s.balanceError(p, err)
 			return
 		}
 	}
@@ -100,7 +120,7 @@ func (s *Supervisor) balanceOnce(p *balancePolicy) {
 	// ApplyBalancedLanes write will restore them.
 	if p.pressure.cooling(now) && p.reality.healthy {
 		if _, err := ApplyBalancedLanes(s.clash, 0); err != nil {
-			s.balanceError(err)
+			s.balanceError(p, err)
 			return
 		}
 	}
@@ -110,8 +130,18 @@ func (s *Supervisor) balanceOnce(p *balancePolicy) {
 	go func() { defer wg.Done(); reality.delay, reality.err = s.probeLeg(BrutalKeeperPort) }()
 	go func() { defer wg.Done(); hy2.delay, hy2.err = s.probeLeg(LegGatePort) }()
 	wg.Wait()
+	// A previously preferred mixture was measured for a specific path and
+	// rate. On a confirmed change, return to the safe primary once health allows.
+	if p.search.preferred != 0 && p.sampleEnvironment != (allocationEnvironment{}) {
+		if env, e := s.allocationEnv(); e == nil && env != p.sampleEnvironment {
+			p.cancelAllocation()
+			p.search = allocationSearch{}
+			p.candidate = 0
+			p.sampleError = "measured environment changed; preference reset"
+		}
+	}
 	p.observe(reality, hy2)
-	s.sampleAllocation(p, time.Now())
+	s.sampleAllocation(p, time.Now(), false)
 	// The health observation sets eligibility; a successful sweep may update preference.
 	if p.reality.healthy && p.hy2.healthy {
 		p.setLanes(p.search.preferred)
@@ -122,7 +152,7 @@ func (s *Supervisor) balanceOnce(p *balancePolicy) {
 	}
 	changed, err := ApplyBalancedLanes(s.clash, p.hy2Lanes)
 	if err != nil {
-		s.balanceError(err)
+		s.balanceError(p, err)
 		return
 	}
 	main := RealityLegTag
@@ -135,18 +165,23 @@ func (s *Supervisor) balanceOnce(p *balancePolicy) {
 	} else if current != main {
 		auxiliaryError = s.clash.SelectProxy(ProxySelectorTag, main)
 	}
+	// Start only after all effective selectors have been reconciled.
+	if auxiliaryError != nil {
+		p.search.recordTrial(p.candidate, 0, false)
+		p.cancelAllocation()
+	} else {
+		s.sampleAllocation(p, time.Now(), true)
+	}
 	status := &utils.BalanceStatus{
-		Supported: true, Enabled: true, RealityLanes: BalanceLanes - p.hy2Lanes, Hy2Lanes: p.hy2Lanes,
+		Supported: true, Enabled: true, Sampling: p.sampleJob != nil, RealityLanes: BalanceLanes - p.hy2Lanes, Hy2Lanes: p.hy2Lanes,
 		RealityHealthy: p.reality.healthy, Hy2Healthy: p.hy2.healthy,
 		LastCheckedAt: time.Now(),
-		LastSampleAt:  p.sampledAt, SampleError: p.sampleError,
-		RealityDegraded: p.reality.healthy && p.reality.slow > 0, Hy2Degraded: p.hy2.healthy && p.hy2.slow > 0,
+		LastSampleAt:  p.timeLastSample, SampleError: p.sampleError,
+		AllocationEvidence: p.sampleEvidence,
+		RealityDegraded:    p.reality.healthy && p.reality.slow > 0, Hy2Degraded: p.hy2.healthy && p.hy2.slow > 0,
 		RealityLatencyMs: reality.delay.Milliseconds(), Hy2LatencyMs: hy2.delay.Milliseconds(),
 		Hy2DownMbps: BandwidthRungMbps(target), Hy2UpMbps: s.schedule.RungUp(BandwidthRungMbps(target)),
 		UDPPressureCapMbps: p.pressure.capDown, UDPCooldownUntil: p.pressure.coolUntil,
-	}
-	if !p.sampledAt.IsZero() {
-		status.AllocationMbps = append([]float64(nil), p.sampleRates[:]...)
 	}
 	if auxiliaryError != nil {
 		status.Error = "auxiliary route reconciliation pending: " + auxiliaryError.Error()
@@ -171,7 +206,9 @@ func (s *Supervisor) publishBalance(status *utils.BalanceStatus) {
 	_ = utils.WriteState(s.snapshot())
 }
 
-func (s *Supervisor) balanceError(err error) {
+func (s *Supervisor) balanceError(p *balancePolicy, err error) {
+	p.search.recordTrial(p.candidate, 0, false)
+	p.cancelAllocation()
 	s.stateMu.Lock()
 	status := utils.BalanceStatus{Supported: true}
 	if s.state.Balance != nil {
@@ -179,6 +216,7 @@ func (s *Supervisor) balanceError(err error) {
 	}
 	s.stateMu.Unlock()
 	status.Error = err.Error()
+	status.Sampling = false
 	s.publishBalance(&status)
 	log.Printf("dual routing: reconciliation pending: %v", err)
 }

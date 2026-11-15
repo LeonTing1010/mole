@@ -9,6 +9,12 @@ func allocationBulk(client *http.Client, hy2Lanes, bytesPerStream int) (float64,
 	if hy2Lanes < 0 || hy2Lanes > BalanceLanes {
 		return 0, fmt.Errorf("invalid UDP share %d", hy2Lanes)
 	}
+	urls := allocationURLs(hy2Lanes)
+
+	return bulkURLsWithClient(client, urls, bytesPerStream)
+}
+
+func allocationURLs(hy2Lanes int) []string {
 	urls := make([]string, BalanceLanes)
 	for lane := range urls {
 		port := BrutalKeeperPort
@@ -17,5 +23,5 @@ func allocationBulk(client *http.Client, hy2Lanes, bytesPerStream int) (float64,
 		}
 		urls[lane] = fmt.Sprintf("http://127.0.0.1:%d", port)
 	}
-	return bulkURLsWithClient(client, urls, bytesPerStream)
+	return urls
 }

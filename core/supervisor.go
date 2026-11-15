@@ -124,8 +124,9 @@ type Supervisor struct {
 	// legProbeFn substitutes the network boundary in recovery tests. Nil uses
 	// fresh keeper and (when configured) external TLS/body requests.
 	legProbeFn func(port, timeoutMs int) (time.Duration, error)
-	// Initialized by runBalance; tests can substitute the download boundary.
-	allocationSampleFn func(hy2Lanes int) (float64, error)
+	// Initialized by runBalance; tests can substitute the guarded trial boundary.
+	allocationRunFn    func(context.Context, int, int, bool, func() error) (allocationTrial, error)
+	allocationUplinkFn func() (string, error)
 	// Enabled only with the transport-bound external forwarders in the config.
 	verifyLegEgress           bool
 	pressureSnapshotFn        func() floodSnapshot    // Nil uses the live sing-box log sensor.

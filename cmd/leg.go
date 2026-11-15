@@ -19,9 +19,12 @@ var legCmd = &cobra.Command{
   hy2       Hold the hysteria2 bandwidth ladder over UDP/443.
   auto      Use REALITY as primary with measured fallback and recovery.
   both      Adapt source-port buckets from pure TCP through mixed to pure UDP.
-            Start on TCP; require two complete comparisons with >15% gain.
-            Scans download up to 72 MiB every 10 minutes while both legs qualify.
+            Start on TCP; compare one candidate using alternating ABA/BAB trials.
+            Require three clean gains >15%, with a median gain of at least 25%.
+            At most 192 MiB per 30 minutes; skip busy or unstable links.
+            Mixed candidates require compatible existing source-port buckets.
             Health withdrawal overrides throughput; explicit pins stop scans.
+            Keeper samples are synthetic and do not prove application gains.
 
 Existing connections keep their original transport when the mode changes.
 A single connection uses one protocol. The two protocols share the same node
@@ -206,11 +209,26 @@ func printBalance(st *utils.State) {
 	b := st.Balance
 	fmt.Printf("   Allocation: source-port buckets: Reality %.1f%%, Hysteria2 %.1f%%\n", float64(b.RealityLanes)*100/core.BalanceLanes, float64(b.Hy2Lanes)*100/core.BalanceLanes)
 	fmt.Println("            bucket shares are not measured byte or connection shares")
+	if b.Sampling {
+		fmt.Println("            paired keeper trial in progress")
+	}
 	if !b.LastSampleAt.IsZero() {
-		fmt.Printf("            last complete allocation scan: %s; Mbps by UDP bucket count 0..8: %v\n", b.LastSampleAt.Local().Format("15:04:05"), b.AllocationMbps)
+		if e := b.AllocationEvidence; e != nil {
+			order := "current/candidate/current"
+			if e.CandidateOnEdges {
+				order = "candidate/current/candidate"
+			}
+			fmt.Printf("            last paired keeper trial: %s; UDP buckets %d vs %d; %s\n", b.LastSampleAt.Local().Format("15:04:05"), e.CurrentHy2Lanes, e.CandidateHy2Lanes, order)
+			fmt.Printf("            body Mbps %v; gain %.1f%%; decision %s (%d/3 wins)\n", e.RatesMbps, e.GainPct, e.Decision, e.ConsecutiveWins)
+			fmt.Printf("            median response headers ms %v; loaded gateway maximum ms %v\n", e.HeaderMedianMs, e.LoadedGatewayWorstMs)
+			fmt.Printf("            existing flow counts by bucket: %v (snapshot, not future byte shares)\n", e.FlowConnections)
+			fmt.Println("            keeper throughput is synthetic; it does not establish real app performance")
+		} else if len(b.AllocationMbps) > 0 {
+			fmt.Printf("            legacy allocation scan: %s; Mbps by UDP bucket count 0..8: %v\n", b.LastSampleAt.Local().Format("15:04:05"), b.AllocationMbps)
+		}
 	}
 	if b.SampleError != "" {
-		fmt.Printf("            allocation scan rejected: %s\n", b.SampleError)
+		fmt.Printf("            allocation trial not used: %s\n", b.SampleError)
 	}
 	if !b.LastCheckedAt.IsZero() {
 		fmt.Printf("            probes checked: %s; Reality %dms, Hysteria2 %dms\n", b.LastCheckedAt.Local().Format("15:04:05"), b.RealityLatencyMs, b.Hy2LatencyMs)

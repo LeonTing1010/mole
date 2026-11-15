@@ -74,19 +74,15 @@ func TestPerformanceControllerSlowProbeDegradesThenHardFailureWithdraws(t *testi
 	if s.state.Balance.Hy2Lanes != DefaultHy2Lanes {
 		t.Fatalf("both healthy should give %d lanes, got %d", DefaultHy2Lanes, s.state.Balance.Hy2Lanes)
 	}
-	// Two complete comparisons select the same mixture; the controller applies it.
-	s.allocationSampleFn = func(share int) (float64, error) {
-		if share == 2 {
-			return 140, nil
-		}
-		return 100, nil
+	// Model three independently confirmed comparisons before reconciling the selectors.
+	for i := 0; i < 3; i++ {
+		p.search.recordTrial(2, 1.4, true)
 	}
-	s.sampleAllocation(&p, time.Now())
-	s.sampleAllocation(&p, time.Now().Add(allocationSampleEvery))
 	s.balanceOnce(&p)
-	if s.state.Balance.Hy2Lanes != 2 || len(s.state.Balance.AllocationMbps) != 9 {
+	if s.state.Balance.Hy2Lanes != 2 {
 		t.Fatal("measured allocation did not reach live status")
 	}
+
 	for i := 0; i < BalanceLanes; i++ {
 		want := RealityLegTag
 		if (i+1)*2/BalanceLanes > i*2/BalanceLanes {

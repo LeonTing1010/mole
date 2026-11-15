@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -90,16 +91,18 @@ func (l *balanceLeg) observe(m legMeasurement) {
 }
 
 type balancePolicy struct {
-	reality, hy2      balanceLeg
-	hy2Lanes          int
-	pressure          udpPressure
-	search            allocationSearch
-	sampleAttempt     time.Time
-	sampledAt         time.Time
-	sampleError       string
-	sampleRates       [BalanceLanes + 1]float64
-	reverseScan       bool
-	sampleEnvironment allocationEnvironment
+	reality, hy2                  balanceLeg
+	hy2Lanes                      int
+	pressure                      udpPressure
+	search                        allocationSearch
+	sampleAttempt, timeLastSample time.Time
+	sampleError                   string
+	sampleEnvironment             allocationEnvironment
+	candidate                     int
+	reverseScan                   bool
+	sampleCancel                  context.CancelFunc
+	sampleJob                     chan allocationScanResult
+	sampleEvidence                *utils.AllocationEvidence
 }
 
 func (p *balancePolicy) observe(reality, hy2 legMeasurement) {
@@ -123,4 +126,12 @@ func (p *balancePolicy) observe(reality, hy2 legMeasurement) {
 
 func (p *balancePolicy) setLanes(n int) {
 	p.hy2Lanes = n
+}
+
+func (p *balancePolicy) cancelAllocation() {
+	if p.sampleCancel != nil {
+		p.sampleCancel()
+		p.sampleCancel = nil
+	}
+	p.sampleJob = nil
 }

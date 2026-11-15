@@ -138,17 +138,36 @@ mole leg both        # adapt new-flow allocation: pure REALITY, mixed, or pure h
 
 In `both` mode, single-leg routing is an endpoint of the same eight-bucket
 allocation space as mixed routing. The initial allocation is all REALITY.
-When both legs qualify, complete equal-budget keeper downloads compare all
-nine allocations, with eight total concurrent streams per sample. Two
-consecutive scans must show more than 15% improvement over the current
-preference before it changes. Scan order alternates to reduce ordering bias.
-A sweep downloads up to 72 MiB every ten minutes (about 432 MiB/hour); each
-allocation has a five-second timeout. Health, UDP pressure, manual pins and
-local-link problems take precedence. Changes to pacing, the HY2 rung or local
-link during a sweep discard its evidence. Existing connections retain their
-transport. `mole leg` shows the last complete sweep and rejected-scan errors.
-These short synthetic downloads do not establish upload or application speed.
-`auto` retains its existing fault-only primary/fallback behavior.
+Once both legs qualify and the connection is idle, a background trial compares
+the current allocation with one candidate using alternating current/candidate/
+current and candidate/current/candidate samples. Each complete sample downloads
+64 MiB across eight streams. Body throughput starts only after all response
+headers and warm-up; incomplete, too-short or unbalanced streams are discarded.
+
+For mixed allocations, a trial requires at least 16 currently open proxied
+connections and rejects a materially skewed source-port bucket distribution.
+The observed counts are checked again during the trial and before selection.
+This snapshot cannot predict future connection or byte shares; pure endpoint
+comparisons do not require a bucket-distribution check.
+
+The outer pair must have at most 20% drift. Three clean comparisons of the same
+candidate must each exceed 15% improvement and have a median improvement of at
+least 25%. These thresholds are conservative heuristics, not a statistical
+confidence interval. Candidates are explored over time; no nine-way single
+sample maximum is treated as evidence. A trial runs at most every 30 minutes,
+downloading at most 192 MiB per trial (about 384 MiB/hour in steady state).
+It skips a busy connection; traffic detected during a phase invalidates the
+trial and stops the remaining phases. Gateway delay, link, rate, route, UDP
+pressure or leg health changes cancel it. Each phase has a 15-second timeout;
+if a path is too slow to complete the budget, no decision is made. It runs
+separately from health reconciliation. Existing
+connections retain their transport; explicit pins stop trials. `mole leg`
+shows the most recent paired result or rejection reason.
+
+Keeper measurements are synthetic node-to-client downloads. Source-port
+buckets do not guarantee connection or byte shares, and a keeper win does not
+prove higher application throughput, upload speed or a faster full-TUN path.
+`auto` retains its fault-only primary/fallback behavior.
 
 ### TCP Brutal congestion control
 
