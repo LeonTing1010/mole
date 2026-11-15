@@ -12,15 +12,16 @@ import (
 
 var legCmd = &cobra.Command{
 	Use:   "leg [hy2|reality|both|auto]",
-	Short: "Choose one transport or use both for separate connections",
+	Short: "Choose one transport or adapt new-flow allocation",
 	Long: `Choose how new connections use the two protocols on the same node.
 
   reality   Hold VLESS+REALITY over TCP/443.
   hy2       Hold the hysteria2 bandwidth ladder over UDP/443.
   auto      Use REALITY as primary with measured fallback and recovery.
-  both      Assign source-port buckets using health checks. When both legs
-            qualify, the fixed split is 6 TCP / 2 UDP buckets; failures and
-            recovery change eligibility, not measured throughput weights.
+  both      Adapt source-port buckets from pure TCP through mixed to pure UDP.
+            Start on TCP; require two complete comparisons with >15% gain.
+            Scans download up to 72 MiB every 10 minutes while both legs qualify.
+            Health withdrawal overrides throughput; explicit pins stop scans.
 
 Existing connections keep their original transport when the mode changes.
 A single connection uses one protocol. The two protocols share the same node
@@ -102,7 +103,7 @@ func runLeg(_ *cobra.Command, args []string) error {
 	}
 	clash := core.NewClashClient("127.0.0.1:9090")
 	if want == utils.LegBoth {
-		fmt.Println("✔ Dual routing enabled — health-gated source-port buckets (normally 6 TCP / 2 UDP).")
+		fmt.Println("✔ Adaptive allocation enabled — single and mixed transports share one allocation policy.")
 		fmt.Println("   Existing connections keep their transport. Check allocation with `mole leg` or `mole status`.")
 		return nil
 	}
@@ -156,7 +157,7 @@ func printLeg(srv *Server) {
 	pin := utils.ReadLeg()
 	switch pin {
 	case utils.LegBoth:
-		fmt.Println("Leg:     both — health-gated source-port buckets over TCP and UDP")
+		fmt.Println("Leg:     both — measured allocation from pure TCP through mixed to pure UDP")
 	case utils.LegReality:
 		fmt.Println("Leg:     reality (pinned) — VLESS+REALITY over TCP/443; fallback to hy2 disarmed")
 	case utils.LegHy2:
@@ -195,7 +196,7 @@ func printLeg(srv *Server) {
 	fmt.Println("         mole leg reality   hold TCP (the primary; disarms the fallback)")
 	fmt.Println("         mole leg hy2       hold UDP (Brutal ladder; bypasses the primary)")
 	fmt.Println("         mole leg auto      back to automatic")
-	fmt.Println("         mole leg both      use both protocols for separate connections")
+	fmt.Println("         mole leg both      adapt between single and mixed transports")
 }
 
 func printBalance(st *utils.State) {
@@ -203,8 +204,14 @@ func printBalance(st *utils.State) {
 		return
 	}
 	b := st.Balance
-	fmt.Printf("   Dual:    source-port bucket allocation: Reality %.1f%%, Hysteria2 %.1f%%\n", float64(b.RealityLanes)*100/core.BalanceLanes, float64(b.Hy2Lanes)*100/core.BalanceLanes)
+	fmt.Printf("   Allocation: source-port buckets: Reality %.1f%%, Hysteria2 %.1f%%\n", float64(b.RealityLanes)*100/core.BalanceLanes, float64(b.Hy2Lanes)*100/core.BalanceLanes)
 	fmt.Println("            bucket shares are not measured byte or connection shares")
+	if !b.LastSampleAt.IsZero() {
+		fmt.Printf("            last complete allocation scan: %s; Mbps by UDP bucket count 0..8: %v\n", b.LastSampleAt.Local().Format("15:04:05"), b.AllocationMbps)
+	}
+	if b.SampleError != "" {
+		fmt.Printf("            allocation scan rejected: %s\n", b.SampleError)
+	}
 	if !b.LastCheckedAt.IsZero() {
 		fmt.Printf("            probes checked: %s; Reality %dms, Hysteria2 %dms\n", b.LastCheckedAt.Local().Format("15:04:05"), b.RealityLatencyMs, b.Hy2LatencyMs)
 	}

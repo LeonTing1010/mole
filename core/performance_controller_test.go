@@ -70,9 +70,31 @@ func TestPerformanceControllerSlowProbeDegradesThenHardFailureWithdraws(t *testi
 	for i := 0; i < 12; i++ {
 		s.balanceOnce(&p)
 	}
-	// Both healthy → fixed split
+	// Both healthy initially use REALITY until measured mixing wins.
 	if s.state.Balance.Hy2Lanes != DefaultHy2Lanes {
 		t.Fatalf("both healthy should give %d lanes, got %d", DefaultHy2Lanes, s.state.Balance.Hy2Lanes)
+	}
+	// Two complete comparisons select the same mixture; the controller applies it.
+	s.allocationSampleFn = func(share int) (float64, error) {
+		if share == 2 {
+			return 140, nil
+		}
+		return 100, nil
+	}
+	s.sampleAllocation(&p, time.Now())
+	s.sampleAllocation(&p, time.Now().Add(allocationSampleEvery))
+	s.balanceOnce(&p)
+	if s.state.Balance.Hy2Lanes != 2 || len(s.state.Balance.AllocationMbps) != 9 {
+		t.Fatal("measured allocation did not reach live status")
+	}
+	for i := 0; i < BalanceLanes; i++ {
+		want := RealityLegTag
+		if (i+1)*2/BalanceLanes > i*2/BalanceLanes {
+			want = Hy2ProbeSelectorTag
+		}
+		if selected[BalanceLaneTag(i)] != want {
+			t.Fatalf("lane %d ignored measured allocation", i)
+		}
 	}
 	// Slow probe marks degraded but doesn't withdraw
 	condition.Store(1)
@@ -88,7 +110,7 @@ func TestPerformanceControllerSlowProbeDegradesThenHardFailureWithdraws(t *testi
 	if s.state.Balance.Hy2Lanes != 0 {
 		t.Fatal("hard failure should withdraw UDP")
 	}
-	// Recovery → back to fixed split
+	// Recovery discards old performance evidence and starts on REALITY.
 	condition.Store(0)
 	for i := 0; i < balanceRecoverSamples; i++ {
 		s.balanceOnce(&p)

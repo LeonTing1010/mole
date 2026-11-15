@@ -133,8 +133,22 @@ REALITY recovers it auto-switches back.
 mole leg auto        # REALITY primary, hy2 fallback (default)
 mole leg reality     # pin to REALITY only
 mole leg hy2         # pin to hy2 only
-mole leg both        # split: 6 REALITY ports + 2 hy2 ports, auto-balance
+mole leg both        # adapt new-flow allocation: pure REALITY, mixed, or pure hy2
 ```
+
+In `both` mode, single-leg routing is an endpoint of the same eight-bucket
+allocation space as mixed routing. The initial allocation is all REALITY.
+When both legs qualify, complete equal-budget keeper downloads compare all
+nine allocations, with eight total concurrent streams per sample. Two
+consecutive scans must show more than 15% improvement over the current
+preference before it changes. Scan order alternates to reduce ordering bias.
+A sweep downloads up to 72 MiB every ten minutes (about 432 MiB/hour); each
+allocation has a five-second timeout. Health, UDP pressure, manual pins and
+local-link problems take precedence. Changes to pacing, the HY2 rung or local
+link during a sweep discard its evidence. Existing connections retain their
+transport. `mole leg` shows the last complete sweep and rejected-scan errors.
+These short synthetic downloads do not establish upload or application speed.
+`auto` retains its existing fault-only primary/fallback behavior.
 
 ### TCP Brutal congestion control
 

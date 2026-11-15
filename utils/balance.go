@@ -15,6 +15,7 @@ type BalanceStatus struct {
 	RealityLatencyMs   int64     `json:"reality_latency_ms,omitempty"`
 	Hy2LatencyMs       int64     `json:"hy2_latency_ms,omitempty"`
 	LastSampleAt       time.Time `json:"last_sample_at,omitempty"`
+	AllocationMbps     []float64 `json:"allocation_mbps,omitempty"`
 	SampleError        string    `json:"sample_error,omitempty"`
 	RealityMbps        float64   `json:"reality_mbps,omitempty"`
 	Hy2Mbps            float64   `json:"hy2_mbps,omitempty"`

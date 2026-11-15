@@ -13,12 +13,8 @@ const (
 	balanceSlowSamples    = 3
 	balancePortBlock      = 32
 
-	// DefaultHy2Lanes is the fixed hy2 allocation when both legs are healthy.
-	// Reality is consistently 2x faster and more stable than hy2 on this VPS,
-	// so we bias heavily toward it. hy2 still keeps 2 lanes (25%) as warm
-	// fallback — enough to carry traffic instantly if reality fails, without
-	// wasting bandwidth on a slower leg during normal operation.
-	DefaultHy2Lanes = 2
+	// Start with REALITY until complete comparisons demonstrate a benefit.
+	DefaultHy2Lanes = 0
 )
 
 func BalanceLaneTag(lane int) string { return fmt.Sprintf("flow-%d", lane) }
@@ -94,9 +90,16 @@ func (l *balanceLeg) observe(m legMeasurement) {
 }
 
 type balancePolicy struct {
-	reality, hy2 balanceLeg
-	hy2Lanes     int
-	pressure     udpPressure
+	reality, hy2      balanceLeg
+	hy2Lanes          int
+	pressure          udpPressure
+	search            allocationSearch
+	sampleAttempt     time.Time
+	sampledAt         time.Time
+	sampleError       string
+	sampleRates       [BalanceLanes + 1]float64
+	reverseScan       bool
+	sampleEnvironment allocationEnvironment
 }
 
 func (p *balancePolicy) observe(reality, hy2 legMeasurement) {
@@ -107,14 +110,14 @@ func (p *balancePolicy) observe(reality, hy2 legMeasurement) {
 		// hy2 down (includes both-down): pin everything to REALITY. TCP
 		// retransmits ride out the loss that kills UDP, and keeping the
 		// last allocation would pin all new connections to a dead leg.
+		p.search = allocationSearch{}
 		p.setLanes(0)
 	case !p.reality.healthy:
+		p.search = allocationSearch{}
 		p.setLanes(BalanceLanes)
 	default:
-		// Both healthy — fixed biased split. No bulk sample, no ratio,
-		// no EMA. sing-box BBR + HY2 ladder handle congestion control;
-		// we just decide how many NEW connections start on each leg.
-		p.setLanes(DefaultHy2Lanes)
+		// Health defines eligibility; measured performance chooses within it.
+		p.setLanes(p.search.preferred)
 	}
 }
 

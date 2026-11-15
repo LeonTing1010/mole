@@ -17,6 +17,9 @@ func initialBalanceStatus(supported bool) *utils.BalanceStatus {
 }
 
 func (s *Supervisor) runBalance(ctx context.Context) {
+	if s.allocationSampleFn == nil {
+		s.allocationSampleFn = s.measureAllocation
+	}
 	if err := s.waitClashReady(ctx, 10*time.Second); err != nil {
 		log.Printf("dual routing: %v", err)
 	}
@@ -53,6 +56,7 @@ func (s *Supervisor) balanceOnce(p *balancePolicy) {
 		return
 	}
 	if s.linkBad() {
+		p.search.wins = 0
 		p.pressure.cleanSince = time.Time{}
 		return
 	}
@@ -107,6 +111,11 @@ func (s *Supervisor) balanceOnce(p *balancePolicy) {
 	go func() { defer wg.Done(); hy2.delay, hy2.err = s.probeLeg(LegGatePort) }()
 	wg.Wait()
 	p.observe(reality, hy2)
+	s.sampleAllocation(p, time.Now())
+	// The health observation sets eligibility; a successful sweep may update preference.
+	if p.reality.healthy && p.hy2.healthy {
+		p.setLanes(p.search.preferred)
+	}
 	if utils.ReadLeg() != utils.LegBoth || s.linkBad() {
 		p.pressure.cleanSince = time.Time{}
 		return
@@ -129,11 +138,15 @@ func (s *Supervisor) balanceOnce(p *balancePolicy) {
 	status := &utils.BalanceStatus{
 		Supported: true, Enabled: true, RealityLanes: BalanceLanes - p.hy2Lanes, Hy2Lanes: p.hy2Lanes,
 		RealityHealthy: p.reality.healthy, Hy2Healthy: p.hy2.healthy,
-		LastCheckedAt:   time.Now(),
+		LastCheckedAt: time.Now(),
+		LastSampleAt:  p.sampledAt, SampleError: p.sampleError,
 		RealityDegraded: p.reality.healthy && p.reality.slow > 0, Hy2Degraded: p.hy2.healthy && p.hy2.slow > 0,
 		RealityLatencyMs: reality.delay.Milliseconds(), Hy2LatencyMs: hy2.delay.Milliseconds(),
 		Hy2DownMbps: BandwidthRungMbps(target), Hy2UpMbps: s.schedule.RungUp(BandwidthRungMbps(target)),
 		UDPPressureCapMbps: p.pressure.capDown, UDPCooldownUntil: p.pressure.coolUntil,
+	}
+	if !p.sampledAt.IsZero() {
+		status.AllocationMbps = append([]float64(nil), p.sampleRates[:]...)
 	}
 	if auxiliaryError != nil {
 		status.Error = "auxiliary route reconciliation pending: " + auxiliaryError.Error()

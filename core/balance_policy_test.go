@@ -31,8 +31,8 @@ func TestBalanceRecoveryRequiresConsecutiveCleanSamples(t *testing.T) {
 	}
 }
 
-// Quality/what: three consecutive errors withdraw a leg; recovery comes back to fixed split.
-func TestBalanceObserveFixedSplit(t *testing.T) {
+// Quality/what: three consecutive errors withdraw a leg; recovery comes back to REALITY baseline.
+func TestBalanceObserveHealthEligibility(t *testing.T) {
 	var p balancePolicy
 
 	// Both unqualified → 0 lanes (no healthy yet)
@@ -42,12 +42,12 @@ func TestBalanceObserveFixedSplit(t *testing.T) {
 		t.Fatal("unqualified legs should not get lanes yet")
 	}
 
-	// After balanceRecoverSamples → both healthy → fixed split
+	// After balanceRecoverSamples → both healthy → REALITY baseline
 	for i := 0; i < balanceRecoverSamples; i++ {
 		p.observe(cleanLeg, cleanLeg)
 	}
 	if p.hy2Lanes != DefaultHy2Lanes {
-		t.Fatalf("both healthy should give fixed split %d, got %d", DefaultHy2Lanes, p.hy2Lanes)
+		t.Fatalf("both healthy should give REALITY baseline %d, got %d", DefaultHy2Lanes, p.hy2Lanes)
 	}
 
 	// hy2 unhealthy → 0 lanes (3 consecutive errors)

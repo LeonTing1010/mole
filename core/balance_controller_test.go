@@ -56,8 +56,8 @@ func TestBalanceControllerQualifiesBothWithdrawsFailureAndRestoresSingleMode(t *
 	for i := 0; i < balanceRecoverSamples; i++ {
 		s.balanceOnce(&policy)
 	}
-	if !s.state.Balance.Enabled || s.state.Balance.Hy2Lanes < 1 {
-		t.Fatalf("dual mode did not ramp: %+v", s.state.Balance)
+	if !s.state.Balance.Enabled || s.state.Balance.Hy2Lanes != 0 {
+		t.Fatalf("adaptive mode did not start on REALITY: %+v", s.state.Balance)
 	}
 	broken = true
 	s.balanceOnce(&policy) // 1 broken → bad=1, still healthy
@@ -127,7 +127,7 @@ func TestBalanceRampsFromAppliedAllocationAfterAPIFailure(t *testing.T) {
 	}
 	reject.Store(false)
 	s.balanceOnce(&p)
-	// Both legs healthy → fixed split
+	// Both legs healthy → REALITY baseline
 	if s.state.Balance.Hy2Lanes != DefaultHy2Lanes {
 		t.Fatalf("recovery from API failure: expected %d lanes, got %d", DefaultHy2Lanes, s.state.Balance.Hy2Lanes)
 	}
