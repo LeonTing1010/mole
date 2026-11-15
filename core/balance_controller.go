@@ -142,21 +142,18 @@ func (s *Supervisor) balanceOnce(p *balancePolicy) {
 	}
 	p.observe(reality, hy2)
 	s.sampleAllocation(p, time.Now(), false)
-	// The health observation sets eligibility; a successful sweep may update preference.
-	if p.reality.healthy && p.hy2.healthy {
-		p.setLanes(p.search.preferred)
-	}
 	if utils.ReadLeg() != utils.LegBoth || s.linkBad() {
 		p.pressure.cleanSince = time.Time{}
 		return
 	}
-	changed, err := ApplyBalancedLanes(s.clash, p.hy2Lanes)
+	lanes := p.lanes()
+	changed, err := ApplyBalancedLanes(s.clash, lanes)
 	if err != nil {
 		s.balanceError(p, err)
 		return
 	}
 	main := RealityLegTag
-	if p.hy2Lanes >= BalanceLanes/2 {
+	if lanes >= BalanceLanes/2 {
 		main = target
 	}
 	var auxiliaryError error
@@ -173,7 +170,7 @@ func (s *Supervisor) balanceOnce(p *balancePolicy) {
 		s.sampleAllocation(p, time.Now(), true)
 	}
 	status := &utils.BalanceStatus{
-		Supported: true, Enabled: true, Sampling: p.sampleJob != nil, RealityLanes: BalanceLanes - p.hy2Lanes, Hy2Lanes: p.hy2Lanes,
+		Supported: true, Enabled: true, Sampling: p.sampleJob != nil, RealityLanes: BalanceLanes - lanes, Hy2Lanes: lanes,
 		RealityHealthy: p.reality.healthy, Hy2Healthy: p.hy2.healthy,
 		LastCheckedAt: time.Now(),
 		LastSampleAt:  p.timeLastSample, SampleError: p.sampleError,

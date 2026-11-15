@@ -38,7 +38,7 @@ func TestBalanceObserveHealthEligibility(t *testing.T) {
 	// Both unqualified → 0 lanes (no healthy yet)
 	p.observe(cleanLeg, cleanLeg)
 	p.observe(cleanLeg, cleanLeg)
-	if p.hy2Lanes != 0 {
+	if p.lanes() != 0 {
 		t.Fatal("unqualified legs should not get lanes yet")
 	}
 
@@ -46,15 +46,15 @@ func TestBalanceObserveHealthEligibility(t *testing.T) {
 	for i := 0; i < balanceRecoverSamples; i++ {
 		p.observe(cleanLeg, cleanLeg)
 	}
-	if p.hy2Lanes != DefaultHy2Lanes {
-		t.Fatalf("both healthy should give REALITY baseline %d, got %d", DefaultHy2Lanes, p.hy2Lanes)
+	if p.lanes() != DefaultHy2Lanes {
+		t.Fatalf("both healthy should give REALITY baseline %d, got %d", DefaultHy2Lanes, p.lanes())
 	}
 
 	// hy2 unhealthy → 0 lanes (3 consecutive errors)
 	p.observe(cleanLeg, brokenLeg)
 	p.observe(cleanLeg, brokenLeg)
 	p.observe(cleanLeg, brokenLeg)
-	if p.hy2Lanes != 0 {
+	if p.lanes() != 0 {
 		t.Fatal("broken hy2 should get 0 lanes after 3 errors")
 	}
 
@@ -66,7 +66,7 @@ func TestBalanceObserveHealthEligibility(t *testing.T) {
 	p2.observe(brokenLeg, cleanLeg)
 	p2.observe(brokenLeg, cleanLeg)
 	p2.observe(brokenLeg, cleanLeg)
-	if p2.hy2Lanes != BalanceLanes {
+	if p2.lanes() != BalanceLanes {
 		t.Fatal("broken reality should give all lanes to hy2")
 	}
 
@@ -78,7 +78,7 @@ func TestBalanceObserveHealthEligibility(t *testing.T) {
 	p3.observe(brokenLeg, brokenLeg)
 	p3.observe(brokenLeg, brokenLeg)
 	p3.observe(brokenLeg, brokenLeg)
-	if p3.hy2Lanes != 0 {
+	if p3.lanes() != 0 {
 		t.Fatal("both broken should pin all lanes to reality")
 	}
 }

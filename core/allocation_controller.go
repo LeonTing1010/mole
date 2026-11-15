@@ -59,10 +59,7 @@ func (s *Supervisor) stableAllocation(env allocationEnvironment, current int) er
 		return fmt.Errorf("rate, rung, gateway or UDP pressure changed")
 	}
 	for lane := 0; lane < BalanceLanes; lane++ {
-		want := RealityLegTag
-		if (lane+1)*current/BalanceLanes > lane*current/BalanceLanes {
-			want = Hy2ProbeSelectorTag
-		}
+		want := balanceLaneTarget(lane, current)
 		got, e := s.clash.Selection(BalanceLaneTag(lane))
 		if e != nil || got != want {
 			return fmt.Errorf("allocation selectors changed or are not reconciled")

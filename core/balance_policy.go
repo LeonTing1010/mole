@@ -20,6 +20,17 @@ const (
 
 func BalanceLaneTag(lane int) string { return fmt.Sprintf("flow-%d", lane) }
 
+// balanceLaneTarget is shared by live selectors and synthetic measurements.
+func balanceLaneTarget(lane, hy2Lanes int) string {
+	if hy2Lanes < 0 {
+		return ProxySelectorTag
+	}
+	if (lane+1)*hy2Lanes/BalanceLanes > lane*hy2Lanes/BalanceLanes {
+		return Hy2ProbeSelectorTag
+	}
+	return RealityLegTag
+}
+
 // Repeated small port bands avoid putting a whole ephemeral-port range onto
 // one leg. Source-port matching is fixed for the life of a connection.
 func BalancePortRanges(lane int) []string {
@@ -28,19 +39,7 @@ func BalancePortRanges(lane int) []string {
 		return ranges
 	}
 	for low := lane * balancePortBlock; low <= 65535; low += BalanceLanes * balancePortBlock {
-		high := low + balancePortBlock - 1
-		if low == 0 {
-			low = 1
-			high = balancePortBlock - 1
-		}
-		if high > 65535 {
-			high = 65535
-		}
-		ranges = append(ranges, fmt.Sprintf("%d:%d", low, high))
-		// Restore the block origin after excluding source port zero.
-		if low == 1 {
-			low = 0
-		}
+		ranges = append(ranges, fmt.Sprintf("%d:%d", max(1, low), min(65535, low+balancePortBlock-1)))
 	}
 	return ranges
 }
@@ -92,7 +91,6 @@ func (l *balanceLeg) observe(m legMeasurement) {
 
 type balancePolicy struct {
 	reality, hy2                  balanceLeg
-	hy2Lanes                      int
 	pressure                      udpPressure
 	search                        allocationSearch
 	sampleAttempt, timeLastSample time.Time
@@ -108,24 +106,21 @@ type balancePolicy struct {
 func (p *balancePolicy) observe(reality, hy2 legMeasurement) {
 	p.reality.observe(reality)
 	p.hy2.observe(hy2)
-	switch {
-	case !p.hy2.healthy:
-		// hy2 down (includes both-down): pin everything to REALITY. TCP
-		// retransmits ride out the loss that kills UDP, and keeping the
-		// last allocation would pin all new connections to a dead leg.
+	if !p.reality.healthy || !p.hy2.healthy {
 		p.search = allocationSearch{}
-		p.setLanes(0)
-	case !p.reality.healthy:
-		p.search = allocationSearch{}
-		p.setLanes(BalanceLanes)
-	default:
-		// Health defines eligibility; measured performance chooses within it.
-		p.setLanes(p.search.preferred)
 	}
 }
 
-func (p *balancePolicy) setLanes(n int) {
-	p.hy2Lanes = n
+// Health constrains the confirmed preference. Both-down retains REALITY so
+// new connections never remain pinned to a failed UDP leg.
+func (p *balancePolicy) lanes() int {
+	if !p.hy2.healthy {
+		return 0
+	}
+	if !p.reality.healthy {
+		return BalanceLanes
+	}
+	return p.search.preferred
 }
 
 func (p *balancePolicy) cancelAllocation() {

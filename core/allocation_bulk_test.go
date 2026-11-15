@@ -1,12 +1,14 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Quality/what: every share must use the same total load and one elapsed window.
@@ -19,13 +21,13 @@ func TestAllocationBulkUsesEqualBudgetAcrossEndpointsAndMixtures(t *testing.T) {
 			mu.Lock()
 			counts[r.URL.Host]++
 			mu.Unlock()
-			if r.URL.Query().Get("bytes") != "1024" {
+			if r.URL.Query().Get("bytes") != "8192" {
 				return nil, fmt.Errorf("unequal payload")
 			}
-			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(strings.Repeat("x", 1024)))}, nil
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(&pacedBody{first: strings.NewReader(strings.Repeat("a", 4096)), second: strings.NewReader(strings.Repeat("b", 4096))})}, nil
 		})}
-		rate, err := allocationBulk(client, share, 1024)
-		if err != nil || rate <= 0 {
+		obs, err := measureAllocationURLs(context.Background(), client, allocationURLs(share), 8192, 30*time.Millisecond, 20*time.Millisecond)
+		if err != nil || obs.Mbps <= 0 || obs.TotalBytes != BalanceLanes*8192 {
 			t.Fatalf("share %d: %v", share, err)
 		}
 		if counts["127.0.0.1:8099"] != share || counts["127.0.0.1:8098"] != BalanceLanes-share {
@@ -43,12 +45,7 @@ func TestAllocationBulkRejectsIncompleteMixture(t *testing.T) {
 		}
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(strings.Repeat("x", size)))}, nil
 	})}
-	if rate, err := allocationBulk(client, 2, 1024); err == nil || rate != 0 {
-		t.Fatalf("partial mixed result qualified: %v %v", rate, err)
-	}
-	for _, share := range []int{-1, 9} {
-		if _, err := allocationBulk(client, share, 1024); err == nil {
-			t.Fatal("invalid share accepted")
-		}
+	if obs, err := measureAllocationURLs(context.Background(), client, allocationURLs(2), 1024, 0, time.Millisecond); err == nil || obs.Mbps != 0 {
+		t.Fatalf("partial mixed result qualified: %v %v", obs, err)
 	}
 }

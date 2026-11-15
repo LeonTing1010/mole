@@ -10,12 +10,7 @@ func ApplyBalancedLanes(c *ClashClient, hy2Lanes int) (bool, error) {
 	}
 	changed := false
 	for lane := 0; lane < BalanceLanes; lane++ {
-		target := RealityLegTag
-		if hy2Lanes < 0 {
-			target = ProxySelectorTag
-		} else if (lane+1)*hy2Lanes/BalanceLanes > lane*hy2Lanes/BalanceLanes {
-			target = Hy2ProbeSelectorTag
-		}
+		target := balanceLaneTarget(lane, hy2Lanes)
 		tag := BalanceLaneTag(lane)
 		live, err := c.Selection(tag)
 		if err != nil {

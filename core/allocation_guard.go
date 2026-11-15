@@ -197,7 +197,7 @@ func allocationFlowRepresentative(counts [BalanceLanes]int, current, candidate i
 		}
 		udp := 0
 		for lane, n := range counts {
-			if (lane+1)*share/BalanceLanes > lane*share/BalanceLanes {
+			if balanceLaneTarget(lane, share) == Hy2ProbeSelectorTag {
 				udp += n
 			}
 		}

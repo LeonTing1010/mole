@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -34,7 +35,7 @@ func TestBalanceAllocationCanUseBothAndReturnToThePrimarySelector(t *testing.T) 
 	}))
 	defer api.Close()
 	c := NewClashClient(api.Listener.Addr().String())
-	for _, share := range []int{4, 0, 8, -1} {
+	for _, share := range []int{-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, -1} {
 		if _, err := ApplyBalancedLanes(c, share); err != nil {
 			t.Fatal(err)
 		}
@@ -49,6 +50,15 @@ func TestBalanceAllocationCanUseBothAndReturnToThePrimarySelector(t *testing.T) 
 			}
 			if share == -1 && now != ProxySelectorTag {
 				t.Fatal("manual mode still bypasses the main selector")
+			}
+			if share >= 0 {
+				port := BrutalKeeperPort
+				if now == Hy2ProbeSelectorTag {
+					port = LegGatePort
+				}
+				if allocationURLs(share)[i] != fmt.Sprintf("http://127.0.0.1:%d", port) {
+					t.Fatalf("share %d lane %d: keeper and applied route disagree", share, i)
+				}
 			}
 		}
 		if share >= 0 && hy2 != share {

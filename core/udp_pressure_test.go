@@ -78,7 +78,7 @@ func TestUDPPressureControllerDrainsNewFlowsAndReportsActualRung(t *testing.T) {
 			return cleanLeg.delay, nil
 		},
 	}
-	p := balancePolicy{reality: balanceLeg{healthy: true}, hy2: balanceLeg{healthy: true}, hy2Lanes: BalanceLanes}
+	p := balancePolicy{reality: balanceLeg{healthy: true}, hy2: balanceLeg{healthy: true}, search: allocationSearch{preferred: BalanceLanes}}
 	for i := 0; i < 4; i++ {
 		s.balanceOnce(&p)
 	}
@@ -97,7 +97,7 @@ func TestUDPPressureControllerDrainsNewFlowsAndReportsActualRung(t *testing.T) {
 	}
 	// The guard must not remove the only working transport.
 	p.pressure.capDown = 1
-	p.reality.healthy, p.hy2.healthy, p.hy2Lanes = false, true, BalanceLanes
+	p.reality.healthy, p.hy2.healthy = false, true
 	s.legProbeFn = func(port, _ int) (time.Duration, error) {
 		if port == BrutalKeeperPort {
 			return brokenLeg.delay, brokenLeg.err

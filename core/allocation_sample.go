@@ -12,6 +12,18 @@ import (
 
 const allocationBucket = 10 * time.Millisecond
 
+func allocationURLs(hy2Lanes int) []string {
+	urls := make([]string, BalanceLanes)
+	for lane := range urls {
+		port := BrutalKeeperPort
+		if balanceLaneTarget(lane, hy2Lanes) == Hy2ProbeSelectorTag {
+			port = LegGatePort
+		}
+		urls[lane] = fmt.Sprintf("http://127.0.0.1:%d", port)
+	}
+	return urls
+}
+
 type allocationByteBucket struct {
 	start time.Duration
 	bytes int64
