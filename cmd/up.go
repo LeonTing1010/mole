@@ -130,6 +130,18 @@ func runParent() error {
 		}
 	}
 
+	// A lid-close destroy recorded as failed may have succeeded on the account
+	// anyway — only its answer was lost. On 2026-11-17 that produced a morning
+	// of dialling an address with no host behind it: every config file was
+	// right, the tunnel came up, and nothing ever answered. Settle the debt
+	// before building a tunnel on top of it. No debt, no extra round trip.
+	if debt := utils.ReadLidDebt(); debt != nil && debt.State != utils.LidDestroyFired {
+		if gone, ok := verifyActiveServerGone(); ok && gone {
+			_ = utils.ClearLidDebt()
+			return fmt.Errorf("%s is gone on the account — the lid-close destroy logged as failed had in fact succeeded, and the stale local entry has been removed.\n    Deploy a fresh node with `mole server deploy`, then `mole up`", debt.Server)
+		}
+	}
+
 	// Destroy-on-lid-close fires from inside the daemon, which sudo will have
 	// stripped the environment from, so the key has to be stashed here — the
 	// same pre-sudo window, and for the same reason, as the recoveries above.
@@ -390,6 +402,9 @@ func runDaemon() error {
 		// nothing, and asking to destroy it again used to be filed as a failed
 		// destroy — a debt for a server that no longer existed.
 		OnIdleDestroy: destroyActiveServerWithin,
+		// A lid-close destroy whose answer was lost leaves the local record
+		// claiming the server is alive. Ask the account rather than believe it.
+		VerifyServerGone: verifyActiveServerGone,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

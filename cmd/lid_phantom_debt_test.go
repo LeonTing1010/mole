@@ -29,6 +29,55 @@ func withAccount(t *testing.T, instances []serverInstance, err error) {
 	t.Cleanup(func() { listInstancesForDestroy = prev })
 }
 
+// The 2026-11-17 case, from the side that has to clean up: the destroy was
+// filed as failed, but the account holds no instance at all. The entry has to
+// go, or the next `mole up` dials an address with nothing behind it.
+func TestVerifyActiveServerGoneDropsTheStaleEntry(t *testing.T) {
+	withServers(t, Server{Name: "icn-1794841628", Active: true, InstanceID: "4be79b36"})
+	withAccount(t, nil, nil)
+
+	gone, ok := verifyActiveServerGone()
+	if !gone || !ok {
+		t.Fatalf("verifyActiveServerGone = (%v, %v), want (true, true)", gone, ok)
+	}
+	servers, err := loadServers()
+	if err != nil {
+		t.Fatalf("read servers.json: %v", err)
+	}
+	if len(servers) != 0 {
+		t.Errorf("%d entr(ies) left, want 0 — a stale entry is what makes the next up dial a dead address", len(servers))
+	}
+}
+
+// The case that must not delete anything: the instance is still on the account.
+func TestVerifyActiveServerGoneKeepsALiveEntry(t *testing.T) {
+	withServers(t, Server{Name: "icn-1794872224", Active: true, InstanceID: "4be79b36"})
+	withAccount(t, []serverInstance{{ID: "4be79b36", Label: "icn-1794872224"}}, nil)
+
+	gone, ok := verifyActiveServerGone()
+	if gone || !ok {
+		t.Fatalf("verifyActiveServerGone = (%v, %v), want (false, true)", gone, ok)
+	}
+	if servers, _ := loadServers(); len(servers) != 1 {
+		t.Errorf("%d entr(ies) left, want 1 — a live server must keep its entry", len(servers))
+	}
+}
+
+// An account that cannot be read is not evidence either way, and above all must
+// not cost the local entry.
+func TestVerifyActiveServerGoneUnreadableAccountChangesNothing(t *testing.T) {
+	withServers(t, Server{Name: "icn-1794872224", Active: true, InstanceID: "4be79b36"})
+	withAccount(t, nil, errors.New("context deadline exceeded"))
+
+	gone, ok := verifyActiveServerGone()
+	if gone || ok {
+		t.Fatalf("verifyActiveServerGone = (%v, %v), want (false, false)", gone, ok)
+	}
+	if servers, _ := loadServers(); len(servers) != 1 {
+		t.Errorf("%d entr(ies) left, want 1 — an unreadable account must change nothing", len(servers))
+	}
+}
+
 // The phantom debt of 2026-08-15, from the side that invented it. A lid close at
 // 12:45 destroyed the server and emptied servers.json; the lid closed again at
 // 14:02 and the hook — closed over the name from `mole up` — returned "no

@@ -973,6 +973,38 @@ func destroyServerWithin(name string, forceLocal bool, budget time.Duration) err
 	return nil
 }
 
+// verifyActiveServerGone settles a lid-close destroy whose answer never
+// arrived. The daemon calls it when the lid reopens with a debt still owed —
+// exactly the moment it used to assume the server had survived. Only the
+// provider can say, and an account that cannot be read answers ok=false and
+// changes nothing.
+//
+// A confirmed-gone server loses its local entry too. Leaving it would let the
+// next `mole up` dial an address with nothing behind it, which is what the
+// 2026-11-17 outage looked like from the chair: config fine, tunnel up, no
+// host at the other end.
+func verifyActiveServerGone() (gone, ok bool) {
+	servers, err := loadServers()
+	if err != nil {
+		return false, false
+	}
+	for _, s := range servers {
+		if !s.Active {
+			continue
+		}
+		gone, ok = instanceGoneRemotely(s.InstanceID)
+		if ok && gone {
+			if err := removeRecordedServer(s.InstanceID, s.Name); err != nil {
+				fmt.Printf("⚠️  %s is gone on the account, but the local entry could not be removed: %v\n", s.Name, err)
+			} else {
+				fmt.Printf("ℹ️  %s is gone on the account — removing the stale local entry\n", s.Name)
+			}
+		}
+		return gone, ok
+	}
+	return false, false
+}
+
 // destroyActiveServerWithin destroys whichever server is active at the moment of
 // the call. The daemon's destroy hook goes through here rather than closing over
 // the name it started with, because between `mole up` and a lid close the answer

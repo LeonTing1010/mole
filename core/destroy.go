@@ -327,9 +327,37 @@ func (s *Supervisor) reconcileLidDebt(why string) {
 	}
 	defer s.lidMu.Unlock()
 	if s.lidIsClosed() == 0 {
+		unused := wallSince(since).Round(time.Minute)
+		// A "failed" destroy says nothing about whether the server exists. The
+		// DELETE may have been carried out with only its answer lost — on
+		// 2026-11-17 that is exactly what happened: the 04:11 lid close was
+		// logged as a failed destroy, Vultr had in fact deleted the instance,
+		// and this branch then asserted "still running" without asking anyone,
+		// so the daemon spent the morning dialling an address with nothing
+		// behind it. Settle it against the provider before believing either
+		// story.
+		if s.verifyServerGone != nil {
+			if wallSince(s.lastLidAttempt) < wakeRetryFloor {
+				return
+			}
+			s.lastLidAttempt = time.Now()
+			gone, ok := s.verifyServerGone()
+			switch {
+			case !ok:
+				// An unreadable account is not evidence of life. Keep the debt
+				// so a later tick asks again, instead of filing a confident
+				// wrong answer that nothing will ever correct.
+				log.Printf("destroy-on-lid-close: the lid is open again, but the account could not be read to settle the destroy owed since %s — will recheck", since.Format("15:04"))
+				return
+			case gone:
+				log.Printf("destroy-on-lid-close: the destroy owed since %s had in fact succeeded on the account — no instance is left, so nothing is billing", since.Format("15:04"))
+				s.markLidSettled("server confirmed gone on the account at " + time.Now().Format("2006-01-02 15:04") + " — an earlier attempt was logged as failed")
+				_ = utils.WriteState(s.snapshot())
+				return
+			}
+		}
 		// Not an error, and said plainly rather than apologetically: the server
 		// is fine, it just cost money nobody got any use out of.
-		unused := wallSince(since).Round(time.Minute)
 		log.Printf("destroy-on-lid-close: the lid is open again — giving up on the destroy owed since %s "+
 			"(%d attempts; the server billed %s unused and is still running)",
 			since.Format("15:04"), attempts, unused)

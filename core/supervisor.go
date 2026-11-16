@@ -52,6 +52,13 @@ type Supervisor struct {
 	// Destroy-on-lid-close. Inert unless both are set; see runSleepDestroy.
 	destroyOnLidClose bool
 	onIdleDestroy     func(budget time.Duration) error
+	// verifyServerGone asks the provider whether the server still exists, and
+	// reports (gone, ok). ok is false when the account could not be read, which
+	// is not evidence of anything. It exists because a DELETE whose answer was
+	// lost is indistinguishable from a DELETE that never arrived, and only the
+	// provider can tell the two apart. Nil keeps the old behaviour for callers
+	// that have no way to ask.
+	verifyServerGone func() (gone, ok bool)
 	// lidDryRun logs the lid close and destroys nothing, so the clamshell
 	// detection can be proven on a given Mac without paying a redeploy.
 	lidDryRun bool
@@ -208,6 +215,12 @@ type SupervisorOpts struct {
 	// a retry on a dark wake is 2 seconds of borrowed time. See lidCloseBudget
 	// and retryBudget.
 	OnIdleDestroy func(budget time.Duration) error
+	// VerifyServerGone settles an ambiguous destroy against the provider. It
+	// returns (gone, ok); ok=false means the account could not be read, which
+	// must never be read as "gone". Called only when a lid-close destroy was
+	// recorded as failed and the lid has since reopened — the point where the
+	// daemon would otherwise assert "still running" on no evidence at all.
+	VerifyServerGone func() (gone, ok bool)
 	// LidCloseDryRun arms the watcher but destroys nothing: a lid close is
 	// logged and the daemon keeps running. The clamshell test in
 	// sleepwatch_darwin.go reads properties whose placement varies by model, so
@@ -265,6 +278,7 @@ func NewSupervisor(configPath, serverName string, opts SupervisorOpts) *Supervis
 		realityAddr:       opts.RealityAddr,
 		destroyOnLidClose: opts.DestroyOnLidClose,
 		onIdleDestroy:     opts.OnIdleDestroy,
+		verifyServerGone:  opts.VerifyServerGone,
 		onRulesChanged:    opts.OnRulesChanged,
 		directDomains:     opts.DirectDomains,
 		lidDryRun:         opts.LidCloseDryRun,
