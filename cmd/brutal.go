@@ -70,14 +70,24 @@ systemctl enable --now mole-brutal-keeper >/dev/null 2>&1 || true
 systemctl restart mole-brutal-keeper || true
 cat > /usr/local/bin/mole-brutal-install << 'BRUTAL_INSTALL'
 #!/usr/bin/env bash
-export MOLE_INSTALL_DEADLINE=$(($(date +%%s)+300))
+export MOLE_INSTALL_DEADLINE=$(($(date +%%s)+420))
 %s
 mkdir -p /var/log/mole
 trap 'rc=$?; if [ "$rc" = 0 ]; then echo ready; else echo failed; fi > /var/log/mole/brutal.status' EXIT
 echo installing > /var/log/mole/brutal.status
-if command -v brutalctl >/dev/null 2>&1 && lsmod | grep -q '^brutal'; then exit 0; fi
-mole_run apt-get -qq update
-mole_run apt-get -qq -o DPkg::Lock::Timeout=30 install -y dkms "linux-headers-$(uname -r)" curl
+if command -v brutalctl >/dev/null 2>&1 && grep -q '^brutal ' /proc/modules; then exit 0; fi
+# This unit races cloud-init's own apt work on first boot. On 2026-11-16 a
+# plain "apt-get install" lost that race ("Unable to acquire the dpkg frontend
+# lock"), left dkms and the headers out, and the REALITY leg silently stayed on
+# BBR for a day. Wait for the lock the same way the sing-box installer does.
+mole_wait_dpkg
+mole_run apt-get -qq update || true
+for attempt in 1 2 3; do
+  mole_wait_dpkg
+  mole_configure_pending
+  if mole_run apt-get -qq -o DPkg::Lock::Timeout=60 install -y dkms "linux-headers-$(uname -r)" curl; then break; fi
+  mole_run sleep 5
+done
 installer=$(mktemp)
 archive=$(mktemp --suffix=.tar.gz)
 # Pinned source behind tcp.hy2.sh; both script and module archive are verified.
@@ -87,7 +97,10 @@ mole_run bash "$installer" --local "$archive"
 rm -f "$installer" "$archive"
 modprobe brutal
 command -v brutalctl >/dev/null
-lsmod | grep -q '^brutal'
+# Not "lsmod | grep -q": under "set -o pipefail" the -q exit closes the pipe,
+# lsmod dies of SIGPIPE, and the check reads false on a node where the module
+# is in fact loaded — so every run reinstalled and the rmmod step failed.
+grep -q '^brutal ' /proc/modules
 BRUTAL_INSTALL
 chmod 755 /usr/local/bin/mole-brutal-install
 mkdir -p /var/log/mole
@@ -98,7 +111,7 @@ After=network-online.target sing-box.service
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/mole-brutal-install
-TimeoutStartSec=305
+TimeoutStartSec=425
 StandardOutput=append:/var/log/mole/brutal-install.log
 StandardError=append:/var/log/mole/brutal-install.log
 ExecStopPost=/bin/sh -c 'test "$SERVICE_RESULT" = success || echo failed > /var/log/mole/brutal.status'
