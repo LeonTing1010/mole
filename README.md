@@ -135,6 +135,20 @@ mole leg reality     # pin to REALITY only
 mole leg hy2         # pin to hy2 only
 ```
 
+For download-priority Hysteria2, run `mole ceiling tune` once. On a
+dual-transport node, tuning runs when `mole leg hy2` is selected. At each
+`mole up`, Mole starts from the saved rung or the last confirmed result for
+that node. It then compares up to two nearby rungs using the node's keeper,
+without switching foreground traffic during the test. A candidate needs two
+complete download samples that each beat the starting rung by more than 20%.
+The startup comparison transfers at most 24 MiB. A failed or inconclusive
+comparison keeps the starting rung.
+
+This tunes client-to-node downloads over Hysteria2. Upload, Internet egress,
+and the choice of transport are outside the comparison. A numeric
+`mole ceiling` command returns to a fixed rung. `mole ceiling auto` returns to
+the time-of-day schedule.
+
 Automatic mode uses one transport for new connections: REALITY while it is
 healthy, Hysteria2 after confirmed primary failure, and REALITY again after
 confirmed recovery. Manual protocol pins override automatic selection. Local

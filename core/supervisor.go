@@ -1516,9 +1516,10 @@ func (s *Supervisor) resetKeepaliveCount() {
 // QUIC session) so the first connection after the switch is instant, not a fresh
 // handshake.
 //
-// Two inputs decide the rung, in priority order:
+// The scheduler chooses the rung in this order:
 //  1. a manual pin from `mole ceiling <n>` (~/.mole/ceiling), which wins outright
-//  2. otherwise the local clock's peak/off-peak profile
+//  2. a cached or newly measured rung in startup tune mode
+//  3. otherwise the local clock's peak/off-peak profile
 //
 // The pin is re-read every tick rather than latched at startup, so `mole ceiling`
 // takes effect on a running daemon without signalling it. The CLI also fires its
@@ -1536,6 +1537,16 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 	warnedPin := 0                         // last bad pin we complained about, so we complain once per value
 	backoff := 0                           // rungs currently stepped down below the clock/pin target
 	var heal healState
+	startupSetting := utils.ReadCeilingSetting()
+	server := s.state.Server
+	var startupRung int
+	var startupTick <-chan time.Time
+	if startupSetting.Tune {
+		startupRung = s.schedule.StartupTuneBaseline(startupSetting.Down, utils.ReadTunedCeiling(server, startupSetting.Down), time.Now())
+		timer := time.NewTimer(startupTuneDelay)
+		defer timer.Stop()
+		startupTick = timer.C
+	}
 
 	// Client-side rate governor (opt-in). When enabled it owns the declared
 	// REALITY rate, seeded from the configured value; otherwise the configured
@@ -1558,8 +1569,13 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 		// A pin only counts if the config actually carries that rung — otherwise
 		// we would select a member sing-box has never heard of and the call would
 		// fail every tick. An out-of-range pin degrades to clock control.
-		pin := utils.ReadCeiling()
-		if pin > 0 {
+		setting := utils.ReadCeilingSetting()
+		leg := utils.ReadLeg()
+		pin := setting.Down
+		if startupRung > 0 && setting == startupSetting && s.startupTuneActive(leg) {
+			member, name, down = BandwidthRungTag(startupRung), "startup-tune", startupRung
+			pin = startupRung
+		} else if pin > 0 {
 			if s.schedule.HasRung(pin) {
 				member, name, down = BandwidthRungTag(pin), "pinned", pin
 				warnedPin = 0
@@ -1621,6 +1637,9 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 		// in case the keeper or the node restarted — a GET through a named
 		// outbound is what the delay probe already is, one fresh connection.
 		tcpRate := down
+		if setting.Tune && s.startupTuneActive(leg) && s.hasReality {
+			tcpRate = s.schedule.StartupTuneBaseline(setting.Down, 0, now)
+		}
 		if govRate > 0 {
 			tcpRate = govRate
 		} else if s.realityRateMbps > 0 {
@@ -1646,7 +1665,7 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 			if _, err := s.clash.TestDelay(member, s.probeURL, s.probeTimeMs); err != nil {
 				log.Printf("bandwidth scheduler: pre-warm %s failed: %v", member, err)
 			}
-			if generation != s.probeGeneration.Load() {
+			if ctx.Err() != nil || generation != s.probeGeneration.Load() || utils.ReadCeilingSetting() != setting || utils.ReadLeg() != leg {
 				return
 			}
 			if err := s.clash.SelectProxy(ProxySelectorTag, member); err != nil {
@@ -1719,6 +1738,29 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 			return
 		case <-s.stopCh:
 			return
+		case <-startupTick:
+			startupTick = nil
+			if !s.startupTuneActive(utils.ReadLeg()) {
+				log.Printf("startup ceiling: Hysteria2 does not own the active transport; skipping")
+				continue
+			}
+			winner := s.tuneStartupCeiling(ctx, startupSetting, startupRung)
+			if winner == startupRung {
+				log.Printf("startup ceiling: keeping ↓%d Mbps", startupRung)
+				continue
+			}
+			previous := startupRung
+			startupRung = winner
+			apply()
+			member, err := s.clash.Selection(ProxySelectorTag)
+			if err != nil || member != BandwidthRungTag(winner) || utils.ReadCeilingSetting() != startupSetting || !s.startupTuneActive(utils.ReadLeg()) {
+				startupRung = previous
+				continue
+			}
+			log.Printf("startup ceiling: selected ↓%d Mbps (was ↓%d)", winner, previous)
+			if err := utils.WriteTunedCeiling(server, startupSetting.Down, winner); err != nil {
+				log.Printf("startup ceiling: save measured rung: %v", err)
+			}
 		case <-t.C:
 			retune()
 			apply()

@@ -12,10 +12,11 @@ import (
 )
 
 var ceilingCmd = &cobra.Command{
-	Use:   "ceiling [mbps|auto]",
-	Short: "Pin the Brutal down-ceiling without reconnecting",
+	Use:   "ceiling [mbps|auto|tune]",
+	Short: "Set the Hysteria2 bandwidth mode",
 	Long: `Pin the hysteria2 Brutal ceiling to one of the ladder's rungs, or hand control
-back to the clock with "auto".
+back to the clock with "auto". "tune" uses the current ceiling as the starting
+point for a one-time download comparison on each startup in Hysteria2 mode.
 
 The switch is a single Clash-API call against a pre-built outbound, so the TUN,
 DNS and in-flight connections are untouched — no reconnect, no dropped packets.
@@ -43,7 +44,7 @@ func runCeiling(_ *cobra.Command, args []string) error {
 	}
 
 	if len(args) == 0 {
-		printCeiling(sched, rungs)
+		printCeiling(srv, sched, rungs)
 		if srv.RealityDownMbps > 0 {
 			fmt.Printf("REALITY TCP Brutal: %d Mbps (independent of the hy2 ladder)\n", srv.RealityDownMbps)
 		}
@@ -53,13 +54,24 @@ func runCeiling(_ *cobra.Command, args []string) error {
 	// Resolve the request to a target rung before touching anything, so a typo
 	// leaves the pin and the live selector exactly as they were.
 	arg := strings.ToLower(strings.TrimSpace(args[0]))
+	if arg == "tune" {
+		seed := currentRung(srv)
+		if err := utils.WriteCeilingSetting(utils.CeilingSetting{Down: seed, Tune: true}); err != nil {
+			return fmt.Errorf("enable startup ceiling tuning: %w", err)
+		}
+		fmt.Printf("Startup Hysteria2 tuning enabled (seed: %d Mbps). Applies on the next mole up.\n", seed)
+		if srv.StandbyURI() != "" && utils.ReadLeg() != utils.LegHy2 {
+			fmt.Println("On dual-transport nodes, select \"mole leg hy2\" to tune Hysteria2.")
+		}
+		return nil
+	}
 	var target int
 	if arg == "auto" {
 		_, _, target = sched.Profile(time.Now())
 	} else {
 		n, err := strconv.Atoi(arg)
 		if err != nil {
-			return fmt.Errorf("expected an Mbps number or \"auto\", got %q", args[0])
+			return fmt.Errorf("expected an Mbps number, \"auto\" or \"tune\", got %q", args[0])
 		}
 		if !sched.HasRung(n) {
 			return fmt.Errorf("no rung at %d Mbps — this config has %s", n, formatRungs(rungs))
@@ -119,9 +131,13 @@ func runCeiling(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func printCeiling(sched core.BandwidthSchedule, rungs []int) {
+func printCeiling(srv *Server, sched core.BandwidthSchedule, rungs []int) {
 	name, up, down := sched.Profile(time.Now())
-	if pin := utils.ReadCeiling(); pin > 0 {
+	setting := utils.ReadCeilingSetting()
+	if setting.Tune {
+		baseline := sched.StartupTuneBaseline(setting.Down, utils.ReadTunedCeiling(srv.Name, setting.Down), time.Now())
+		fmt.Printf("Ceiling: startup tuning, seed %d Mbps; starting rung %d Mbps\n", setting.Down, baseline)
+	} else if pin := setting.Down; pin > 0 {
 		state := "pinned"
 		if !sched.HasRung(pin) {
 			state = "pinned but NOT in this config — the clock is in control"
@@ -132,6 +148,7 @@ func printCeiling(sched core.BandwidthSchedule, rungs []int) {
 	}
 	fmt.Printf("Rungs:   %s\n", formatRungs(rungs))
 	fmt.Println("         mole ceiling <mbps>   pin one")
+	fmt.Println("         mole ceiling tune     benchmark at each startup")
 	fmt.Println("         mole ceiling auto     back to the clock")
 }
 

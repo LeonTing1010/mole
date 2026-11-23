@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,19 +25,27 @@ func BulkConcurrent(baseURL string, n, bytesPerStream int) (float64, error) {
 }
 
 func bulkConcurrentWithClient(client *http.Client, baseURL string, n, bytesPerStream int) (float64, error) {
+	return bulkConcurrent(context.Background(), client, baseURL, n, bytesPerStream)
+}
+
+func bulkConcurrent(ctx context.Context, client *http.Client, baseURL string, n, bytesPerStream int) (float64, error) {
 	if n <= 0 || bytesPerStream <= 0 {
 		return 0, fmt.Errorf("stream count and payload size must be positive")
 	}
 
 	var wg sync.WaitGroup
 	var errs int32
-	wg.Add(n)
 	bulkURL := fmt.Sprintf("%s/bulk?bytes=%d", baseURL, bytesPerStream)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, bulkURL, nil)
+	if err != nil {
+		return 0, err
+	}
+	wg.Add(n)
 	start := time.Now()
 	for range n {
 		go func() {
 			defer wg.Done()
-			resp, err := client.Get(bulkURL)
+			resp, err := client.Do(req.Clone(ctx))
 			if err != nil {
 				atomic.AddInt32(&errs, 1)
 				return

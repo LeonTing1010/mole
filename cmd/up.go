@@ -207,6 +207,10 @@ func runParent() error {
 		return fmt.Errorf("build config: %w", err)
 	}
 
+	if utils.ReadCeilingSetting().Tune {
+		cfg.EnableStartupTune()
+	}
+
 	// Validate config doesn't reference missing rule-sets
 	if err := config.Validate(cfg); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)

@@ -106,6 +106,30 @@ func BuildWithStandby(serverURI, standbyURI string) (*SingboxConfig, error) {
 	}, nil
 }
 
+// EnableStartupTune adds a local-only keeper route with its own selector.
+// The probe can choose any configured HY2 rung without changing the live proxy.
+func (cfg *SingboxConfig) EnableStartupTune() {
+	var members []string
+	for _, outbound := range cfg.Outbounds {
+		if outbound.Type == "hysteria2" && core.BandwidthRungMbps(outbound.Tag) > 0 {
+			members = append(members, outbound.Tag)
+		}
+	}
+	if len(members) < 2 {
+		return
+	}
+	cfg.Outbounds = append(cfg.Outbounds, OutboundConfig{
+		Type: "selector", Tag: core.StartupTuneSelector, Outbounds: members,
+	})
+	cfg.Inbounds = append(cfg.Inbounds, InboundConfig{
+		Type: "direct", Tag: core.StartupTuneInbound, Listen: "127.0.0.1", ListenPort: core.StartupTunePort,
+		OverrideAddress: "127.0.0.1", OverridePort: core.BrutalKeeperPort,
+	})
+	cfg.Route.Rules = append([]RouteRule{
+		{Inbound: []string{core.StartupTuneInbound}, Outbound: core.StartupTuneSelector},
+	}, cfg.Route.Rules...)
+}
+
 // hasRealityLeg reports whether a proxy outbound list carries the REALITY leg.
 func hasRealityLeg(outbounds []OutboundConfig) bool {
 	for _, o := range outbounds {

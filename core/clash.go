@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -69,9 +70,13 @@ func (c *ClashClient) TestDelay(proxy, testURL string, timeoutMs int) (int, erro
 // restarting sing-box: the TUN and existing connections are untouched, and new
 // connections route through the newly selected member.
 func (c *ClashClient) SelectProxy(selector, member string) error {
+	return c.selectProxy(context.Background(), selector, member)
+}
+
+func (c *ClashClient) selectProxy(ctx context.Context, selector, member string) error {
 	body, _ := json.Marshal(map[string]string{"name": member})
 	u := fmt.Sprintf("%s/proxies/%s", c.base, url.PathEscape(selector))
-	req, err := http.NewRequest(http.MethodPut, u, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
