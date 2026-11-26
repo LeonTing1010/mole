@@ -452,7 +452,7 @@ func runDaemon() error {
 				}
 				time.Sleep(500 * time.Millisecond)
 			}
-			bestGain, bestMbps, _, err := scanAndPickGain(kurl)
+			bestGain, bestMbps, _, _, err := scanAndPickGain(kurl)
 			if err != nil {
 				log.Printf("auto-tune skipped: %v", err)
 				return

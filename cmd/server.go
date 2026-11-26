@@ -487,7 +487,7 @@ var serverGainTuneCmd = &cobra.Command{
 	Use:     "tune [name]",
 	Aliases: []string{"gain-tune"},
 	Short:   "Scan Brutal cwnd_gain values on the active (or named) server and pin the best one",
-	Long:    "Scans cwnd_gain ∈ [10, 15, 20, 25] (tenths of window multiplier) by setting each via the keeper's /gain endpoint, waiting 2s for the rule to settle, running a 64MB bulk through the REALITY leg, and recording Mbps. The best gain is written to servers.json as brutal_gain and takes effect on the next `mole up` or supervisor re-push. Works on a live tunnel — no restart needed between steps.",
+	Long:    "Scans cwnd_gain ∈ [10, 15, 20, 25, 30] (tenths of window multiplier) by setting each via the keeper's /gain endpoint and running an 8×8MB (64MB) concurrent bulk through the REALITY leg. When the top two are within 15%, an alternating A/B (3 rounds each) confirms the winner; a tie within noise resolves to the smaller gain. The best gain is written to servers.json as brutal_gain, applied live immediately, and re-pushed by the supervisor. Works on a live tunnel — no restart needed between steps.",
 	Args:    cobra.MaximumNArgs(1),
 	RunE:    runGainTune,
 }
@@ -1343,23 +1343,36 @@ func bulkConcurrent(baseURL string, n, bytesPerStream int) (float64, error) {
 	return core.BulkConcurrent(baseURL, n, bytesPerStream)
 }
 
-// scanAndPickGain probes four Brutal cwnd_gain candidates on the live tunnel
-// and returns the highest-concurrent-throughput one. Runs 8 parallel GETs to
-// keeper's /bulk at each gain (matching mole's smux workload). It does
+// scanAndPickGain sweeps the Brutal cwnd_gain candidates on the live tunnel
+// and returns the highest-concurrent-throughput one, confirmed by an
+// alternating A/B between the top two when they are close. Runs 8 parallel
+// GETs to keeper's /bulk at each gain (matching mole's smux workload). It does
 // not write servers.json or touch any file; callers decide what to do with
-// the result. Returns the best gain, its Mbps, the full results map, and
+// the result. Returns the best gain, its Mbps, the full sweep results map,
+// the A/B median map (empty when A/B was skipped), and
 // an error only if ALL candidates failed (partial failure is reported as
 // best-effort: we pick the best of what we got).
 var gainTuneClient = &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
 
-func scanAndPickGain(keeperURL string) (int, float64, map[int]float64, error) {
-	candidates := []int{10, 15, 20, 25}
-	results := make(map[int]float64, len(candidates))
+// gainCandidates is the cwnd_gain sweep space (tenths of the window
+// multiplier). It extends past 25 because paths with a large BDP (high RTT,
+// e.g. nrt) can peak above the historical 2.5x ceiling; the alternating A/B
+// confirmation below guards against single-sample noise flipping the top of
+// the sweep.
+var gainCandidates = []int{10, 15, 20, 25, 30}
 
-	const streams = 8
-	const bytesPerStream = 8 << 20 // 8 MB each → 64 MB total across 8 streams
+const (
+	gainSweepStreams        = 8
+	gainSweepBytesPerStream = 8 << 20 // 8 MB each → 64 MB total, matching mole's smux workload
+	gainABClearWinner       = 0.15    // skip A/B when the leader leads the runner-up by >15%
+	gainABTieNoise          = 0.08    // medians within 8% are indistinguishable
+	gainABRounds            = 3       // alternating samples per finalist
+)
 
-	for _, g := range candidates {
+func scanAndPickGain(keeperURL string) (int, float64, map[int]float64, map[int]float64, error) {
+	results := make(map[int]float64, len(gainCandidates))
+
+	for _, g := range gainCandidates {
 		// Set gain via keeper's /gain endpoint (keeper applies synchronously,
 		// so /proc has the rule before we send bulk bytes).
 		if err := pushKeeperGain(keeperURL, g); err != nil {
@@ -1368,7 +1381,7 @@ func scanAndPickGain(keeperURL string) (int, float64, map[int]float64, error) {
 		// Allow a moment for the pacing rule to settle on the kernel side.
 		time.Sleep(500 * time.Millisecond)
 
-		mbps, err := bulkConcurrent(keeperURL, streams, bytesPerStream)
+		mbps, err := bulkConcurrent(keeperURL, gainSweepStreams, gainSweepBytesPerStream)
 		if err != nil {
 			continue
 		}
@@ -1376,13 +1389,93 @@ func scanAndPickGain(keeperURL string) (int, float64, map[int]float64, error) {
 	}
 
 	if len(results) == 0 {
-		return 0, 0, nil, fmt.Errorf("no gain candidate produced a measurable bulk; tunnel may be down or keeper module missing")
+		return 0, 0, nil, nil, fmt.Errorf("no gain candidate produced a measurable bulk; tunnel may be down or keeper module missing")
 	}
 
-	// Pick highest Mbps. sort.Slice gives ascending; candidates[0] after
-	// reorder is the best.
-	sort.Slice(candidates, func(i, j int) bool { return results[candidates[i]] > results[candidates[j]] })
-	return candidates[0], results[candidates[0]], results, nil
+	// Pick the initial leader by single-sample throughput.
+	measured := make([]int, 0, len(results))
+	for g := range results {
+		measured = append(measured, g)
+	}
+	sort.Slice(measured, func(i, j int) bool { return results[measured[i]] > results[measured[j]] })
+
+	best := measured[0]
+	bestMbps := results[best]
+	confirmed := map[int]float64{}
+
+	// Alternating A/B confirmation between the top two when they are close
+	// enough that single-sample noise could have flipped the order. On real
+	// cross-Pacific paths minute-level throughput variance routinely swaps a
+	// serial-scan winner; interleaving the two finalists cancels the time
+	// trend. A clear initial gap skips the extra rounds.
+	if len(measured) >= 2 {
+		a, b := measured[0], measured[1]
+		if results[a] > 0 && results[a]-results[b] < results[a]*gainABClearWinner {
+			if meds, ok := alternateGainAB(keeperURL, a, b); ok {
+				confirmed = meds
+				best = pickByMedian(a, b, meds[a], meds[b])
+				bestMbps = meds[best]
+			}
+		}
+	}
+
+	return best, bestMbps, results, confirmed, nil
+}
+
+// alternateGainAB runs gainABRounds interleaved measurements of a and b and
+// returns each finalist's median throughput. Returns ok=false if either
+// finalist produced no usable sample, leaving the caller to fall back to the
+// single-sweep result.
+func alternateGainAB(keeperURL string, a, b int) (map[int]float64, bool) {
+	samples := map[int][]float64{a: {}, b: {}}
+	for i := 0; i < gainABRounds; i++ {
+		for _, g := range []int{a, b} {
+			if err := pushKeeperGain(keeperURL, g); err != nil {
+				continue
+			}
+			time.Sleep(500 * time.Millisecond)
+			m, err := bulkConcurrent(keeperURL, gainSweepStreams, gainSweepBytesPerStream)
+			if err != nil {
+				continue
+			}
+			samples[g] = append(samples[g], m)
+		}
+	}
+	if len(samples[a]) == 0 || len(samples[b]) == 0 {
+		return nil, false
+	}
+	return map[int]float64{a: medianFloat64(samples[a]), b: medianFloat64(samples[b])}, true
+}
+
+// pickByMedian chooses between two gains by their A/B medians. A lead below
+// gainABTieNoise is treated as indistinguishable, in which case the smaller
+// gain wins: a smaller cwnd is the conservative choice on lossy/congested
+// paths, where an over-large window turns surplus queueing into drops.
+func pickByMedian(a, b int, medA, medB float64) int {
+	switch {
+	case medA > medB && medA-medB >= medA*gainABTieNoise:
+		return a
+	case medB > medA && medB-medA >= medB*gainABTieNoise:
+		return b
+	}
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func medianFloat64(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	cp := make([]float64, len(xs))
+	copy(cp, xs)
+	sort.Float64s(cp)
+	mid := len(cp) / 2
+	if len(cp)%2 == 1 {
+		return cp[mid]
+	}
+	return (cp[mid-1] + cp[mid]) / 2
 }
 
 func pushKeeperGain(baseURL string, gain int) error {
@@ -1455,14 +1548,12 @@ func runGainTune(_ *cobra.Command, args []string) error {
 	fmt.Printf("📊 Scanning Brutal cwnd_gain on %s (%s)...\n", srv.Name, srv.IP)
 	fmt.Println("   gain   Mbps")
 
-	bestGain, bestMbps, results, err := scanAndPickGain(keeperURL)
+	bestGain, bestMbps, results, confirmed, err := scanAndPickGain(keeperURL)
 	if err != nil {
 		return err
 	}
 
-	const streams = 8
-	const bytesPerStream = 8 << 20
-	for _, g := range []int{10, 15, 20, 25} {
+	for _, g := range gainCandidates {
 		mbps, ok := results[g]
 		if !ok {
 			fmt.Printf("   %2d     — (skipped/failed)\n", g)
@@ -1471,7 +1562,21 @@ func runGainTune(_ *cobra.Command, args []string) error {
 		}
 	}
 
-	fmt.Printf("\n✅ Optimal gain for %s (%s) = %d → %.1f Mbps\n", srv.Name, srv.IP, bestGain, bestMbps)
+	if len(confirmed) == 2 {
+		finalists := make([]int, 0, 2)
+		for g := range confirmed {
+			finalists = append(finalists, g)
+		}
+		sort.Ints(finalists)
+		fmt.Printf("🔁 Top two within %.0f%% — alternating A/B confirmation (%d rounds each):\n", gainABClearWinner*100, gainABRounds)
+		fmt.Println("   gain   median")
+		for _, g := range finalists {
+			fmt.Printf("   %2d     %6.1f Mbps\n", g, confirmed[g])
+		}
+		fmt.Printf("✅ Optimal gain for %s (%s) = %d → %.1f Mbps (A/B confirmed)\n", srv.Name, srv.IP, bestGain, bestMbps)
+	} else {
+		fmt.Printf("\n✅ Optimal gain for %s (%s) = %d → %.1f Mbps\n", srv.Name, srv.IP, bestGain, bestMbps)
+	}
 
 	// Persist to servers.json — this is what supervisor reads on next up().
 	if err := changeServer(srv.InstanceID, srv.Name, func(s *Server) {
@@ -1491,7 +1596,7 @@ func runGainTune(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("best gain saved but live application unconfirmed: %w", err)
 	}
 	time.Sleep(500 * time.Millisecond)
-	verification, err := bulkConcurrent(keeperURL, streams, bytesPerStream)
+	verification, err := bulkConcurrent(keeperURL, gainSweepStreams, gainSweepBytesPerStream)
 	if err != nil {
 		return fmt.Errorf("best gain applied but verification failed: %w", err)
 	}

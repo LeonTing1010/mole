@@ -72,9 +72,54 @@ func TestGainScanRejectsUnappliedGain(t *testing.T) {
 		w.WriteHeader(500)
 	}))
 	defer s.Close()
-	_, _, _, err := scanAndPickGain(s.URL)
+	_, _, _, _, err := scanAndPickGain(s.URL)
 	if err == nil || bulk != 0 {
 		t.Fatalf("unapplied gains measured: bulk=%d err=%v", bulk, err)
+	}
+}
+
+// Quality/what. Why: the A/B finalist picker must (a) honour a clear median
+// lead in either direction and (b) break a within-noise tie toward the smaller
+// gain, since an over-large cwnd is the riskier choice on a lossy path.
+func TestGainABPickByMedian(t *testing.T) {
+	cases := []struct {
+		name       string
+		a, b       int
+		medA, medB float64
+		want       int
+	}{
+		{"clear win a", 25, 30, 150, 100, 25},
+		{"clear win b", 25, 30, 100, 150, 30},
+		{"real nrt split keeps larger-median", 25, 30, 146.9, 132.6, 25},
+		{"within-noise tie picks smaller gain (a>b)", 30, 25, 140, 135, 25},
+		{"within-noise tie picks smaller gain (b>a)", 25, 30, 135, 140, 25},
+		{"exact tie picks smaller gain", 25, 30, 140, 140, 25},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := pickByMedian(c.a, c.b, c.medA, c.medB); got != c.want {
+				t.Fatalf("pickByMedian(%d,%d,%.1f,%.1f)=%d want %d", c.a, c.b, c.medA, c.medB, got, c.want)
+			}
+		})
+	}
+}
+
+func TestMedianFloat64(t *testing.T) {
+	cases := []struct {
+		in   []float64
+		want float64
+	}{
+		{nil, 0},
+		{[]float64{}, 0},
+		{[]float64{7}, 7},
+		{[]float64{1, 2, 3}, 2},
+		{[]float64{3, 1, 2}, 2},
+		{[]float64{1, 2, 3, 4}, 2.5},
+	}
+	for _, c := range cases {
+		if got := medianFloat64(c.in); got != c.want {
+			t.Fatalf("medianFloat64(%v)=%v want %v", c.in, got, c.want)
+		}
 	}
 }
 
