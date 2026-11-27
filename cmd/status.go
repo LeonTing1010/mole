@@ -16,6 +16,16 @@ var statusCmd = &cobra.Command{
 	RunE:  runStatus,
 }
 
+// statusVerbose restores the full telemetry dump (probe ages, dial windows,
+// keepalive streaks). The default view is deliberately short: `mole status` is
+// what people run when the network feels wrong, and a wall of healthy-looking
+// counters hides the one line that matters.
+var statusVerbose bool
+
+func init() {
+	statusCmd.Flags().BoolVarP(&statusVerbose, "verbose", "v", false, "include probe telemetry and diagnostics")
+}
+
 func runStatus(_ *cobra.Command, _ []string) error {
 	pid, err := utils.ReadPID()
 	running := err == nil && utils.IsRunning(pid)
@@ -23,18 +33,18 @@ func runStatus(_ *cobra.Command, _ []string) error {
 	active, _ := ActiveServer()
 
 	if running {
-		fmt.Printf("● Running — pid %d\n", pid)
+		fmt.Printf("● Running (pid %d)\n", pid)
 	} else {
 		fmt.Println("○ Stopped")
 	}
 
 	if active != nil {
-		fmt.Printf("   Active:  %s — %s (%s)\n", active.Name, active.Region, active.IP)
+		fmt.Printf("   Server:  %s · %s · %s\n", active.Name, active.Region, active.IP)
 	} else {
-		fmt.Println("   Active:  none — run `mole server deploy`")
+		fmt.Println("   Server:  none — run `mole server deploy`")
 	}
 
-	if utils.KillSwitchLoaded() {
+	if utils.KillSwitchLoaded() && (!running || statusVerbose) {
 		if running {
 			fmt.Println("   Shield:  🛡️ kill switch armed — foreign egress locked to tunnel, CN direct")
 		} else {
@@ -59,6 +69,13 @@ func printSupervisorState() {
 	st, err := utils.ReadState()
 	if err != nil {
 		fmt.Println("   Mode:    (supervisor state unavailable)")
+		return
+	}
+	defer printHints(st)
+	// Healthy needs no telemetry. "Everything is fine" is one line, and saying
+	// it in one line is what makes the unhealthy output readable by contrast.
+	if !statusVerbose && statusHealthy(st) {
+		printCompact(st)
 		return
 	}
 	// The supervisor only reports health; it never reroutes. Surface failures
@@ -303,4 +320,114 @@ func dialLast(st *utils.State) string {
 		return fmt.Sprintf("%.2fs", float64(st.LastDialMs)/1000)
 	}
 	return "unknown"
+}
+
+// statusHealthy reports whether there is nothing for the reader to act on. Any
+// caveat at all — a lid-destroy debt, an unconfirmed pacing rule, a dial window
+// still filling — falls back to the detailed view, because "compact" must never
+// mean "hiding a problem".
+func statusHealthy(st *utils.State) bool {
+	if st.Mode != utils.ModeProxy || st.Health() != utils.HealthOK {
+		return false
+	}
+	if st.SlowNewFlows || st.LinkBad || st.LastKeepaliveError != "" {
+		return false
+	}
+	if st.RealityPacingState == "unconfirmed" {
+		return false
+	}
+	if len(st.DialSamples) < utils.DialWindow || st.DialBad() > 0 {
+		return false
+	}
+	switch st.LidDestroy {
+	case "", utils.LidDestroyArmed, utils.LidDestroyDryRun:
+		return true
+	}
+	return false
+}
+
+// printCompact is the healthy view: what is carrying traffic, how fast it
+// answers, and the one thing that costs money if forgotten.
+func printCompact(st *utils.State) {
+	var parts []string
+	if st.LastLatencyMs > 0 {
+		parts = append(parts, fmt.Sprintf("VPS %d ms", st.LastLatencyMs))
+	}
+	if !st.LinkLastAt.IsZero() && st.LinkGateway != "" {
+		parts = append(parts, fmt.Sprintf("gateway %d ms", st.LinkMedianMs()))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "carrying traffic")
+	}
+	fmt.Printf("   VPN:     🟢 healthy — %s\n", strings.Join(parts, " · "))
+	fmt.Printf("   Route:   %s\n", routeLine(st))
+	printLidShort(st)
+}
+
+// routeLine names the leg actually carrying traffic and its pacing rate, in
+// terms of what it means rather than the scheduler's internal profile name.
+func routeLine(st *utils.State) string {
+	rate := st.RealityRateMbps
+	if rate <= 0 {
+		rate = st.BandwidthDownMbps
+	}
+	onStandby := false
+	if now, err := core.NewClashClient("127.0.0.1:9090").Selection(core.ProxySelectorTag); err == nil {
+		onStandby = now == core.RealityLegTag
+	}
+	switch {
+	case onStandby && utils.ReadLeg() == utils.LegReality:
+		return fmt.Sprintf("REALITY (TCP/443), pinned · pacing %d Mbps", rate)
+	case onStandby:
+		return fmt.Sprintf("REALITY (TCP/443), primary · pacing %d Mbps", rate)
+	case utils.ReadLeg() == utils.LegHy2:
+		return fmt.Sprintf("hy2 (UDP/443), pinned · Brutal %d Mbps", st.BandwidthDownMbps)
+	default:
+		return fmt.Sprintf("hy2 (UDP/443) · Brutal %d Mbps", st.BandwidthDownMbps)
+	}
+}
+
+// printLidShort keeps the billing reminder to one line when it is simply armed.
+func printLidShort(st *utils.State) {
+	switch st.LidDestroy {
+	case utils.LidDestroyArmed:
+		fmt.Println("   Lid:     closing the lid destroys this server")
+	case utils.LidDestroyDryRun:
+		fmt.Println("   Lid:     dry run — a lid close is only logged")
+	case "":
+		// Daemon predates the field; nothing to assert.
+	default:
+		printLidDestroy(st)
+	}
+}
+
+// printHints turns a state into something to do. The detailed lines above say
+// what mole observes; these say what a person should try next, which is the
+// question `mole status` is actually being asked.
+func printHints(st *utils.State) {
+	var hints []string
+	if utils.ReadLeg() == utils.LegHy2 {
+		hints = append(hints, "hy2 (UDP) is pinned and is throttled on many paths — if sites stall, try `mole leg reality`.")
+	}
+	switch st.Health() {
+	case utils.HealthLocalLink:
+		hints = append(hints, "This is the Wi-Fi, not the tunnel — move closer to the router or switch band.")
+	case utils.HealthVPSDown:
+		hints = append(hints, "`mole server repair` reinstalls the protocols on the VPS.")
+	case utils.HealthPathDead:
+		hints = append(hints, "Restarting rarely helps a dark path; if it persists, a fresh node/IP does — `mole server deploy --region nrt`.")
+	case utils.HealthDegraded:
+		if st.ConsecutiveFails >= utils.ProbeSilentThreshold {
+			hints = append(hints, "Probes outside the tunnel are dark but the tunnel itself works; this usually clears on its own, otherwise a fresh node/IP.")
+		} else {
+			hints = append(hints, "Still carrying traffic. If this persists, a fresh node/IP usually clears it.")
+		}
+	}
+	if len(st.DialSamples) >= utils.DialWindow && st.DialBad() > 0 {
+		hints = append(hints, fmt.Sprintf("%d/%d fresh connections slow or failed — that is the path, not your settings.",
+			st.DialBad(), len(st.DialSamples)))
+	}
+	for _, h := range hints {
+		fmt.Printf("   → %s\n", h)
+	}
 }
