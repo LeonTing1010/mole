@@ -1723,10 +1723,12 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
-	// The governor samples every third tick. A probe costs real bandwidth
-	// (it saturates the link for about a second), so it cannot ride every
-	// minute; three minutes is the compromise between noticing a degraded
-	// Wi-Fi link and not spending the user's quota on diagnostics.
+	// The governor samples every tenth tick: a 32 MB probe at that cadence costs
+	// ~4.6 GB a day. The probe has to be large enough for TCP slow start to
+	// finish (see sampleGovernor), so the budget is bytes rather than seconds,
+	// and a slow cadence is what keeps a diagnostic from eating the quota. A
+	// real Wi-Fi change is caught immediately by the signature check below
+	// rather than by waiting for the next sample.
 	ticks := 0
 	// Seeded before the loop so the first sample is not mistaken for a link
 	// change. Compared from here on to catch the discrete jumps the bands handle
@@ -1765,7 +1767,7 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 			retune()
 			apply()
 			ticks++
-			if gov == nil || ticks%3 != 0 {
+			if gov == nil || ticks%10 != 0 {
 				continue
 			}
 			if sig := wifiLinkSignature(s.readWiFiPHY()); sig != phySig {
@@ -1823,28 +1825,23 @@ func (s *Supervisor) healthUsable() bool {
 // sampleGovernor measures what the tunnel actually delivers right now and feeds
 // it to the governor.
 //
-// The burst is sized to about one second at the declared rate, capped at 6 MB:
-// scaling it with the rate keeps a low rung from taking a full minute to probe,
-// and the cap keeps an over-declared rate from turning a diagnostic into a
-// download. A failed probe is not evidence about the path — the health machine
-// owns "dead" — so it is dropped rather than reported as zero.
+// Sizing is the whole point of this function. A burst that only lasts a fraction
+// of a second never sees the path's capacity: with 8 streams over the ~106 ms
+// ICN path, one second at the declared rate gave 768 KB per stream, which is
+// barely a single congestion window at that stream's share. Measured against a
+// working 386 Mbps path it read 41.7 Mbps — nine times low — and feeding that
+// into the loop collapsed the declaration to the floor even though the link was
+// healthy. Per-stream bytes must let slow start finish: 4 MB per stream measured
+// 390/389 Mbps on the same path (stable, and within a few percent of the 64 MB
+// reading at half the bytes), so that is the floor. A failed probe is not
+// evidence about the path — the health machine owns "dead" — so it is dropped
+// rather than reported as zero.
 func (s *Supervisor) sampleGovernor(g *RateGovernor) (int, bool, string) {
-	rate := g.Rate()
-	total := int64(rate) * 125000 // Mbps → bytes for one second
-	if total < 1<<20 {
-		total = 1 << 20
-	}
-	if total > 6<<20 {
-		total = 6 << 20
-	}
 	const streams = 8
-	perStream := int(total) / streams
-	if perStream < 64<<10 {
-		perStream = 64 << 10
-	}
+	const perStream = 4 << 20 // 4 MB/stream, 32 MB total — see sizing note above
 	achieved, err := BulkConcurrent(fmt.Sprintf("http://127.0.0.1:%d", BrutalKeeperPort), streams, perStream)
 	if err != nil {
-		return rate, false, ""
+		return g.Rate(), false, ""
 	}
 	return g.Observe(achieved)
 }
