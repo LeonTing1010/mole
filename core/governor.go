@@ -30,8 +30,9 @@ type RateGovernor struct {
 	minRate int
 	maxRate int
 
-	hits   int // consecutive samples saturating the declared rate
-	misses int // consecutive samples falling short of it
+	neutral int // consecutive eligible samples at the same low declaration
+	hits    int // consecutive samples saturating the declared rate
+	misses  int // consecutive samples falling short of it
 
 	// anchor makes the next measurement authoritative in one step. It is set by
 	// Reset, where the previous declaration describes a different path and the
@@ -104,7 +105,7 @@ func (g *RateGovernor) Observe(achievedMbps float64) (int, bool, string) {
 		g.anchor = false
 		g.hits, g.misses = 0, 0
 		if ratio >= govHighRatio {
-			return g.rate, false, ""
+			return g.rate, false, "link change: ceiling sustained"
 		}
 		return g.move(int(achievedMbps*govAnchorScale)+1,
 			fmt.Sprintf("link changed — anchored to %.1f", achievedMbps))
@@ -149,7 +150,7 @@ func (g *RateGovernor) Observe(achievedMbps float64) (int, bool, string) {
 	default:
 		g.hits, g.misses = 0, 0
 	}
-	return g.rate, false, ""
+	return g.rate, false, fmt.Sprintf("hold: delivered %.0f%%, low streak %d, high streak %d", ratio*100, g.misses, g.hits)
 }
 
 // Reset re-declares the ceiling and trusts the next measurement to correct it in
@@ -163,7 +164,7 @@ func (g *RateGovernor) Observe(achievedMbps float64) (int, bool, string) {
 // authoritative instead of waiting a full interval.
 func (g *RateGovernor) Reset(ceiling int) {
 	g.rate = g.clamp(ceiling)
-	g.hits, g.misses, g.anchor = 0, 0, true
+	g.hits, g.misses, g.neutral, g.anchor = 0, 0, 0, true
 }
 
 // farBelowCeiling reports whether the declaration is far enough below the
@@ -175,7 +176,7 @@ func (g *RateGovernor) farBelowCeiling() bool {
 func (g *RateGovernor) move(next int, reason string) (int, bool, string) {
 	next = g.clamp(next)
 	if next == g.rate {
-		return g.rate, false, ""
+		return g.rate, false, "at rate bound: " + reason
 	}
 	g.rate = next
 	return next, true, reason

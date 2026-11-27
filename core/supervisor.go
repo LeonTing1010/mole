@@ -1724,11 +1724,9 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
 	// The governor samples every tenth tick: a 32 MB probe at that cadence costs
-	// ~4.6 GB a day. The probe has to be large enough for TCP slow start to
-	// finish (see sampleGovernor), so the budget is bytes rather than seconds,
-	// and a slow cadence is what keeps a diagnostic from eating the quota. A
-	// real Wi-Fi change is caught immediately by the signature check below
-	// rather than by waiting for the next sample.
+	// up to 4.5 GiB/day before recovery trials. A trial adds one same-size
+	// sample after three eligible holds. Check the Wi-Fi signature at each
+	// scheduled sample before comparing it with the previous declaration.
 	ticks := 0
 	// Seeded before the loop so the first sample is not mistaken for a link
 	// change. Compared from here on to catch the discrete jumps the bands handle
@@ -1780,24 +1778,34 @@ func (s *Supervisor) runBandwidthScheduler(ctx context.Context) {
 				govRate = gov.Rate()
 				log.Printf("rate governor: local link changed (%s) — re-declaring ↓%d → ↓%d Mbps", describeLink(sig), prev, govRate)
 				apply()
-				next, changed, why := s.sampleGovernor(gov)
-				if !changed {
-					continue
+			}
+			if usable := s.healthUsable(); !usable || pushedRate != govRate || unconfirmed != 0 {
+				gov.neutral = 0
+				log.Printf("rate governor: skipping ↓%d Mbps; health usable=%t, confirmed rate=%d, unconfirmed pushes=%d", govRate, usable, pushedRate, unconfirmed)
+				continue
+			}
+			bytesPerStream := governorStreamBytes(govRate)
+			client := &http.Client{Timeout: 20 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
+			generation := s.probeGeneration.Load()
+			measure := func() (governorSample, error) {
+				result, err := measureGovernor(ctx, client, fmt.Sprintf("http://127.0.0.1:%d", BrutalKeeperPort), bytesPerStream)
+				if err == nil && (ctx.Err() != nil || generation != s.probeGeneration.Load() || !s.healthUsable()) {
+					return result, fmt.Errorf("path changed or became unhealthy during measurement")
 				}
-				log.Printf("rate governor: ↓%d → ↓%d Mbps (%s)", govRate, next, why)
-				govRate = next
-				apply()
-				continue
+				return result, err
 			}
-			if !s.healthUsable() {
-				continue
+			declare := func(rate int) bool {
+				pushedRate, pushedAt, unconfirmed, _ = s.schedulerPushBrutal(rate, pushedRate, pushedAt, unconfirmed)
+				if unconfirmed != 0 {
+					// A timeout can follow a successful node-side change. Force
+					// reconciliation even if the cached rate equals our target.
+					pushedAt = time.Time{}
+					return false
+				}
+				return pushedRate == rate
 			}
-			next, changed, why := s.sampleGovernor(gov)
-			if !changed {
-				continue
-			}
-			log.Printf("rate governor: ↓%d → ↓%d Mbps (%s)", govRate, next, why)
-			govRate = next
+			gov.sampleCycle(measure, declare)
+			govRate = gov.Rate()
 			apply()
 		}
 	}
@@ -1822,30 +1830,6 @@ func (s *Supervisor) healthUsable() bool {
 	return h.Usable() && h != utils.HealthPathDead
 }
 
-// sampleGovernor measures what the tunnel actually delivers right now and feeds
-// it to the governor.
-//
-// Sizing is the whole point of this function. A burst that only lasts a fraction
-// of a second never sees the path's capacity: with 8 streams over the ~106 ms
-// ICN path, one second at the declared rate gave 768 KB per stream, which is
-// barely a single congestion window at that stream's share. Measured against a
-// working 386 Mbps path it read 41.7 Mbps — nine times low — and feeding that
-// into the loop collapsed the declaration to the floor even though the link was
-// healthy. Per-stream bytes must let slow start finish: 4 MB per stream measured
-// 390/389 Mbps on the same path (stable, and within a few percent of the 64 MB
-// reading at half the bytes), so that is the floor. A failed probe is not
-// evidence about the path — the health machine owns "dead" — so it is dropped
-// rather than reported as zero.
-func (s *Supervisor) sampleGovernor(g *RateGovernor) (int, bool, string) {
-	const streams = 8
-	const perStream = 4 << 20 // 4 MB/stream, 32 MB total — see sizing note above
-	achieved, err := BulkConcurrent(fmt.Sprintf("http://127.0.0.1:%d", BrutalKeeperPort), streams, perStream)
-	if err != nil {
-		return g.Rate(), false, ""
-	}
-	return g.Observe(achieved)
-}
-
 // schedulerPushBrutal pushes the REALITY leg's TCP Brutal pacing rate to the
 // node's keeper via PushBrutalRateViaWithGain. When the keeper confirms it
 // updates pushedRate/pushedAt and clears unconfirmed; on persistent refusal
@@ -1860,6 +1844,9 @@ func (s *Supervisor) sampleGovernor(g *RateGovernor) (int, bool, string) {
 func (s *Supervisor) schedulerPushBrutal(tcpRate, pushedRate int, pushedAt time.Time, unconfirmed int) (int, time.Time, int, bool) {
 	pacingChanged := true
 	res, err := PushBrutalRateViaWithGain(BrutalKeeperPort, tcpRate, s.brutalGain, s.probeTimeMs)
+	if err == nil && res.Rate != tcpRate {
+		err = fmt.Errorf("keeper acknowledged %d Mbps, requested %d", res.Rate, tcpRate)
+	}
 	switch {
 	case err != nil:
 		unconfirmed++
